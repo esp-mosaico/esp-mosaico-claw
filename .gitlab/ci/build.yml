@@ -1,0 +1,46 @@
+.build_template:
+  stage: build
+  tags:
+    - build
+  image: ${IMAGE}
+  variables:
+    IDF_CCACHE_ENABLE: "1"
+    CCACHE_DIR: "$CI_PROJECT_DIR/.cache/ccache"
+    V: "0"
+  cache:
+    key: "idf-${CI_PROJECT_ID}-${CI_COMMIT_REF_SLUG}"
+    paths:
+      - .cache/ccache/
+
+.build_firmware_template:
+  extends:
+    - .build_template
+  artifacts:
+    when: always
+    paths:
+      - "build/build_log.txt"
+      - "build/*.bin"
+      - "build/*.map"
+      - "build/*.elf"
+      - "build/flasher_args.json"
+      - "build/flash_args"
+      - "build/flash_project_args"
+      - "build/config/sdkconfig.json"
+      - "build/bootloader/*.bin"
+      - "build/bootloader/*.elf"
+      - "build/partition_table/*.bin"
+      - "build/mmap_build/**/*.bin"
+    expire_in: 1 week
+  script:
+    - python -m pip install --disable-pip-version-check -r requirements.txt
+    - idf.py --version
+    - idf.py bmgr -c ./boards -b "$EXAMPLE_BOARD"
+    - idf.py build 2>&1 | tee build/build_log.txt
+
+build_edge_agent:
+  extends:
+    - .build_firmware_template
+    - .rules:build:edge_agent
+  variables:
+    IMAGE: espressif/idf:latest
+    EXAMPLE_BOARD: esp_mosaico

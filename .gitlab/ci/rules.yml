@@ -1,0 +1,42 @@
+############
+# Patterns #
+############
+
+.patterns-build_system: &patterns-build_system
+  - ".gitlab-ci.yml"
+  - ".gitlab/ci/**/*"
+  - "CMakeLists.txt"
+  - "sdkconfig.defaults*"
+  - "partitions*.csv"
+  - "dependencies.lock"
+  - "tools/cmake/**/*"
+
+.patterns-product: &patterns-product
+  - "boards/**/*"
+  - "components/**/*"
+  - "fatfs_image/**/*"
+  - "main/**/*"
+  - "third-party/esp-claw/**/*"
+
+##############
+# if anchors #
+##############
+
+.if-protected-push: &if-protected-push
+  if: '$CI_COMMIT_REF_PROTECTED == "true" && $CI_PIPELINE_SOURCE == "push"'
+
+.if-mr: &if-mr
+  if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+#########
+# Rules #
+#########
+
+.rules:build:edge_agent:
+  rules:
+    - <<: *if-protected-push
+    - <<: *if-mr
+      changes: *patterns-build_system
+    - <<: *if-mr
+      changes: *patterns-product
+    - when: never

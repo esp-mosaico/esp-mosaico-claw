@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 cd "$(dirname "$0")"
-CLAW_ROOT="$(git -C "$(pwd)" rev-parse --show-toplevel)"
 GSPC="${GSPC:?set GSPC to the GSPC executable}"
 PROFILE="${MOSAIC_SCENE_PROFILE:-$(cd ../../../common && pwd)/mosaic_rgb565_auto.yaml}"
 STEM=weather

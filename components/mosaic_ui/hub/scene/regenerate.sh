@@ -4,11 +4,18 @@
 set -euo pipefail
 GSPC="${GSPC:?set GSPC to the GSPC executable}"
 cd "$(dirname "$0")"
-CLAW_ROOT="$(git -C "$(pwd)" rev-parse --show-toplevel)"
-WORK_ROOT="$(dirname "$CLAW_ROOT")"
-GSP_ROOT="${ESP_GSP_ROOT:-$WORK_ROOT/esp-gsp-main}"
+PROJECT_ROOT="$(cd ../../../.. && pwd)"
+WORK_ROOT="$(dirname "$PROJECT_ROOT")"
+GSP_ROOT="${ESP_GSP_ROOT:-$PROJECT_ROOT/managed_components/espressif__esp-gsp}"
 if [[ ! -d "$GSP_ROOT/tools" ]]; then
-    GSP_ROOT="$WORK_ROOT/esp-gsp"
+    if [[ -d "$WORK_ROOT/esp-gsp-main/tools" ]]; then
+        GSP_ROOT="$WORK_ROOT/esp-gsp-main"
+    elif [[ -d "$WORK_ROOT/esp-gsp/tools" ]]; then
+        GSP_ROOT="$WORK_ROOT/esp-gsp"
+    else
+        echo "error: cannot locate esp-gsp tools" >&2
+        exit 1
+    fi
 fi
 export ESP_GSP_ROOT="$GSP_ROOT"
 export PYTHONPATH="$GSP_ROOT/tools${PYTHONPATH:+:$PYTHONPATH}"

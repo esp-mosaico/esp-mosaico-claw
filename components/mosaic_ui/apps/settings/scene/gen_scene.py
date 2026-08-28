@@ -788,7 +788,7 @@ def _copy_setup_integration_page(objs, page, builder, prefix):
     setup_scene = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(setup_scene)
-    setup_scene._materialize_prototype_assets()
+    setup_scene._validate_static_assets()
     start = len(objs)
     getattr(setup_scene, builder)(objs, page)
 

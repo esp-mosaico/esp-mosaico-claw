@@ -1,7 +1,5 @@
 # Scene JSON is generated from gen_scene.py / gen_scenes.py at build time.
 **/scene/*_480.json
-**/scene/setup_html_*.png
-**/scene/setup_*qr_placeholder.png
 
 # Bundles and gspc headers are generated at build time (see CMakeLists.txt).
 **/generated/

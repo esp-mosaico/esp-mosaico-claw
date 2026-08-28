@@ -7,7 +7,9 @@ set(MOSAIC_APP_SCENE_JSON scene/settings_480.json)
 set(MOSAIC_APP_GENERATOR scene/gen_scene.py)
 set(MOSAIC_APP_SCENE_SOURCES
     ../setup_center/scene/gen_scene.py
-    ../../docs/mosaico-prototype.html)
+    ../setup_center/scene/setup_html_chevron.png
+    ../setup_center/scene/setup_html_yes.png
+    ../setup_center/scene/setup_qr_placeholder.png)
 set(MOSAIC_APP_GENERATED_HEADERS
     settings_binds.h
     settings_actions.h

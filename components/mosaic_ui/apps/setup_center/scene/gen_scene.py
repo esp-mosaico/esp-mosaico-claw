@@ -5,10 +5,6 @@
 
 from __future__ import annotations
 
-import json
-import re
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -72,91 +68,26 @@ FONT_POLICIES = {
 }
 
 
-def _materialize_prototype_assets():
-    """Rasterize the exact icon/QR sources embedded by the reference HTML.
-
-    These files are generated intermediates and ignored by git.  A clear error
-    is preferable to silently substituting made-up artwork: this SDL prototype
-    is intentionally checked against mosaico-prototype.html.
-    """
-    html_path = HERE.parents[2] / "docs" / "mosaico-prototype.html"
-    if not html_path.exists():
-        _materialize_fallback_assets()
-        return
-    source = html_path.read_text(encoding="utf-8")
-    renderer = shutil.which("cairosvg")
-    if renderer is None:
-        raise RuntimeError("cairosvg executable is required for prototype assets")
-
-    for key, output, size in (
-        ("back", HTML_BACK, 48),
-        ("chevron", HTML_CHEVRON, 48),
-        ("refresh", HTML_REFRESH, 48),
-        ("loading", HTML_LOADING, 48),
-        ("yes", HTML_YES, 100),
-        ("no", HTML_NO, 100),
-    ):
-        match = re.search(rf"^\s*{key}:\s*(\"(?:\\.|[^\"])*\")", source,
-                          re.MULTILINE)
-        if match is None:
-            raise RuntimeError(f"prototype asset {key!r} not found")
-        svg = json.loads(match.group(1))
-        if key == "chevron":
-            # ICON.chevron() applies this color substitution in the browser.
-            # Do the same before rasterizing the embedded SVG for GSP.
-            svg = svg.replace("#B4B6BA", ACCENT)
-        subprocess.run(
-            [renderer, "-f", "png", "-o", str(HERE / output),
-             "--output-width", str(size), "--output-height", str(size), "-"],
-            input=svg.encode(), check=True)
-
-    # Canvas requires an opaque profile-native placeholder of exactly the
-    # authored size. The browser's embedded demo QR carries alpha and would
-    # compile as JPEG_A8, which esp_gsp_canvas_push correctly rejects.
+def _validate_static_assets():
+    """Validate the checked-in PNG assets used by Setup Center."""
     from PIL import Image
-    Image.new("RGB", (256, 256), "white").save(HERE / QR_PLACEHOLDER)
-    Image.new("RGB", (104, 104), "white").save(
-        HERE / LLM_QR_PLACEHOLDER)
 
-
-def _materialize_fallback_assets():
-    """Keep clean source builds working when the ignored design HTML is absent."""
-    from PIL import Image, ImageDraw
-
-    def canvas(size):
-        return Image.new("RGBA", (size, size), (0, 0, 0, 0))
-
-    icon = canvas(48)
-    draw = ImageDraw.Draw(icon)
-    draw.line((30, 12, 18, 24, 30, 36), fill="#91919B", width=3)
-    icon.save(HERE / HTML_BACK)
-
-    icon = canvas(48)
-    draw = ImageDraw.Draw(icon)
-    draw.line((21, 17, 28, 24, 21, 31), fill=ACCENT, width=3)
-    icon.save(HERE / HTML_CHEVRON)
-
-    icon = canvas(48)
-    draw = ImageDraw.Draw(icon)
-    draw.arc((10, 10, 38, 38), 35, 320, fill="#91919B", width=3)
-    draw.polygon(((36, 9), (38, 20), (28, 16)), fill="#91919B")
-    icon.save(HERE / HTML_REFRESH)
-    icon.save(HERE / HTML_LOADING)
-
-    for output, ok in ((HTML_YES, True), (HTML_NO, False)):
-        icon = canvas(100)
-        draw = ImageDraw.Draw(icon)
-        draw.ellipse((5, 5, 95, 95), outline=FG, width=4)
-        if ok:
-            draw.line((28, 52, 44, 68, 74, 34), fill=FG, width=7)
-        else:
-            draw.line((32, 32, 68, 68), fill=FG, width=7)
-            draw.line((68, 32, 32, 68), fill=FG, width=7)
-        icon.save(HERE / output)
-
-    Image.new("RGB", (256, 256), "white").save(HERE / QR_PLACEHOLDER)
-    Image.new("RGB", (104, 104), "white").save(
-        HERE / LLM_QR_PLACEHOLDER)
+    assets = (
+        (HTML_BACK, (48, 48)), (HTML_CHEVRON, (48, 48)),
+        (HTML_REFRESH, (48, 48)), (HTML_LOADING, (48, 48)),
+        (HTML_YES, (100, 100)), (HTML_NO, (100, 100)),
+        (QR_PLACEHOLDER, (256, 256)),
+        (LLM_QR_PLACEHOLDER, (104, 104)),
+    )
+    for name, expected_size in assets:
+        path = HERE / name
+        if not path.is_file():
+            raise FileNotFoundError(f"missing Setup Center asset: {path}")
+        with Image.open(path) as image_file:
+            if image_file.size != expected_size:
+                raise RuntimeError(
+                    f"invalid Setup Center asset size: {path}: "
+                    f"{image_file.size} != {expected_size}")
 
 
 def call(name):
@@ -615,7 +546,7 @@ def build_done(objs, parent):
 
 
 def main():
-    _materialize_prototype_assets()
+    _validate_static_assets()
     images = [
         (WLAN_LOCK, 40, 40), (WLAN_WIFI, 40, 40),
         (WLAN_CLOSE, 48, 48), (WLAN_CHECK, 48, 48),

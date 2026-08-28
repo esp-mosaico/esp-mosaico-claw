@@ -1,0 +1,18 @@
+idf_component_register(
+    SRCS
+        "src/display_service.c"
+        "src/display_service_lvgl.c"
+        "src/display_service_raw.c"
+        "src/display_service_target.c"
+        "src/display_service_present.c"
+        "src/display_present_lease.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        esp_board_manager
+        esp_lcd
+        esp_lcd_touch
+        lvgl
+        espressif__esp_display_present
+        esp_lvgl_present
+)

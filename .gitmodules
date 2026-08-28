@@ -1,0 +1,3 @@
+[submodule "third-party/esp-claw"]
+	path = third-party/esp-claw
+	url = https://github.com/espressif/esp-claw.git

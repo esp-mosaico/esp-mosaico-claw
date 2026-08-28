@@ -1,0 +1,3 @@
+# App bundles are emitted to each app's generated/ directory. Never retain a
+# second copy beside scene sources.
+*/scene/*.gspb

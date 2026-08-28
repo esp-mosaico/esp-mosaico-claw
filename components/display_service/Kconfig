@@ -1,0 +1,36 @@
+menu "Display service"
+
+config DISPLAY_SERVICE_PRESENT_TE_ENABLE
+    bool "Enable presenter TE synchronization"
+    default y
+    help
+        Enable GPIO tearing-effect synchronization for panel-IO displays.
+        The panel initialization sequence must also enable its TE output.
+
+if DISPLAY_SERVICE_PRESENT_TE_ENABLE
+
+config DISPLAY_SERVICE_PRESENT_TE_GPIO
+    int "TE GPIO"
+    range 0 63
+    default 43
+
+config DISPLAY_SERVICE_PRESENT_TE_BUS_FREQ_HZ
+    int "Panel bus clock (Hz)"
+    range 1 120000000
+    default 40000000
+    help
+        Used to estimate whether a transfer fits in the current TE window.
+
+config DISPLAY_SERVICE_PRESENT_TE_DATA_LINES
+    int "Panel bus data lines"
+    range 1 8
+    default 4
+
+config DISPLAY_SERVICE_PRESENT_TE_REFRESH_WINDOW_PERCENT
+    int "Usable TE refresh window percent"
+    range 1 100
+    default 80
+
+endif
+
+endmenu

@@ -1,0 +1,16 @@
+menu "ASR Service Test Configuration"
+
+    config ASR_TEST_QWEN_API_KEY
+        string "Qwen ASR API key"
+        default ""
+        help
+            API key used by the Qwen ASR PCM smoke test. Leave empty to skip the Qwen stream test.
+
+    config ASR_TEST_PCM_CHUNK_DELAY_MS
+        int "PCM chunk send interval in ms"
+        range 0 100
+        default 20
+        help
+            Delay after each 20 ms PCM frame is sent. Keep the default for realtime-like streaming.
+
+endmenu

@@ -1,0 +1,7 @@
+set(MOSAIC_APP_NAME imu)
+set(MOSAIC_APP_MODULE_SOURCE imu_app.c)
+set(MOSAIC_APP_MODULE_SYMBOL mosaic_imu_app)
+set(MOSAIC_APP_BUNDLE generated/imu.gspb)
+set(MOSAIC_APP_SCENE_DIR scene)
+set(MOSAIC_APP_SCENE_JSON scene/imu_480.json)
+set(MOSAIC_APP_GENERATOR scene/gen_scene.py)

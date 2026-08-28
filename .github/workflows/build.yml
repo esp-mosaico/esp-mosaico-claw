@@ -1,0 +1,41 @@
+name: Build ESP-IDF project
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build esp_mosaico
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: espressif/idf:latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install project dependencies
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Configure board and build project
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          if ! idf.py -B build-ci bmgr -c ./boards -b esp_mosaico; then
+              echo "::error title=Board configuration failed::Failed to configure esp_mosaico"
+              exit 1
+          fi
+          if ! idf.py -B build-ci build; then
+              echo "::error title=ESP-IDF build failed::Failed to build esp_mosaico"
+              exit 1
+          fi

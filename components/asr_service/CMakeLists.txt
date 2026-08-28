@@ -1,0 +1,15 @@
+idf_component_register(
+    SRCS
+        "src/asr_service.c"
+        "src/asr_provider_qwen.c"
+    INCLUDE_DIRS
+        "include"
+    PRIV_INCLUDE_DIRS
+        "src"
+    REQUIRES
+        audio_hub
+        trial_provider
+    PRIV_REQUIRES
+        esp_websocket_client
+        cjson
+)

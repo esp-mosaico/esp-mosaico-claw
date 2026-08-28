@@ -1,0 +1,12 @@
+name: esp32s31_rgb565_compact
+pixel_format: rgb565
+resource_alignment: 64
+stride_alignment: 64
+tile_width: 64
+tile_height: 64
+tile_index_min_commands: 16
+static_bake_min_commands: 0
+image_compress_min_pixels: 4096
+image_codec: auto
+hardware_jpeg: true
+jpeg_quality: 85

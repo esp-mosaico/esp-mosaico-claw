@@ -1,0 +1,19 @@
+## asr_service — microphone capture plus provider-backed realtime ASR.
+dependencies:
+  audio_hub:
+    path: ../../third-party/esp-claw/components/common/audio_hub
+  trial_provider:
+    path: ../trial_provider
+  espressif/cjson: ^1.7.19
+  espressif/esp_websocket_client: ^1.6.1
+description: Realtime ASR service built on audio_hub capture
+version: 0.1.0
+
+overrides:
+  - espressif/esp_websocket_client:
+      with:
+        esp_websocket_client:
+          git: https://github.com/laride/esp-protocols.git
+          path: components/esp_websocket_client
+          version: 9f704bd93f9087f9bdff02350e2164ccd4fffe86
+      reason: "fix redirect issues"

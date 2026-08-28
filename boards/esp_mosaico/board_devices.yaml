@@ -1,0 +1,234 @@
+version: 1.0.0
+devices:
+
+  - name: usb_hs_console
+    chip: none
+    type: custom
+    version: default
+    init_skip: true
+    dependencies:
+      usb_hs_console:
+        path: "${BOARD_PATH}/components/usb_hs_console"
+
+  # Paint the boot logo before buttons / audio / touch so the first
+  # visible frame is not blocked by unrelated device init.
+  - name: lcd_power_ctrl
+    type: power_ctrl
+    sub_type: gpio
+    peripherals:
+      - name: gpio_lcd_en
+        active_level: 0
+
+  # CO5300 2.14" round panel, 480x480 QSPI RGB565.
+  - name: display_lcd
+    chip: co5300
+    type: display_lcd
+    sub_type: spi
+    version: default
+    power_ctrl_device: lcd_power_ctrl
+    dependencies:
+      espressif/esp_lcd_co5300: "^2.0.3"
+      mosaico_boot_splash:
+        path: "${BOARD_PATH}/../../components/mosaico_boot_splash"
+    config:
+      x_max: 480
+      y_max: 480
+      swap_xy: false
+      mirror_x: false
+      mirror_y: false
+      need_reset: true
+      io_spi_config:
+        cs_gpio_num: 50
+        dc_gpio_num: -1
+        spi_mode: 0
+        pclk_hz: 40000000
+        trans_queue_depth: 2
+        lcd_cmd_bits: 32
+        flags:
+          quad_mode: true
+          psram_dma_direct: true
+      lcd_panel_config:
+        reset_gpio_num: 42
+        rgb_ele_order: LCD_RGB_ELEMENT_ORDER_RGB
+        data_endian: LCD_RGB_DATA_ENDIAN_BIG
+        bits_per_pixel: 16
+        vendor_config: NULL
+    peripherals:
+      - name: spi_display
+
+  - name: button_boot
+    type: button
+    sub_type: gpio
+    config:
+      active_level: 0
+    peripherals:
+      - name: gpio_button_boot
+
+  - name: button_power
+    type: button
+    sub_type: gpio
+    config:
+      active_level: 0
+    peripherals:
+      - name: gpio_button_power
+
+  - name: lcd_touch
+    chip: cst9217
+    type: lcd_touch
+    sub_type: i2c
+    version: default
+    dependencies:
+      waveshare/esp_lcd_touch_cst9217: "^1.0.4"
+    config:
+      io_i2c_config:
+        scl_speed_hz: 400000
+        transaction_timeout_ms: 100
+      touch_config:
+        x_max: 480
+        y_max: 480
+        rst_gpio_num: -1
+        int_gpio_num: 6
+        levels:
+          reset: 0
+          interrupt: 0
+        flags:
+          swap_xy: false
+          mirror_x: false
+          mirror_y: false
+    peripherals:
+      - name: i2c_master
+        i2c_addr: [0xB4]
+
+  # ES8311 playback path (speaker).
+  - name: audio_dac
+    chip: es8311
+    type: audio_codec
+    version: default
+    config:
+      dac_enabled: true
+      dac_max_channel: 1
+      dac_channel_mask: "1"
+      mclk_enabled: true
+    peripherals:
+      - name: gpio_pa_control
+        gain: 6
+        active_level: 1
+      - name: i2s_audio_out
+      - &es8311_i2c
+        name: i2c_master
+        address: 0x32
+        frequency: 400000
+
+  # ES8311 capture path (microphone).
+  - name: audio_adc
+    chip: es8311
+    type: audio_codec
+    version: default
+    config:
+      adc_enabled: true
+      adc_max_channel: 1
+      adc_channel_mask: "1"
+      adc_channel_labels: [RE]
+      mclk_enabled: true
+    peripherals:
+      - name: i2s_audio_in
+      - *es8311_i2c
+
+  - name: vibration_motor
+    type: ledc_ctrl
+    version: default
+    config:
+      default_percent: 0
+    peripherals:
+      - name: ledc_vibration_motor
+
+  - name: nand_flash
+    type: custom
+    version: default
+    config:
+      chip_size: 0x40000000
+    dependencies:
+      espressif/spi_nand_flash: ^1.4.1
+      joltwallet/littlefs: ^1.22.0
+      nand_littlefs_state:
+        path: ${BOARD_PATH}/components/nand_littlefs_state
+      mosaico_board_variant:
+        path: ${BOARD_PATH}/components/mosaico_board_variant
+
+  - name: battery_monitor
+    chip: bq27220
+    type: custom
+    version: default
+    dependencies:
+      espressif/bq27220:
+        version: ^0.1.0
+    config:
+      design_capacity: 80  # mAh
+    peripherals:
+      - name: i2c_master                   # I2C peripheral for touch communication
+
+  # Board-mounted 6-axis IMU. Production test probes it at 7-bit 0x68.
+  - name: imu_sensor
+    chip: bmi270
+    type: custom
+    version: default
+    # BMI270 uploads its configuration blob during create. Keep boot free of
+    # that I2C traffic and initialize it lazily when the IMU App is opened.
+    init_skip: true
+    dependencies:
+      espressif2022/bmi270: "^1.1.0"
+    config:
+      addr: 0x68
+    peripherals:
+      - name: i2c_master
+
+  - name: magnetometer_1
+    chip: bmm150
+    type: custom
+    version: default
+    dependencies:
+      tangyumei3535/bmm150_sensorapi:
+        version: "^1.0.0"
+    config:
+      addr: 0x22
+    peripherals:
+      - name: i2c_master                   # I2C peripheral for touch communication
+
+  - name: magnetometer_2
+    chip: bmm150
+    type: custom
+    version: default
+    config:
+      addr: 0x24
+    peripherals:
+      - name: i2c_master                   # I2C peripheral for touch communication
+
+  # DVP camera interface. SCCB shares i2c_master with audio/touch.
+  - name: camera
+    type: camera
+    init_skip: true
+    version: default
+    sub_type: dvp
+    config:
+      dvp_config:
+        reset_io: 53
+        pwdn_io: 48
+        vsync_io: 55
+        data_width: CAM_CTLR_DATA_WIDTH_8
+        de_io: 19
+        pclk_io: 17
+        # XCLK comes from the board oscillator; do not route a clock to any GPIO.
+        xclk_io: -1
+        xclk_freq: 0
+        data_io:
+          data_io_0: 16
+          data_io_1: 15
+          data_io_2: 33
+          data_io_3: 4
+          data_io_4: 14
+          data_io_5: 12
+          data_io_6: 18
+          data_io_7: 13
+    peripherals:
+      - name: i2c_master
+        frequency: 100000

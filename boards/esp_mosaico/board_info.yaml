@@ -1,0 +1,5 @@
+board: esp_mosaico
+chip: esp32s31
+version: 1.0.0
+description: "ESP32-S31 HMI Series with CO5300 480x480 QSPI round LCD and ES8311 audio"
+manufacturer: "ESPRESSIF"

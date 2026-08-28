@@ -1,0 +1,4 @@
+Source: Wikimedia Commons, "Mandarin Chinese-南国山河.ogg"
+URL: https://commons.wikimedia.org/wiki/File:Mandarin_Chinese-%E5%8D%97%E5%9B%BD%E5%B1%B1%E6%B2%B3.ogg
+License: CC0 1.0 Universal Public Domain Dedication
+Conversion: ffmpeg -i source.ogg -ac 1 -ar 16000 -f s16le test_audio_16k_mono_s16le.pcm

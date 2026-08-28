@@ -1,0 +1,7 @@
+set(MOSAIC_APP_NAME tof)
+set(MOSAIC_APP_MODULE_SOURCE tof_app.c)
+set(MOSAIC_APP_MODULE_SYMBOL mosaic_tof_app)
+set(MOSAIC_APP_BUNDLE generated/tof.gspb)
+set(MOSAIC_APP_SCENE_DIR scene)
+set(MOSAIC_APP_SCENE_JSON scene/tof_480.json)
+set(MOSAIC_APP_GENERATOR scene/gen_scene.py)

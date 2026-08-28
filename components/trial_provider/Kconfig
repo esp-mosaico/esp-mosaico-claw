@@ -1,0 +1,12 @@
+menu "Trial Provider"
+
+config TRIAL_DEVICE_HMAC_KEY_ID
+    int "eFuse HMAC key block"
+    range 0 5
+    default 0
+    help
+        eFuse HMAC key block used to sign Trial provider challenges.
+        Board-specific configuration should override this value to match
+        the production provisioning layout.
+
+endmenu

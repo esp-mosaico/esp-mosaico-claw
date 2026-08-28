@@ -1,0 +1,38 @@
+## Mosaic/GSP system UI backed by the shared display_service presenter.
+dependencies:
+  idf: ">=6.0"
+  display_service:
+    path: ../display_service
+  audio_hub:
+    path: ../../third-party/esp-claw/components/common/audio_hub
+  audio_playback:
+    path: ../../third-party/esp-claw/components/common/audio_playback
+  asr_service:
+    path: ../asr_service
+  cap_im_ai_create:
+    path: ../cap_im_ai_create
+  hot_plug_register:
+    path: ../hot_plug_register
+  mosaico_camera:
+    path: ../mosaico_camera
+  weather_service:
+    path: ../weather_service
+  claw_core:
+    path: ../../third-party/esp-claw/components/claw_modules/claw_core
+  claw_memory:
+    path: ../../third-party/esp-claw/components/claw_modules/claw_memory
+  claw_manager:
+    path: ../../third-party/esp-claw/components/claw_modules/claw_manager
+  claw_skill:
+    path: ../../third-party/esp-claw/components/claw_modules/claw_skill
+  cap_lua:
+    path: ../../third-party/esp-claw/components/claw_capabilities/cap_lua
+  espressif/esp-gsp:
+    version: "1.0.0"
+    require: public
+  espressif/esp_mmap_assets:
+    version: "2.0.1"
+  georgik/lua: "^5.5.0~7"
+  espressif/esp_audio_codec: "^2.5.0"
+  espressif/esp_asrc: "^1.0.0"
+  espressif/esp_bt_audio: "^1.1.0"

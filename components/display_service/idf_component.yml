@@ -1,0 +1,7 @@
+## IDF Component Manager Manifest File
+dependencies:
+  esp_lvgl_present:
+    path: ../esp_lvgl_present
+  espressif/esp_display_present:
+    version: 1.0.0
+  lvgl/lvgl: ^9.5.0

@@ -1,0 +1,32 @@
+menu "Mosaic UI (esp-gsp)"
+
+    config MOSAIC_UI_DISABLE_BUNDLE_CRC
+        bool "Skip runtime CRC scan for built-in Mosaic bundles"
+        default y
+        help
+            Skip the whole-bundle CRC scan each time Hub or an App runtime is
+            created. Header, alignment, member bounds and nested resource
+            validation remain enabled. The ui_assets partition contains trusted
+            build-time assets and is validated by its asset container.
+
+    config MOSAIC_UI_AI_CREATE_DEVICE_MOCK
+        bool "Use local AI Create response backend"
+        depends on APP_CLAW_MOSAIC_GSP_ENABLE
+        default n
+        help
+            Keep the real device microphone and ASR path, but replace the AI
+            Create Agent gateway with deterministic local response events.
+            This is intended for device-side voice and navigation validation;
+            disable it before testing Agent integration.
+
+    config MOSAIC_UI_BLUETOOTH_AUDIO
+        bool "Classic Bluetooth A2DP speaker App"
+        depends on APP_CLAW_MOSAIC_GSP_ENABLE && BT_CLASSIC_ENABLED && BT_BLUEDROID_ENABLED
+        depends on BT_A2DP_ENABLE && BT_A2DP_USE_EXTERNAL_CODEC && BT_AVRCP_ENABLED
+        default y
+        help
+            Add the GSP Bluetooth media App. Opening the App initializes the
+            Classic Bluetooth A2DP Sink and AVRCP profiles; leaving the App
+            disconnects peers and fully disables the Bluetooth controller.
+
+endmenu

@@ -1,0 +1,6 @@
+name: mosaic_rgb565_host
+pixel_format: rgb565
+resource_alignment: 64
+stride_alignment: 64
+hardware_jpeg: false
+image_codec: auto

@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "src/cap_im_ai_create.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        claw_cap
+        claw_manager
+        esp_timer
+        freertos
+)

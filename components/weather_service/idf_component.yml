@@ -1,0 +1,5 @@
+dependencies:
+  idf: ">=6.0"
+  espressif/gmf_io: "^1.0"
+  wifi_manager:
+    path: ../wifi_manager

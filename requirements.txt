@@ -1,0 +1,2 @@
+Pillow>=9.0
+esp-bmgr-assist>=0.8.2

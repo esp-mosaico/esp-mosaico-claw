@@ -1,0 +1,5 @@
+dependencies:
+  cap_im_platform:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../../third-party/esp-claw/components/claw_capabilities/cap_im_platform

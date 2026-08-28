@@ -1,0 +1,99 @@
+version: 1.0.0
+# Peripherals for ESP32-S31 HMI Series (CO5300 480x480 sub-board), from esp32_s31_hmi BSP.
+peripherals:
+  # Touch controller I2C bus. Schematic nets: SDA=GPIO0, SCL=GPIO1.
+  - name: i2c_master
+    type: i2c
+    role: master
+    config:
+      port: 0
+      pins:
+        sda: 0
+        scl: 1
+
+  # CO5300 QSPI LCD bus. Schematic nets: SCL=GPIO3, D0~D3=GPIO36/2/50/51.
+  - name: spi_display
+    type: spi
+    role: master
+    config:
+      spi_bus_config:
+        spi_port: SPI2_HOST
+        sclk_io_num: 44
+        data0_io_num: 36
+        data1_io_num: 51
+        data2_io_num: 35
+        data3_io_num: 9
+        # SPI transport chunk: 480 px * 10 lines * RGB565.
+        max_transfer_sz: 9600
+
+  # LCD panel power enable. Schematic net: LCD_EN=GPIO45 (active high).
+  - name: gpio_lcd_en
+    type: gpio
+    role: io
+    config:
+      pin: 60
+      mode: GPIO_MODE_OUTPUT
+      default_level: 0
+
+  # ES8311 I2S bus. Schematic nets:
+  # I2S_MCLK=GPIO37, I2S_BCK=GPIO40, I2S_WS=GPIO53, I2S_DOUT=GPIO49, I2S_DIN=GPIO56.
+  - name: i2s_audio_out
+    type: i2s
+    role: master
+    format: std-out
+    config: &i2s_audio_config
+      port: 0
+      sample_rate_hz: 16000
+      clk_src: I2S_CLK_SRC_DEFAULT
+      mclk_multiple: 256
+      data_bit_width: 16
+      slot_bit_width: I2S_SLOT_BIT_WIDTH_AUTO
+      slot_mode: I2S_SLOT_MODE_STEREO
+      slot_mask: I2S_STD_SLOT_BOTH
+      ws_width: 16
+      pins:
+        mclk: 54
+        bclk: 37
+        ws: 49
+        dout: 52
+        din: 40
+
+  - name: i2s_audio_in
+    type: i2s
+    role: master
+    format: std-in
+    config: *i2s_audio_config
+
+  # Speaker amplifier enable. Schematic net: PA_CTRL=GPIO7 (active high).
+  - name: gpio_pa_control
+    type: gpio
+    role: io
+    config:
+      pin: 45
+      mode: GPIO_MODE_OUTPUT
+      default_level: 1
+
+  # Vibration_motor Control
+  - name: ledc_vibration_motor
+    type: ledc
+    version: default
+    config:
+      gpio_num: 8
+      speed_mode: LEDC_LOW_SPEED_MODE
+      channel: 1
+      timer_sel: 1
+      duty: 0
+
+  - name: gpio_button_boot
+    type: gpio
+    role: io
+    config:
+      pin: 61
+      mode: "GPIO_MODE_INPUT"
+
+  - name: gpio_button_power
+    type: gpio
+    role: io
+    config:
+      pin: 7
+      mode: "GPIO_MODE_INPUT"

@@ -1,0 +1,25 @@
+idf_component_register(
+    SRC_DIRS "." "platform"
+    INCLUDE_DIRS "." "platform"
+    PRIV_REQUIRES
+        app_settings_service
+        app_system_config
+        audio_hub
+        claw_hw_registry
+        claw_event_router
+        cmd_wifi
+        esp_app_format
+        esp_hw_support
+        esp_wifi
+        espressif__cjson
+        espressif__bq27220
+        espressif2022__bmi270
+        gen_bmgr_codes
+        hot_plug_register
+        mosaico_board_variant
+        mosaico_boot_splash
+        nvs_flash
+        weather_service
+        update_check_service
+        gmf_core
+)

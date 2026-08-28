@@ -1,0 +1,11 @@
+version: "0.1.0"
+description: Subboard slot and shared-resource support for ESP32-S31-Mosaico
+
+targets:
+  - esp32s31
+
+tags:
+  - subboard
+
+dependencies:
+  idf: ">=5.5"

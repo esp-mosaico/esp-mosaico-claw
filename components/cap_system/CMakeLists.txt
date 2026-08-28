@@ -1,0 +1,24 @@
+idf_component_register(
+    SRCS
+        "src/cap_system.c"
+        "src/cap_system_platform.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        claw_cap
+        claw_core
+        app_settings_service
+        esp_netif
+        esp_wifi
+    PRIV_REQUIRES
+        app_config
+        display_service
+        esp_board_manager
+        esp_app_format
+        esp_hw_support
+        esp_timer
+        espressif__cjson
+        gen_bmgr_codes
+        settings
+        wifi_manager
+)

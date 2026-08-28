@@ -1,0 +1,97 @@
+## IDF Component Manager Manifest File
+dependencies:
+  espressif/esp_board_manager:
+    version: "^0.6"
+    public: true
+
+  espressif/bq27220: "^0.1.0"
+
+  app_claw:
+    path: ../components/app_claw
+
+  cap_im_ai_create:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../components/cap_im_ai_create
+
+  audio_hub:
+    path: ../third-party/esp-claw/components/common/audio_hub
+
+  asr_service:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../components/asr_service
+
+  app_config:
+    path: ../components/app_config
+
+  trial_provider:
+    path: ../components/trial_provider
+
+  cap_system:
+    path: ../components/cap_system
+
+  cap_im_platform:
+    path: ../third-party/esp-claw/components/claw_capabilities/cap_im_platform
+
+  captive_dns:
+    path: ../third-party/esp-claw/components/common/captive_dns
+
+  espressif/ramfs:
+    version: "^0.1"
+
+  joltwallet/littlefs:
+    version: "^1.22.0"
+
+  claw_utils:
+    path: ../third-party/esp-claw/components/claw_modules/claw_utils
+
+  mosaic_ui:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../components/mosaic_ui
+
+  display_service:
+    rules:
+    - if: $CONFIG{ESP_BOARD_DEV_DISPLAY_LCD_SUPPORT} == True
+    path: ../components/display_service
+
+  network_provisioning_service:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../components/network_provisioning_service
+
+  weather_service:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../components/weather_service
+
+  update_check_service:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../components/update_check_service
+
+  wechat_binding_service:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../components/wechat_binding_service
+
+  http_reuse:
+    path: ../third-party/esp-claw/components/common/http_reuse
+
+  http_server:
+    path: ../components/http_server
+
+  hot_plug_register:
+    path: ../components/hot_plug_register
+
+  settings:
+    path: ../third-party/esp-claw/components/common/settings
+
+  wifi_manager:
+    path: ../components/wifi_manager
+
+  esp_video:
+    path: ../third-party/esp-claw/components/common/esp_video
+    matches:
+    - if: $CONFIG{ESP_BOARD_DEV_CAMERA_SUPPORT} == True

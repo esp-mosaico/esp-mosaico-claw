@@ -1,0 +1,7 @@
+set(MOSAIC_APP_NAME camera)
+set(MOSAIC_APP_MODULE_SOURCE camera_app.c)
+set(MOSAIC_APP_MODULE_SYMBOL mosaic_camera_app)
+set(MOSAIC_APP_BUNDLE generated/camera.gspb)
+set(MOSAIC_APP_SCENE_DIR scene)
+set(MOSAIC_APP_SCENE_JSON scene/camera_480.json)
+set(MOSAIC_APP_GENERATOR scene/gen_scene.py)

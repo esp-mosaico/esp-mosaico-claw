@@ -1,0 +1,9 @@
+dependencies:
+  app_config:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../app_config
+  wifi_manager:
+    rules:
+    - if: $CONFIG{APP_CLAW_MOSAIC_GSP_ENABLE} == True
+    path: ../wifi_manager

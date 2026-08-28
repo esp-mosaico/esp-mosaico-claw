@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "hot_plug_register.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        subboard_support
+        esp_driver_i2c
+        esp_board_manager
+        mosaico_camera
+)

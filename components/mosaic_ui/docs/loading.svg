@@ -1,0 +1,16 @@
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="check">
+<g id="Progress indicator">
+<g id="Spinner">
+<rect id="325" opacity="0.87" x="22.7373" y="18.6695" width="4.26667" height="10.6667" rx="2.13333" transform="rotate(135 22.7373 18.6695)" fill="#D6D6DE"/>
+<rect id="270" opacity="0.75" x="19.666" y="21.8159" width="4.26667" height="10.6667" rx="2.13333" transform="rotate(90 19.666 21.8159)" fill="#D6D6DE"/>
+<rect id="225" opacity="0.63" x="19.7202" y="26.212" width="4.26667" height="10.6667" rx="2.13333" transform="rotate(45 19.7202 26.212)" fill="#D6D6DE"/>
+<rect id="180" opacity="0.51" x="22.8662" y="29.2825" width="4.26667" height="10.6667" rx="2.13333" fill="#D6D6DE"/>
+<rect id="135" opacity="0.39" x="37.8242" y="33.7545" width="4.26667" height="10.6667" rx="2.13333" transform="rotate(135 37.8242 33.7545)" fill="#D6D6DE"/>
+<rect id="90" opacity="0.27" x="40.9995" y="21.8159" width="4.26667" height="10.6667" rx="2.13333" transform="rotate(90 40.9995 21.8159)" fill="#D6D6DE"/>
+<rect id="45" opacity="0.15" x="34.8076" y="11.1271" width="4.26667" height="10.6667" rx="2.13333" transform="rotate(45 34.8076 11.1271)" fill="#D6D6DE"/>
+<rect id="0" x="22.8662" y="7.94922" width="4.26667" height="10.6667" rx="2.13333" fill="#D6D6DE"/>
+</g>
+</g>
+</g>
+</svg>

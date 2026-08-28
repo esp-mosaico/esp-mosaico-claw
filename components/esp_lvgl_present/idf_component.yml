@@ -1,0 +1,12 @@
+dependencies:
+  espressif/esp_display_present:
+    public: true
+    version: 1.0.0
+  espressif/esp_lcd_touch:
+    public: true
+    version: 1.*
+  idf: '>=5.5'
+  lvgl/lvgl:
+    version: '>=9,<10'
+description: LVGL v9 runtime and shared esp_display_present producer.
+version: 0.7.1

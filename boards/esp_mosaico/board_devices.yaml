@@ -170,9 +170,6 @@ devices:
     chip: bmi270
     type: custom
     version: default
-    # BMI270 uploads its configuration blob during create. Keep boot free of
-    # that I2C traffic and initialize it lazily when the IMU App is opened.
-    init_skip: true
     dependencies:
       espressif2022/bmi270: "^1.1.0"
     config:

@@ -1,12 +1,22 @@
 version: 1.0.0
 # Peripherals for ESP32-S31 HMI Series (CO5300 480x480 sub-board), from esp32_s31_hmi BSP.
 peripherals:
-  # Touch controller I2C bus. Schematic nets: SDA=GPIO0, SCL=GPIO1.
+  # Mainboard I2C bus. Runtime board-variant setup remaps v1.0 to GPIO0/GPIO1.
   - name: i2c_master
     type: i2c
     role: master
     config:
       port: 0
+      pins:
+        sda: 56
+        scl: 3
+
+  # Expansion connector I2C bus. v1.0 aliases I2C0; v1.1 uses I2C1.
+  - name: i2c_subboard
+    type: i2c
+    role: master
+    config:
+      port: 1
       pins:
         sda: 0
         scl: 1

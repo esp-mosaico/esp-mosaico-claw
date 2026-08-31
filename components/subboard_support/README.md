@@ -3,7 +3,7 @@
 This component owns the shared resources used by Mosaico expansion boards:
 
 - Left and right slot EEPROM address selection.
-- Shared I2C0 bus discovery and reuse.
+- Board Manager `i2c_subboard` bus discovery and reuse.
 - Shared 3.3 V subboard rail control.
 - Left/right connector GPIO mapping.
 - Camera DVP resource claim and release.

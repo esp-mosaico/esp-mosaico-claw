@@ -150,8 +150,6 @@ devices:
     dependencies:
       espressif/spi_nand_flash: ^1.4.1
       joltwallet/littlefs: ^1.22.0
-      nand_littlefs_state:
-        path: ${BOARD_PATH}/components/nand_littlefs_state
       mosaico_board_variant:
         path: ${BOARD_PATH}/components/mosaico_board_variant
 

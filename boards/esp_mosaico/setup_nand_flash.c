@@ -16,7 +16,6 @@
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "gen_board_device_custom.h"
-#include "nand_littlefs_state.h"
 #include "setup_nand_flash.h"
 #include "soc/spi_pins.h"
 #include "spi_nand_flash.h"
@@ -336,13 +335,6 @@ static int nand_flash_init(void *config, int cfg_size, void **device_handle)
                       esp_err_to_name(ret));
     handle->wl_bdl = wl_bdl;
 
-    bool migration_complete = false;
-    ret = nand_littlefs_state_is_migration_complete(&migration_complete);
-    ESP_GOTO_ON_ERROR(ret, fail, TAG, "failed to get NAND migration state: %s", esp_err_to_name(ret));
-    if (!migration_complete) {
-        ESP_LOGW(TAG, "NAND LittleFS migration is pending; mount failure will trigger formatting");
-    }
-
     const esp_vfs_littlefs_conf_t mount_config = {
         .base_path = NAND_FLASH_MOUNT_PATH,
         .blockdev = handle->wl_bdl,
@@ -362,13 +354,6 @@ static int nand_flash_init(void *config, int cfg_size, void **device_handle)
                           NAND_FLASH_MOUNT_PATH, esp_err_to_name(ret));
     }
     handle->mounted = true;
-
-    if (!migration_complete) {
-        ret = nand_littlefs_state_mark_migration_complete();
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "failed to persist NAND LittleFS migration state: %s", esp_err_to_name(ret));
-        }
-    }
 
     size_t total = 0;
     size_t used = 0;

@@ -38,7 +38,7 @@
 #define PLAYER_MAX_X 468
 #define PLAYER_MIN_Y 100
 #define PLAYER_MAX_Y 468
-#define PLAYER_SPEED 900.0f
+#define PLAYER_SPEED 1800.0f
 #define BULLET_W 4
 #define BULLET_H 12
 #define BULLET_MAX 8

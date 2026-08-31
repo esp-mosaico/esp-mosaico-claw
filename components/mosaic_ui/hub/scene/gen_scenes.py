@@ -120,11 +120,8 @@ STACK_PAGE_COUNT = 3
 
 # Launcher PageFlow tab indices.
 TAB_HOME = 0
-# Only Home and the populated Apps grid are currently reachable.  Keep the
-# authored installable-App layer below as an ABI/resource reservation for
-# actions 5..8, but do not expose an empty swipe destination until the catalog
-# can rebuild PageFlow membership at runtime.
-FLOW_PAGE_COUNT = 2
+# Home, native app grid (tab1), and the installable dynamic-app grid (tab2).
+FLOW_PAGE_COUNT = 3
 
 # Shared app-icon grid (Figma 时钟 bottom / 应用界面). Coords are relative to
 # the PageFlow layer (stage y=56); absolute screen y = 56 + value.
@@ -154,6 +151,8 @@ HUB_IMAGES = [
     (f'{ASSETS}/icons/music.png', 118, 118),
     (f'{ASSETS}/icons/bricks.png', 118, 118),
     (f'{ASSETS}/icons/weather.png', 118, 118),
+    (f'{ASSETS}/icons/calculator.png', 118, 118),
+    (f'{ASSETS}/icons/air_battle.png', 118, 118),
     *[(f'{ASSETS}/control_center/{name}.png', width, height)
       for name, width, height in (
           ('wifi', 44, 44), ('wifi_active', 44, 44),

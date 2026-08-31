@@ -1,0 +1,8 @@
+set(MOSAIC_APP_NAME calculator)
+set(MOSAIC_APP_MODULE_SOURCE calculator_app.c)
+set(MOSAIC_APP_MODULE_SYMBOL mosaic_calculator_app)
+set(MOSAIC_APP_BUNDLE generated/calculator.gspb)
+set(MOSAIC_APP_SCENE_DIR scene)
+set(MOSAIC_APP_SCENE_JSON scene/calculator_480.json)
+set(MOSAIC_APP_GENERATOR scene/gen_scene.py)
+set(MOSAIC_APP_LOGIC NATIVE)

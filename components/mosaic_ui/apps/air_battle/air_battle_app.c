@@ -759,7 +759,7 @@ static void battle_audio_start(void)
     char path[256];
     struct stat info;
     if (claw_paths_join(
-            CLAW_PATH_DATA, "music/space-quest-loop.ogg",
+            CLAW_PATH_DATA, "music/space-quest-loop.mp3",
             path, sizeof(path)) != ESP_OK ||
             stat(path, &info) != 0 || info.st_size <= 0) {
         return;

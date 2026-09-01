@@ -22,6 +22,7 @@
 #include "mosaic_battery_platform.h"
 #include "mosaic_setup.h"
 #include "mosaic_loader.h"
+#include "mosaic_device_capabilities.h"
 #include "mosaic_settings.h"
 #include "mosaic_system.h"
 #include "mosaic_ui.h"
@@ -686,6 +687,8 @@ esp_err_t mosaic_settings_platform_init(
         .request_network_reconfigure = request_network_reconfigure,
         .user_ctx = config->settings,
     }), TAG, "configure settings ops");
+    ESP_RETURN_ON_ERROR(mosaic_device_capabilities_init(), TAG,
+                        "publish device capability domains");
     ESP_RETURN_ON_ERROR(update_check_service_subscribe(
                             update_check_event_cb, NULL),
                         TAG, "subscribe to update checker");

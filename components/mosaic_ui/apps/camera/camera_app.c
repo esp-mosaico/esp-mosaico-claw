@@ -111,7 +111,11 @@ static void camera_start_deferred(void *user_ctx)
         printf("mosaic_camera: active UI unavailable\n");
         return;
     }
-    const esp_err_t err = mosaic_camera_start(ui);
+    static const mosaic_camera_binds_t binds = {
+        .canvas = GSP_BIND_CAMERA_CANVAS,
+        .missing_hint_visible = GSP_BIND_CAMERA_MISSING_VISIBLE,
+    };
+    const esp_err_t err = mosaic_camera_start(ui, &binds);
     if (err != ESP_OK) {
         printf("mosaic_camera: start failed err=%d\n", (int)err);
         return;

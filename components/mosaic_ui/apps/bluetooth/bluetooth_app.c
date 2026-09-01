@@ -9,7 +9,8 @@
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
 #include "mosaic_runtime.h"
-#include "mosaic_settings.h"
+#include "mosaic_capability.h"
+#include "mosaic_capability_contracts.h"
 #include "mosaic_top_notice.h"
 
 #include <stdbool.h>
@@ -45,6 +46,12 @@ static const mosaic_top_notice_config_t s_exit_notice = {
 #define BT_VOLUME_Y_MAX 292
 static bool s_volume_drag_active;
 
+/* The App drives the A2DP sink and the shared output level, and reaches
+ * nothing else on the device. */
+#define BLUETOOTH_CAPABILITIES ( \
+    MOSAIC_CAP_SYSTEM_AUDIO_CONTROL | \
+    MOSAIC_CAP_MEDIA_BLUETOOTH_READ | MOSAIC_CAP_MEDIA_BLUETOOTH_CONTROL)
+
 static void bluetooth_set_progress(esp_gsp_handle_t ui, int32_t progress)
 {
     if (progress < 0) {
@@ -74,18 +81,36 @@ static int bluetooth_volume_from_y(int32_t y)
 
 #if defined(ESP_PLATFORM)
 
-#include "bluetooth_audio_runtime.h"
-#include "audio_hub.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "mosaic_loader.h"
+#include "mosaic_media_bluetooth.h"
 
 static const char *TAG = "bluetooth_app";
-static bluetooth_audio_runtime_handle_t s_runtime;
+static bool s_media_started;
+static mosaic_capability_subscription_handle_t s_snapshot_subscription;
 static int s_volume_drag_value;
-static EXT_RAM_BSS_ATTR bluetooth_audio_snapshot_t s_snapshot;
+static EXT_RAM_BSS_ATTR mosaic_cap_bluetooth_t s_snapshot;
 static uint32_t s_cover_revision = UINT32_MAX;
 static atomic_bool s_cover_published;
+
+static esp_err_t bluetooth_invoke(const char *command)
+{
+    return mosaic_capability_invoke("media.bluetooth",
+        BLUETOOTH_CAPABILITIES, command, NULL, 0, NULL, 0);
+}
+
+/* The blob stays borrowed until GSP reports it has stopped referencing the
+ * encoded payload. */
+static void cover_blob_released(void *release_ctx)
+{
+    mosaic_capability_blob_t *blob = release_ctx;
+    if (blob == NULL) {
+        return;
+    }
+    mosaic_capability_release("media.bluetooth", blob);
+    free(blob);
+}
 
 static void cover_image_complete(esp_gsp_handle_t ui, uint16_t bind,
                                  gsp_err_t status, void *user_ctx)
@@ -105,22 +130,22 @@ static void cover_image_complete(esp_gsp_handle_t ui, uint16_t bind,
     ESP_LOGI(TAG, "cover art decode complete");
 }
 
-static const char *state_text(bluetooth_audio_state_t state)
+static const char *state_text(int32_t state)
 {
     switch (state) {
-    case BLUETOOTH_AUDIO_STATE_STARTING:
+    case MOSAIC_CAP_BT_STATE_STARTING:
         return "Starting";
-    case BLUETOOTH_AUDIO_STATE_DISCOVERABLE:
+    case MOSAIC_CAP_BT_STATE_DISCOVERABLE:
         return "Discoverable · Waiting for phone";
-    case BLUETOOTH_AUDIO_STATE_CONNECTED:
+    case MOSAIC_CAP_BT_STATE_CONNECTED:
         return "Connected";
-    case BLUETOOTH_AUDIO_STATE_PLAYING:
+    case MOSAIC_CAP_BT_STATE_PLAYING:
         return "Playing";
-    case BLUETOOTH_AUDIO_STATE_PAUSED:
+    case MOSAIC_CAP_BT_STATE_PAUSED:
         return "Paused";
-    case BLUETOOTH_AUDIO_STATE_ERROR:
+    case MOSAIC_CAP_BT_STATE_ERROR:
         return "Error";
-    case BLUETOOTH_AUDIO_STATE_OFF:
+    case MOSAIC_CAP_BT_STATE_OFF:
     default:
         return "Bluetooth unavailable";
     }
@@ -138,7 +163,7 @@ static void render_cover(esp_gsp_handle_t ui)
     if (s_snapshot.cover_revision == s_cover_revision) {
         return;
     }
-    if (!s_snapshot.has_cover || !s_runtime) {
+    if (!s_snapshot.has_cover || !s_media_started) {
         s_cover_revision = s_snapshot.cover_revision;
         /* Once a cover has been published, keep it visible while AVRCP
          * fetches and decodes the next one. GSP swaps the decoded resource
@@ -152,29 +177,35 @@ static void render_cover(esp_gsp_handle_t ui)
 
     bool visible = false;
     {
-        uint8_t *data = NULL;
-        size_t size = 0;
-        uint32_t revision = 0;
-        if (bluetooth_audio_runtime_take_cover(
-                s_runtime, &data, &size, &revision) == ESP_OK) {
+        mosaic_capability_blob_t *blob = calloc(1, sizeof(*blob));
+        if (blob == NULL) {
+            return;
+        }
+        if (mosaic_capability_borrow("media.bluetooth",
+                BLUETOOTH_CAPABILITIES, MOSAIC_CAP_BT_BLOB_COVER, 0,
+                blob) == ESP_OK) {
+            const uint32_t revision = s_snapshot.cover_revision;
             const esp_gsp_image_options_t options = {
-                .ownership = ESP_GSP_IMAGE_TAKE,
+                .ownership = ESP_GSP_IMAGE_BORROW,
+                .on_release = cover_blob_released,
+                .release_ctx = blob,
                 .on_complete = cover_image_complete,
             };
             esp_gsp_err_t err = esp_gsp_set_image_ex(
-                ui, GSP_BIND_BT_COVER, data, size, &options);
+                ui, GSP_BIND_BT_COVER, blob->data, blob->size, &options);
             if (err == ESP_GSP_OK) {
                 s_cover_revision = revision;
                 visible = atomic_load(&s_cover_published);
                 ESP_LOGI(TAG, "cover art submitted: revision=%" PRIu32
-                         ", size=%u", revision, (unsigned)size);
+                         ", size=%u", revision, (unsigned)blob->size);
             } else {
-                free(data);
+                cover_blob_released(blob);
                 ESP_LOGW(TAG, "publish cover art failed: 0x%x", err);
             }
         } else {
             /* Keep the old revision so the periodic render retries if the
              * snapshot became visible just before the payload handoff. */
+            free(blob);
             return;
         }
     }
@@ -186,9 +217,9 @@ static void render_cover(esp_gsp_handle_t ui)
 static void bluetooth_render(esp_gsp_handle_t ui)
 {
     memset(&s_snapshot, 0, sizeof(s_snapshot));
-    if (!s_runtime ||
-            bluetooth_audio_runtime_get_snapshot(s_runtime, &s_snapshot) !=
-                ESP_OK) {
+    if (!s_media_started ||
+            mosaic_capability_read("media.bluetooth", BLUETOOTH_CAPABILITIES,
+                &s_snapshot, sizeof(s_snapshot)) != ESP_OK) {
         (void)esp_gsp_set_text(ui, GSP_BIND_BT_STATUS,
                                "Bluetooth unavailable");
         (void)esp_gsp_set_text(ui, GSP_BIND_BT_DEVICE_NAME,
@@ -250,38 +281,44 @@ static void bluetooth_render(esp_gsp_handle_t ui)
     render_cover(ui);
 }
 
-static void bluetooth_changed(uint32_t revision, void *user_ctx)
+static void bluetooth_changed(void *user_ctx, const char *name,
+    const void *payload, size_t payload_size)
 {
     (void)user_ctx;
-    (void)mosaic_loader_invalidate_app(BLUETOOTH_APP_ID, revision);
+    (void)name;
+    if (payload == NULL || payload_size != sizeof(mosaic_cap_bluetooth_t)) {
+        return;
+    }
+    const mosaic_cap_bluetooth_t *snapshot = payload;
+    (void)mosaic_loader_invalidate_app(BLUETOOTH_APP_ID, snapshot->revision);
 }
 
 static void bluetooth_try_start(void)
 {
-    if (s_runtime) {
+    if (s_media_started) {
         return;
     }
-    audio_mixer_handle_t mixer = NULL;
-    if (audio_hub_get_mixer(&mixer) != ESP_OK || mixer == NULL) {
+    esp_err_t err = mosaic_media_bluetooth_start();
+    if (err == ESP_ERR_INVALID_STATE) {
+        /* The mixer is not up yet; the next tick retries. */
         return;
-    }
-    bluetooth_audio_runtime_config_t config = {
-        .mixer = mixer,
-        .on_changed = bluetooth_changed,
-    };
-    esp_err_t err = bluetooth_audio_runtime_create(&config, &s_runtime);
-    if (err == ESP_OK) {
-        err = bluetooth_audio_runtime_start(s_runtime);
     }
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "start Bluetooth App failed: %s",
                  esp_err_to_name(err));
+        return;
+    }
+    s_media_started = true;
+    if (s_snapshot_subscription == NULL) {
+        (void)mosaic_capability_subscribe("media.bluetooth",
+            BLUETOOTH_CAPABILITIES, bluetooth_changed, NULL,
+            &s_snapshot_subscription);
     }
 }
 
 static void dispatch_call(const mosaic_event_t *event)
 {
-    if (!s_runtime) {
+    if (!s_media_started) {
         return;
     }
     esp_err_t err = ESP_OK;
@@ -289,13 +326,13 @@ static void dispatch_call(const mosaic_event_t *event)
     case GSP_ACT_ID_BT_LOCAL:
         return;
     case GSP_ACT_ID_BT_TOGGLE_PLAY:
-        err = bluetooth_audio_runtime_toggle_play(s_runtime);
+        err = bluetooth_invoke("toggle_play");
         break;
     case GSP_ACT_ID_BT_PREVIOUS:
-        err = bluetooth_audio_runtime_previous(s_runtime);
+        err = bluetooth_invoke("previous");
         break;
     case GSP_ACT_ID_BT_NEXT:
-        err = bluetooth_audio_runtime_next(s_runtime);
+        err = bluetooth_invoke("next");
         break;
     default:
         return;
@@ -305,12 +342,22 @@ static void dispatch_call(const mosaic_event_t *event)
     }
 }
 
+static esp_err_t bluetooth_set_volume(int32_t volume, bool persist)
+{
+    const mosaic_cap_audio_volume_args_t args = {
+        .volume = volume,
+        .persist = persist,
+    };
+    return mosaic_capability_invoke("system.audio",
+        BLUETOOTH_CAPABILITIES, "set_volume", &args, sizeof(args), NULL, 0);
+}
+
 static void bluetooth_dispatch_volume_pointer(esp_gsp_handle_t ui,
                                               const mosaic_event_t *event)
 {
     if (!event->data.pointer.pressed) {
         if (s_volume_drag_active) {
-            (void)mosaic_settings_set_volume(s_volume_drag_value, true);
+            (void)bluetooth_set_volume(s_volume_drag_value, true);
         }
         s_volume_drag_active = false;
         return;
@@ -330,9 +377,14 @@ static void bluetooth_dispatch_volume_pointer(esp_gsp_handle_t ui,
     char text[8];
     snprintf(text, sizeof(text), "%d%%", volume);
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_VOLUME, text);
-    (void)mosaic_settings_set_volume(volume, false);
-    if (s_runtime) {
-        (void)bluetooth_audio_runtime_set_volume(s_runtime, volume);
+    (void)bluetooth_set_volume(volume, false);
+    if (s_media_started) {
+        const mosaic_cap_bluetooth_volume_args_t args = {
+            .volume_percent = volume,
+        };
+        (void)mosaic_capability_invoke("media.bluetooth",
+            BLUETOOTH_CAPABILITIES, "set_volume", &args, sizeof(args),
+            NULL, 0);
     }
 }
 
@@ -374,9 +426,14 @@ static void bluetooth_event(esp_gsp_handle_t ui,
                 ui, &s_exit_notice, "Disconnecting Bluetooth",
                 "Returning to Home...", 0);
         }
-        bluetooth_audio_runtime_delete(s_runtime);
+        if (s_snapshot_subscription != NULL &&
+                mosaic_capability_unsubscribe(
+                    s_snapshot_subscription) == ESP_OK) {
+            s_snapshot_subscription = NULL;
+        }
+        mosaic_media_bluetooth_stop();
         mosaic_top_notice_detach(ui);
-        s_runtime = NULL;
+        s_media_started = false;
         s_cover_revision = UINT32_MAX;
         atomic_store(&s_cover_published, false);
         break;

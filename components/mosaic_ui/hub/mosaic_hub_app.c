@@ -12,7 +12,9 @@
 #include "mosaic_hub_templates.h"
 #include "gsp_analog_clock.h"
 #include "mosaic_ui.h"
-#include "mosaic_settings.h"
+#include "mosaic_capability.h"
+#include "mosaic_capability_contracts.h"
+#include "mosaic_device_capabilities.h"
 #include "esp_log.h"
 
 #include <stdio.h>
@@ -24,7 +26,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "mosaic_loader.h"
-#include "weather_service.h"
 #endif
 
 #define MOSAIC_CLOCK_TICK_MS        1000U
@@ -37,6 +38,17 @@
 #define MOSAIC_BATTERY_APPLY_MS      200U
 #define MOSAIC_WIFI_POLL_TICKS       5U   /* 5 * 200 ms ≈ 1 s RSSI refresh */
 #define MOSAIC_STATUS_WIFI_LEVELS    4U
+
+/* Everything the launcher shell is allowed to reach on the device. Listing
+ * it here keeps the root App under the same permission check as every other
+ * App instead of quietly holding an implicit full grant. */
+#define MOSAIC_HUB_CAPABILITIES ( \
+    MOSAIC_CAP_SYSTEM_DISPLAY_READ | MOSAIC_CAP_SYSTEM_DISPLAY_CONTROL | \
+    MOSAIC_CAP_SYSTEM_AUDIO_READ | MOSAIC_CAP_SYSTEM_AUDIO_CONTROL | \
+    MOSAIC_CAP_SYSTEM_HAPTIC_READ | MOSAIC_CAP_SYSTEM_HAPTIC_CONTROL | \
+    MOSAIC_CAP_SYSTEM_POWER_READ | \
+    MOSAIC_CAP_NET_WIFI_READ | MOSAIC_CAP_NET_WIFI_CONTROL | \
+    MOSAIC_CAP_CONFIG_AGENT_READ | MOSAIC_CAP_NET_WEATHER_READ)
 #define MOSAIC_INSERT_ENTER_MS       260U
 #define MOSAIC_INSERT_BLINK_HALF_MS  110U
 #define MOSAIC_INSERT_EXIT_MS        240U
@@ -88,18 +100,13 @@ static bool s_quick_vibration = true;
 static bool s_agent_configured;
 static mosaic_ui_haptic_cb_t s_haptic_callback;
 static void *s_haptic_user_ctx;
-static mosaic_settings_battery_t s_battery_info;
+static mosaic_cap_power_t s_battery_info;
 static bool s_battery_pending;
-static bool s_battery_subscribed;
-static mosaic_settings_network_t s_wifi_info;
+static mosaic_capability_subscription_handle_t s_battery_subscription;
+static mosaic_cap_wifi_t s_wifi_info;
 static bool s_wifi_pending;
-static bool s_wifi_subscribed;
+static mosaic_capability_subscription_handle_t s_wifi_subscription;
 static uint8_t s_wifi_poll_ticks;
-#if defined(ESP_PLATFORM)
-static weather_service_snapshot_t s_weather_info;
-static bool s_weather_pending;
-static bool s_weather_subscribed;
-#endif
 static void *s_insert_timer;
 static void *s_quick_feedback_timer;
 static char s_insert_side = 'R';
@@ -118,9 +125,6 @@ static portMUX_TYPE s_battery_stage_lock = portMUX_INITIALIZER_UNLOCKED;
 static portMUX_TYPE s_wifi_stage_lock = portMUX_INITIALIZER_UNLOCKED;
 #define MOSAIC_HUB_WIFI_LOCK()   portENTER_CRITICAL(&s_wifi_stage_lock)
 #define MOSAIC_HUB_WIFI_UNLOCK() portEXIT_CRITICAL(&s_wifi_stage_lock)
-static portMUX_TYPE s_weather_stage_lock = portMUX_INITIALIZER_UNLOCKED;
-#define MOSAIC_HUB_WEATHER_LOCK()   portENTER_CRITICAL(&s_weather_stage_lock)
-#define MOSAIC_HUB_WEATHER_UNLOCK() portEXIT_CRITICAL(&s_weather_stage_lock)
 static portMUX_TYPE s_insert_notice_lock = portMUX_INITIALIZER_UNLOCKED;
 #define MOSAIC_HUB_INSERT_LOCK()   portENTER_CRITICAL(&s_insert_notice_lock)
 #define MOSAIC_HUB_INSERT_UNLOCK() portEXIT_CRITICAL(&s_insert_notice_lock)
@@ -352,11 +356,22 @@ static bool mosaic_hub_take_insert_request(
     return pending;
 }
 
+static esp_err_t hub_capability_haptic_pulse(
+    void *user_ctx, uint32_t duration_ms)
+{
+    (void)user_ctx;
+    return mosaic_ui_haptic_feedback(duration_ms);
+}
+
 void mosaic_ui_set_haptic_callback(
     mosaic_ui_haptic_cb_t callback, void *user_ctx)
 {
     s_haptic_callback = callback;
     s_haptic_user_ctx = user_ctx;
+    /* system.haptic pulses go through the same quick-setting gate as the
+     * shell's own feedback, so the two can never disagree. */
+    mosaic_device_capabilities_set_haptic(
+        callback != NULL ? hub_capability_haptic_pulse : NULL, NULL);
 }
 
 esp_err_t mosaic_ui_haptic_feedback(uint32_t duration_ms)
@@ -418,41 +433,57 @@ static void mosaic_hub_quick_render(esp_gsp_handle_t ui)
         s_quick_vibration, UINT32_C(0xFA60));
 }
 
-static bool mosaic_hub_agent_is_configured(
-    const mosaic_settings_snapshot_t *snapshot)
+/* The agent config record is a few hundred bytes of strings the launcher
+ * does not need, so it is collected off the task stack and reduced to the
+ * single flag the status bar shows. */
+static bool mosaic_hub_agent_is_configured(void)
 {
-    if (snapshot == NULL) {
+    mosaic_cap_agent_config_t *config = calloc(1, sizeof(*config));
+    if (config == NULL) {
         return false;
     }
-    const bool llm_configured =
-        mosaic_settings_llm_is_configured(snapshot);
-    const bool im_configured = snapshot->im.wechat_configured ||
-        snapshot->im.qq_configured || snapshot->im.feishu_configured ||
-        snapshot->im.telegram_configured;
-    return llm_configured && im_configured;
+    bool configured = false;
+    if (mosaic_capability_read("config.agent", MOSAIC_HUB_CAPABILITIES,
+            config, sizeof(*config)) == ESP_OK) {
+        configured = config->llm_configured &&
+            (config->im_wechat_configured || config->im_qq_configured ||
+             config->im_feishu_configured || config->im_telegram_configured);
+    }
+    free(config);
+    return configured;
 }
 
-static void mosaic_hub_system_status_apply(
-    esp_gsp_handle_t ui, const mosaic_settings_snapshot_t *snapshot)
+static void mosaic_hub_system_status_refresh(esp_gsp_handle_t ui)
 {
-    if (ui == NULL || snapshot == NULL) {
+    if (ui == NULL) {
         return;
     }
-    s_quick_vibration = snapshot->vibration_enabled;
-    s_agent_configured = mosaic_hub_agent_is_configured(snapshot);
+    mosaic_cap_haptic_t haptic = {0};
+    if (mosaic_capability_read("system.haptic", MOSAIC_HUB_CAPABILITIES,
+            &haptic, sizeof(haptic)) == ESP_OK) {
+        s_quick_vibration = haptic.enabled;
+    }
+    s_agent_configured = mosaic_hub_agent_is_configured();
+
     /* Non-persistent slider updates apply immediately to hardware, while the
-     * settings snapshot intentionally keeps the last persisted value until
+     * device model intentionally keeps the last persisted value until
      * release. Do not let the periodic status refresh pull an active drag
      * back to that stale value. */
-    if (!s_quick_brightness_drag) {
+    mosaic_cap_display_t display = {0};
+    if (!s_quick_brightness_drag &&
+            mosaic_capability_read("system.display", MOSAIC_HUB_CAPABILITIES,
+                &display, sizeof(display)) == ESP_OK) {
         mosaic_hub_quick_level_render(
             ui, GSP_OBJ_KEY_QUICK_BRIGHTNESS_FILL,
-            GSP_OBJ_KEY_QUICK_BRIGHTNESS_INPUT, snapshot->brightness);
+            GSP_OBJ_KEY_QUICK_BRIGHTNESS_INPUT, display.brightness);
     }
-    if (!s_quick_volume_drag) {
+    mosaic_cap_audio_t audio = {0};
+    if (!s_quick_volume_drag &&
+            mosaic_capability_read("system.audio", MOSAIC_HUB_CAPABILITIES,
+                &audio, sizeof(audio)) == ESP_OK) {
         mosaic_hub_quick_level_render(
             ui, GSP_OBJ_KEY_QUICK_VOLUME_FILL,
-            GSP_OBJ_KEY_QUICK_VOLUME_INPUT, snapshot->volume);
+            GSP_OBJ_KEY_QUICK_VOLUME_INPUT, audio.volume);
     }
     (void)esp_gsp_set_visible(
         ui, GSP_BIND_STATUS_AGENT, s_agent_configured);
@@ -465,12 +496,25 @@ static void mosaic_hub_system_status_apply(
         s_quick_vibration, UINT32_C(0xFA60));
 }
 
-static void mosaic_hub_system_status_refresh(esp_gsp_handle_t ui)
+static esp_err_t mosaic_hub_set_brightness(int32_t brightness, bool persist)
 {
-    mosaic_settings_snapshot_t snapshot = {0};
-    if (mosaic_settings_get_snapshot(&snapshot) == ESP_OK) {
-        mosaic_hub_system_status_apply(ui, &snapshot);
-    }
+    const mosaic_cap_display_brightness_args_t args = {
+        .brightness = brightness,
+        .persist = persist,
+    };
+    return mosaic_capability_invoke("system.display",
+        MOSAIC_HUB_CAPABILITIES, "set_brightness", &args, sizeof(args),
+        NULL, 0);
+}
+
+static esp_err_t mosaic_hub_set_volume(int32_t volume, bool persist)
+{
+    const mosaic_cap_audio_volume_args_t args = {
+        .volume = volume,
+        .persist = persist,
+    };
+    return mosaic_capability_invoke("system.audio", MOSAIC_HUB_CAPABILITIES,
+        "set_volume", &args, sizeof(args), NULL, 0);
 }
 
 static bool mosaic_hub_lock_visible(void)
@@ -592,22 +636,24 @@ static void mosaic_hub_status_battery_apply(
     }
 }
 
-static void mosaic_hub_battery_event_cb(
-    const mosaic_settings_battery_t *info, void *user_ctx)
+static void mosaic_hub_battery_event_cb(void *user_ctx, const char *name,
+    const void *payload, size_t payload_size)
 {
     (void)user_ctx;
-    if (info == NULL) {
+    (void)name;
+    if (payload == NULL || payload_size != sizeof(mosaic_cap_power_t)) {
         return;
     }
-    /* Sampler/notify threads must not touch GSP; stage for the apply timer. */
+    /* Publishers run on the sampler thread and must not touch GSP; stage the
+     * sample for the apply timer. */
     MOSAIC_HUB_BATT_LOCK();
-    s_battery_info = *info;
+    s_battery_info = *(const mosaic_cap_power_t *)payload;
     s_battery_pending = true;
     MOSAIC_HUB_BATT_UNLOCK();
 }
 
 static uint8_t mosaic_hub_wifi_rssi_level(
-    bool connected, int8_t rssi)
+    bool connected, int32_t rssi)
 {
     if (!connected) {
         return 0U;
@@ -625,7 +671,7 @@ static uint8_t mosaic_hub_wifi_rssi_level(
 }
 
 static void mosaic_hub_status_wifi_apply(
-    esp_gsp_handle_t ui, const mosaic_settings_network_t *network)
+    esp_gsp_handle_t ui, const mosaic_cap_wifi_t *network)
 {
     static const uint16_t bar_binds[MOSAIC_STATUS_WIFI_LEVELS + 1U] = {
         GSP_BIND_STATUS_WIFI_BAR_0,
@@ -658,7 +704,7 @@ static void mosaic_hub_status_wifi_apply(
 }
 
 static void mosaic_hub_wifi_apply(
-    esp_gsp_handle_t ui, const mosaic_settings_network_t *network)
+    esp_gsp_handle_t ui, const mosaic_cap_wifi_t *network)
 {
     if (ui == NULL || network == NULL) {
         return;
@@ -674,20 +720,21 @@ static void mosaic_hub_wifi_apply(
     }
 }
 
-static void mosaic_hub_wifi_event_cb(
-    const mosaic_settings_network_t *info, void *user_ctx)
+static void mosaic_hub_wifi_event_cb(void *user_ctx, const char *name,
+    const void *payload, size_t payload_size)
 {
     (void)user_ctx;
-    if (info == NULL) {
+    (void)name;
+    if (payload == NULL || payload_size != sizeof(mosaic_cap_wifi_t)) {
         return;
     }
     MOSAIC_HUB_WIFI_LOCK();
-    s_wifi_info = *info;
+    s_wifi_info = *(const mosaic_cap_wifi_t *)payload;
     s_wifi_pending = true;
     MOSAIC_HUB_WIFI_UNLOCK();
 }
 
-static bool mosaic_hub_wifi_take_pending(mosaic_settings_network_t *out)
+static bool mosaic_hub_wifi_take_pending(mosaic_cap_wifi_t *out)
 {
     MOSAIC_HUB_WIFI_LOCK();
     if (!s_wifi_pending) {
@@ -705,16 +752,16 @@ static void mosaic_hub_wifi_refresh(esp_gsp_handle_t ui)
     if (ui == NULL) {
         return;
     }
-    mosaic_settings_network_t network = {0};
+    mosaic_cap_wifi_t network = {0};
     if (mosaic_hub_wifi_take_pending(&network) ||
-            mosaic_settings_get_wifi(&network) == ESP_OK) {
+            mosaic_capability_read("net.wifi", MOSAIC_HUB_CAPABILITIES,
+                &network, sizeof(network)) == ESP_OK) {
         mosaic_hub_wifi_apply(ui, &network);
     }
 }
 
-#if defined(ESP_PLATFORM)
 static void mosaic_hub_weather_apply(
-    esp_gsp_handle_t ui, const weather_service_snapshot_t *weather)
+    esp_gsp_handle_t ui, const mosaic_cap_weather_t *weather)
 {
     if (ui == NULL || weather == NULL) {
         return;
@@ -741,44 +788,19 @@ static void mosaic_hub_weather_apply(
         ui, GSP_BIND_HOME_WEATHER_CITY, city);
 }
 
-static void mosaic_hub_weather_event_cb(
-    const weather_service_snapshot_t *info, void *user_ctx)
-{
-    (void)user_ctx;
-    if (info == NULL) {
-        return;
-    }
-    MOSAIC_HUB_WEATHER_LOCK();
-    s_weather_info = *info;
-    s_weather_pending = true;
-    MOSAIC_HUB_WEATHER_UNLOCK();
-}
-
-static bool mosaic_hub_weather_take_pending(
-    weather_service_snapshot_t *out)
-{
-    MOSAIC_HUB_WEATHER_LOCK();
-    if (!s_weather_pending) {
-        MOSAIC_HUB_WEATHER_UNLOCK();
-        return false;
-    }
-    *out = s_weather_info;
-    s_weather_pending = false;
-    MOSAIC_HUB_WEATHER_UNLOCK();
-    return true;
-}
-
+/* Polling on the clock tick keeps every snapshot handoff on the UI task, so
+ * the Hub needs no staging buffer for the weather worker thread. */
 static void mosaic_hub_weather_refresh(esp_gsp_handle_t ui)
 {
-    weather_service_snapshot_t weather = {0};
-    if (weather_service_get_snapshot(&weather) == ESP_OK) {
+    mosaic_cap_weather_t weather = {0};
+    if (mosaic_capability_read("net.weather", MOSAIC_HUB_CAPABILITIES,
+            &weather, sizeof(weather)) == ESP_OK) {
         mosaic_hub_weather_apply(ui, &weather);
     }
 }
-#endif
 
 static void mosaic_hub_battery_apply(esp_gsp_handle_t ui,
-                                     const mosaic_settings_battery_t *battery)
+                                     const mosaic_cap_power_t *battery)
 {
     if (ui == NULL || battery == NULL) {
         return;
@@ -792,7 +814,7 @@ static void mosaic_hub_battery_apply(esp_gsp_handle_t ui,
         return;
     }
 
-    const uint8_t battery_percent = (uint8_t)battery->state_of_charge;
+    const uint8_t battery_percent = (uint8_t)battery->percent;
 #if defined(ESP_PLATFORM)
     s_charge_percent = battery_percent;
 #endif
@@ -834,7 +856,7 @@ static void mosaic_hub_battery_apply(esp_gsp_handle_t ui,
     }
 }
 
-static bool mosaic_hub_battery_take_pending(mosaic_settings_battery_t *out)
+static bool mosaic_hub_battery_take_pending(mosaic_cap_power_t *out)
 {
     MOSAIC_HUB_BATT_LOCK();
     if (!s_battery_pending) {
@@ -852,9 +874,10 @@ static void mosaic_hub_battery_refresh(esp_gsp_handle_t ui)
     if (ui == NULL) {
         return;
     }
-    mosaic_settings_battery_t battery = {0};
+    mosaic_cap_power_t battery = {0};
     if (mosaic_hub_battery_take_pending(&battery) ||
-            mosaic_settings_get_battery(&battery) == ESP_OK) {
+            mosaic_capability_read("system.power", MOSAIC_HUB_CAPABILITIES,
+                &battery, sizeof(battery)) == ESP_OK) {
         mosaic_hub_battery_apply(ui, &battery);
     }
 }
@@ -865,10 +888,11 @@ static void mosaic_hub_charge_refresh(esp_gsp_handle_t ui)
     s_charge_percent = 0U;
     mosaic_hub_charge_apply(ui, s_charge_percent);
 #else
-    mosaic_settings_battery_t battery = {0};
-    if (mosaic_settings_get_battery(&battery) == ESP_OK &&
+    mosaic_cap_power_t battery = {0};
+    if (mosaic_capability_read("system.power", MOSAIC_HUB_CAPABILITIES,
+                &battery, sizeof(battery)) == ESP_OK &&
             battery.available) {
-        s_charge_percent = (uint8_t)battery.state_of_charge;
+        s_charge_percent = (uint8_t)battery.percent;
         mosaic_hub_charge_apply(ui, s_charge_percent);
         return;
     }
@@ -965,9 +989,10 @@ static void mosaic_hub_set_lock_mode(esp_gsp_handle_t ui,
 
 static void mosaic_hub_enter_lock(esp_gsp_handle_t ui)
 {
-    mosaic_settings_battery_t battery = {0};
+    mosaic_cap_power_t battery = {0};
     const bool charging =
-        mosaic_settings_get_battery(&battery) == ESP_OK &&
+        mosaic_capability_read("system.power", MOSAIC_HUB_CAPABILITIES,
+            &battery, sizeof(battery)) == ESP_OK &&
         battery.available && battery.charging;
     mosaic_hub_set_lock_mode(
         ui, charging ? MOSAIC_LOCK_CHARGING : MOSAIC_LOCK_AOD);
@@ -1013,7 +1038,10 @@ bool mosaic_hub_handle_action(uint16_t action_id)
         const bool next = !s_quick_wlan;
         s_quick_wlan = next;
         mosaic_hub_quick_render(s_hub_ui);
-        if (mosaic_settings_set_wifi_enabled(next) != ESP_OK) {
+        const mosaic_cap_wifi_enable_args_t wifi_args = { .enabled = next };
+        if (mosaic_capability_invoke("net.wifi", MOSAIC_HUB_CAPABILITIES,
+                "set_enabled", &wifi_args, sizeof(wifi_args), NULL, 0) !=
+                ESP_OK) {
             s_quick_wlan = !next;
             mosaic_hub_quick_render(s_hub_ui);
         }
@@ -1044,7 +1072,12 @@ bool mosaic_hub_handle_action(uint16_t action_id)
     }
     if (action_id == GSP_ACT_ID_QUICK_VIBRATION_TOGGLE) {
         const bool next = !s_quick_vibration;
-        const esp_err_t err = mosaic_settings_set_vibration(next);
+        const mosaic_cap_haptic_enable_args_t haptic_args = {
+            .enabled = next,
+        };
+        const esp_err_t err = mosaic_capability_invoke("system.haptic",
+            MOSAIC_HUB_CAPABILITIES, "set_enabled", &haptic_args,
+            sizeof(haptic_args), NULL, 0);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "set vibration %s failed: %s",
                      next ? "on" : "off", esp_err_to_name(err));
@@ -1156,19 +1189,19 @@ static bool mosaic_hub_intercept_pointer(
             mosaic_hub_quick_level_render(
                 ui, GSP_OBJ_KEY_QUICK_BRIGHTNESS_FILL,
                 GSP_OBJ_KEY_QUICK_BRIGHTNESS_INPUT, s_quick_level);
-            (void)mosaic_settings_set_brightness(s_quick_level, false);
+            (void)mosaic_hub_set_brightness(s_quick_level, false);
         } else {
             mosaic_hub_quick_level_render(
                 ui, GSP_OBJ_KEY_QUICK_VOLUME_FILL,
                 GSP_OBJ_KEY_QUICK_VOLUME_INPUT, s_quick_level);
-            (void)mosaic_settings_set_volume(s_quick_level, false);
+            (void)mosaic_hub_set_volume(s_quick_level, false);
         }
     }
     if (!pressed && s_pointer_down) {
         if (s_quick_brightness_drag) {
-            (void)mosaic_settings_set_brightness(s_quick_level, true);
+            (void)mosaic_hub_set_brightness(s_quick_level, true);
         } else if (s_quick_volume_drag) {
-            (void)mosaic_settings_set_volume(s_quick_level, true);
+            (void)mosaic_hub_set_volume(s_quick_level, true);
             mosaic_hub_quick_render(ui);
         }
         s_quick_brightness_drag = false;
@@ -1261,28 +1294,24 @@ static void mosaic_hub_battery_tick(esp_gsp_handle_t ui, void *user_ctx)
     if (mosaic_hub_take_quick_slot_camera(&slot_camera_occupied)) {
         mosaic_hub_apply_quick_slot_camera(ui, slot_camera_occupied);
     }
-    mosaic_settings_battery_t battery = {0};
+    mosaic_cap_power_t battery = {0};
     if (mosaic_hub_battery_take_pending(&battery)) {
         mosaic_hub_battery_apply(ui, &battery);
     }
-    mosaic_settings_network_t network = {0};
+    mosaic_cap_wifi_t network = {0};
     if (mosaic_hub_wifi_take_pending(&network)) {
         s_wifi_poll_ticks = 0;
         mosaic_hub_wifi_apply(ui, &network);
     } else if (++s_wifi_poll_ticks >= MOSAIC_WIFI_POLL_TICKS) {
         /* RSSI moves without Wi-Fi state events; refresh on a slow cadence. */
         s_wifi_poll_ticks = 0;
-        if (mosaic_settings_get_wifi(&network) == ESP_OK) {
+        if (mosaic_capability_read("net.wifi", MOSAIC_HUB_CAPABILITIES,
+                &network, sizeof(network)) == ESP_OK) {
             mosaic_hub_wifi_apply(ui, &network);
         }
         mosaic_hub_system_status_refresh(ui);
     }
-#if defined(ESP_PLATFORM)
-    weather_service_snapshot_t weather = {0};
-    if (mosaic_hub_weather_take_pending(&weather)) {
-        mosaic_hub_weather_apply(ui, &weather);
-    }
-#endif
+    mosaic_hub_weather_refresh(ui);
 }
 
 static void mosaic_hub_aod_hint_tick(esp_gsp_handle_t ui, void *user_ctx)
@@ -1383,17 +1412,28 @@ static void mosaic_hub_sync_app_slots(esp_gsp_handle_t ui)
 {
     static const struct {
         uint16_t action;
-        uint16_t bind;
-    } registry_slots[] = {
-        { GSP_ACT_ID_APP_IMU, GSP_BIND_APP_SLOT_IMU_VISIBLE },
+        uint16_t visible_bind;
+        uint16_t title_bind;
+    } slots[] = {
+        { GSP_ACT_ID_APP_IMU, GSP_BIND_APP_SLOT_IMU_VISIBLE, UINT16_MAX },
+        { GSP_ACT_ID_APP_DYNAMIC_1, GSP_BIND_APP_SLOT_BREAKOUT_VISIBLE,
+          UINT16_MAX },
+        { GSP_ACT_ID_APP_DYNAMIC_2, GSP_BIND_APP_SLOT_DYNAMIC_2_VISIBLE,
+          GSP_BIND_APP_SLOT_DYNAMIC_2_TITLE },
+        { GSP_ACT_ID_APP_DYNAMIC_3, GSP_BIND_APP_SLOT_DYNAMIC_3_VISIBLE,
+          GSP_BIND_APP_SLOT_DYNAMIC_3_TITLE },
+        { GSP_ACT_ID_APP_DYNAMIC_4, GSP_BIND_APP_SLOT_DYNAMIC_4_VISIBLE,
+          GSP_BIND_APP_SLOT_DYNAMIC_4_TITLE },
+        { GSP_ACT_ID_APP_DYNAMIC_5, GSP_BIND_APP_SLOT_DYNAMIC_5_VISIBLE,
+          GSP_BIND_APP_SLOT_DYNAMIC_5_TITLE },
     };
-    for (size_t index = 0;
-         index < sizeof(registry_slots) / sizeof(registry_slots[0]);
-         ++index) {
-        const bool available = mosaic_app_descriptor_for_action(
-            registry_slots[index].action) != NULL;
-        (void)esp_gsp_set_visible(
-            ui, registry_slots[index].bind, available);
+    for (size_t index = 0; index < sizeof(slots) / sizeof(slots[0]); ++index) {
+        const mosaic_app_descriptor_t *app =
+            mosaic_app_descriptor_for_action(slots[index].action);
+        (void)esp_gsp_set_visible(ui, slots[index].visible_bind, app != NULL);
+        if (app != NULL && slots[index].title_bind != UINT16_MAX) {
+            (void)esp_gsp_set_text(ui, slots[index].title_bind, app->title);
+        }
     }
 }
 
@@ -1412,7 +1452,6 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
     s_battery_pending = false;
     s_wifi_pending = false;
 #if defined(ESP_PLATFORM)
-    s_weather_pending = false;
     (void)esp_gsp_set_visible(ui, GSP_BIND_AOD_MODE_SWITCH_VISIBLE, false);
     (void)esp_gsp_set_visible(ui, GSP_BIND_CHARGE_MODE_SWITCH_VISIBLE, false);
 #else
@@ -1420,32 +1459,20 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
     (void)esp_gsp_set_visible(ui, GSP_BIND_CHARGE_MODE_SWITCH_VISIBLE, true);
 #endif
     mosaic_hub_clock_apply(ui);
-    if (!s_battery_subscribed) {
-        if (mosaic_settings_subscribe_battery(
-                mosaic_hub_battery_event_cb, NULL) == ESP_OK) {
-            s_battery_subscribed = true;
-        }
+    if (s_battery_subscription == NULL) {
+        (void)mosaic_capability_subscribe("system.power",
+            MOSAIC_HUB_CAPABILITIES, mosaic_hub_battery_event_cb, NULL,
+            &s_battery_subscription);
     }
-    if (!s_wifi_subscribed) {
-        if (mosaic_settings_subscribe_wifi(
-                mosaic_hub_wifi_event_cb, NULL) == ESP_OK) {
-            s_wifi_subscribed = true;
-        }
+    if (s_wifi_subscription == NULL) {
+        (void)mosaic_capability_subscribe("net.wifi",
+            MOSAIC_HUB_CAPABILITIES, mosaic_hub_wifi_event_cb, NULL,
+            &s_wifi_subscription);
     }
-#if defined(ESP_PLATFORM)
-    if (!s_weather_subscribed) {
-        if (weather_service_subscribe(
-                mosaic_hub_weather_event_cb, NULL) == ESP_OK) {
-            s_weather_subscribed = true;
-        }
-    }
-#endif
     mosaic_hub_battery_refresh(ui);
     mosaic_hub_wifi_refresh(ui);
     mosaic_hub_system_status_refresh(ui);
-#if defined(ESP_PLATFORM)
     mosaic_hub_weather_refresh(ui);
-#endif
     mosaic_hub_notif_bind(ui);
     mosaic_hub_sync_app_slots(ui);
     mosaic_hub_quick_render(ui);
@@ -1461,27 +1488,45 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
 static void mosaic_hub_stopping(esp_gsp_handle_t ui)
 {
     mosaic_hub_stop_timers(ui);
-    if (s_battery_subscribed) {
-        (void)mosaic_settings_unsubscribe_battery(
-            mosaic_hub_battery_event_cb, NULL);
-        s_battery_subscribed = false;
+    if (s_battery_subscription != NULL &&
+            mosaic_capability_unsubscribe(s_battery_subscription) == ESP_OK) {
+        s_battery_subscription = NULL;
     }
-    if (s_wifi_subscribed) {
-        (void)mosaic_settings_unsubscribe_wifi(
-            mosaic_hub_wifi_event_cb, NULL);
-        s_wifi_subscribed = false;
+    if (s_wifi_subscription != NULL &&
+            mosaic_capability_unsubscribe(s_wifi_subscription) == ESP_OK) {
+        s_wifi_subscription = NULL;
     }
-#if defined(ESP_PLATFORM)
-    if (s_weather_subscribed) {
-        (void)weather_service_unsubscribe(
-            mosaic_hub_weather_event_cb, NULL);
-        s_weather_subscribed = false;
-    }
-#endif
     (void)esp_gsp_set_pointer_observer(ui, NULL, NULL);
     if (s_hub_ui == ui) {
         s_hub_ui = NULL;
     }
+}
+
+/* Back inside the root App walks the launcher's own navigation, which the
+ * loader has no view of: first the modal stack, then the page flow, and
+ * finally the Lock Screen as the resting surface. */
+static bool mosaic_hub_root_back(esp_gsp_handle_t ui)
+{
+    uint16_t page = 0;
+    if (esp_gsp_stack_view_get_top(ui, GSP_OBJ_KEY_HUB_STACK, &page) ==
+            ESP_GSP_OK && page != 0) {
+        (void)esp_gsp_stack_view_pop(ui, GSP_OBJ_KEY_HUB_STACK, true);
+        return true;
+    }
+    if (esp_gsp_page_flow_get_page(ui, GSP_OBJ_KEY_LAUNCHER_FLOW, &page) ==
+            ESP_GSP_OK && page != 0) {
+        (void)esp_gsp_page_flow_set_page(
+            ui, GSP_OBJ_KEY_LAUNCHER_FLOW, 0, true);
+        return true;
+    }
+    mosaic_hub_show_lock_screen(false);
+    return true;
+}
+
+static void mosaic_hub_idle_lock(esp_gsp_handle_t ui)
+{
+    (void)ui;
+    mosaic_hub_lock_screen();
 }
 
 const mosaic_app_descriptor_t mosaic_hub_app = {
@@ -1492,4 +1537,6 @@ const mosaic_app_descriptor_t mosaic_hub_app = {
     .disable_swipe = false,
     .on_started = mosaic_hub_started,
     .on_stopping = mosaic_hub_stopping,
+    .on_root_back = mosaic_hub_root_back,
+    .on_idle_lock = mosaic_hub_idle_lock,
 };

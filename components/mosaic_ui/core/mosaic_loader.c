@@ -14,8 +14,6 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mosaic_esp_platform.h"
-#include "mosaic_hub_app.h"
-#include "mosaic_hub_objects.h"
 #include "mosaic_runtime.h"
 #include "mosaic_ui.h"
 
@@ -186,20 +184,8 @@ static void process_command(const mosaic_loader_command_t* command)
             return;
         }
         if (active == mosaic_app_root()) {
-            if (esp_gsp_stack_view_get_top(
-                    ui, GSP_OBJ_KEY_HUB_STACK, &page) == ESP_GSP_OK &&
-                    page != 0) {
-                (void)esp_gsp_stack_view_pop(
-                    ui, GSP_OBJ_KEY_HUB_STACK, true);
-                return;
-            }
-            if (esp_gsp_page_flow_get_page(
-                    ui, GSP_OBJ_KEY_LAUNCHER_FLOW, &page) == ESP_GSP_OK &&
-                    page != 0) {
-                (void)esp_gsp_page_flow_set_page(
-                    ui, GSP_OBJ_KEY_LAUNCHER_FLOW, 0, true);
-            } else {
-                mosaic_hub_show_lock_screen(false);
+            if (active->on_root_back != NULL) {
+                (void)active->on_root_back(ui);
             }
             return;
         }
@@ -296,6 +282,10 @@ esp_err_t mosaic_loader_init(const mosaic_loader_config_t* config)
     if (config == NULL || config->presenter == NULL
         || config->producer_generation == 0 || s_runtime != NULL) {
         return ESP_ERR_INVALID_ARG;
+    }
+    esp_err_t catalog_err = mosaic_app_catalog_load_dynamic();
+    if (catalog_err != ESP_OK) {
+        return catalog_err;
     }
     if (!mosaic_app_catalog_validate()) {
         return ESP_ERR_INVALID_STATE;
@@ -510,14 +500,17 @@ esp_err_t mosaic_loader_lock_and_pause_hub(uint32_t timeout_ms)
         return ESP_ERR_TIMEOUT;
     }
 
-    esp_err_t err = mosaic_runtime_active_app(s_runtime) == mosaic_app_root()
+    const mosaic_app_descriptor_t* root = mosaic_app_root();
+    esp_err_t err = mosaic_runtime_active_app(s_runtime) == root
         ? ESP_OK : ESP_ERR_INVALID_STATE;
     if (err == ESP_OK) {
-        mosaic_hub_lock_screen();
+        esp_gsp_handle_t ui = mosaic_esp_platform_ui(s_platform);
+        if (root->on_idle_lock != NULL) {
+            root->on_idle_lock(ui);
+        }
         /* The panel retains its last GRAM contents while it is off. Fence the
          * asynchronous Lock Screen setters so Display On cannot expose the
          * previous Hub/Home frame. */
-        esp_gsp_handle_t ui = mosaic_esp_platform_ui(s_platform);
         const esp_gsp_err_t flush_err = esp_gsp_flush(ui, timeout_ms);
         err = flush_err == ESP_GSP_OK ? ESP_OK : (esp_err_t)flush_err;
         if (err == ESP_OK) {

@@ -24,6 +24,8 @@
 #include "claw_hw_registry.h"
 #include "mosaic_setup.h"
 #include "mosaic_ui.h"
+#include "mosaic_capability.h"
+#include "mosaic_capabilities_platform.h"
 #include "mosaic_button_platform.h"
 #include "weather_service.h"
 #include "update_check_service.h"
@@ -55,6 +57,7 @@
 #include "app_config.h"
 #include "trial_auth.h"
 #include "cap_system_platform.h"
+#include "mosaic_net_weather.h"
 #include "mosaic_settings_platform.h"
 #if CONFIG_ESP_BOARD_ESP_MOSAICO
 #include "mosaico_board_variant.h"
@@ -882,6 +885,7 @@ void app_main(void)
         .refresh_interval_ms = 60U * 60U * 1000U,
         .stale_after_ms = 6U * 60U * 60U * 1000U,
     }));
+    ESP_ERROR_CHECK(mosaic_net_weather_init());
     ESP_ERROR_CHECK(update_check_service_init(
         &(update_check_service_config_t) {
             .manifest_url = CONFIG_APP_UPDATE_MANIFEST_URL,
@@ -927,6 +931,7 @@ void app_main(void)
             .network_provisioning = s_network_provisioning,
             .save_config = main_save_config,
         }));
+    ESP_ERROR_CHECK(mosaic_capabilities_platform_init());
 #if CONFIG_ESP_BOARD_ESP_MOSAICO
     ESP_ERROR_CHECK(mosaic_imu_platform_init());
 #endif

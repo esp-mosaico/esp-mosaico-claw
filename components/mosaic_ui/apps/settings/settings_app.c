@@ -4,7 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "mosaic_settings.h"
+#include "mosaic_capability.h"
+#include "mosaic_capability_contracts.h"
 #include "qrcodegen.h"
 
 #include <inttypes.h>
@@ -25,8 +26,6 @@
 #include "mosaic_hub_actions.h"
 #if defined(ESP_PLATFORM)
 #include "esp_heap_caps.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/portmacro.h"
 #include "mosaic_loader.h"
 #endif
 #include "mosaic_runtime.h"
@@ -35,6 +34,19 @@
 #include "settings_objects.h"
 #include "settings_root_icon_data.h"
 #include "settings_templates.h"
+
+/* Settings is the one App allowed to write every device domain, so it holds
+ * the full device grant. It still holds no media, storage, or AI capability. */
+#define SETTINGS_CAPABILITIES ( \
+    MOSAIC_CAP_SYSTEM_DISPLAY_READ | MOSAIC_CAP_SYSTEM_DISPLAY_CONTROL | \
+    MOSAIC_CAP_SYSTEM_AUDIO_READ | MOSAIC_CAP_SYSTEM_AUDIO_CONTROL | \
+    MOSAIC_CAP_SYSTEM_HAPTIC_READ | MOSAIC_CAP_SYSTEM_HAPTIC_CONTROL | \
+    MOSAIC_CAP_SYSTEM_POWER_READ | \
+    MOSAIC_CAP_SYSTEM_UPDATE_READ | MOSAIC_CAP_SYSTEM_UPDATE_CONTROL | \
+    MOSAIC_CAP_SYSTEM_LIFECYCLE_READ | MOSAIC_CAP_SYSTEM_LIFECYCLE_CONTROL | \
+    MOSAIC_CAP_NET_WIFI_READ | MOSAIC_CAP_NET_WIFI_CONTROL | \
+    MOSAIC_CAP_NET_PROVISIONING_READ | \
+    MOSAIC_CAP_CONFIG_AGENT_READ)
 
 #define SETTINGS_TOGGLE_OFF_COLOR UINT32_C(0x39E7)
 #define SETTINGS_TOGGLE_ON_COLOR  UINT32_C(0xFA60)
@@ -125,7 +137,7 @@ typedef struct {
     bool enabled;
     bool connected;
     bool auto_join;
-    mosaic_settings_wifi_state_t state;
+    mosaic_cap_wifi_state_t state;
     char current_ssid[33];
     char selected_ssid[33];
     char password[65];
@@ -136,9 +148,22 @@ typedef enum {
     SETTINGS_DISPLAY_TAP_NOTIFICATION,
 } settings_display_tap_t;
 
+/* Cached copy of every device capability Settings renders. Each record is
+ * refreshed from its own provider, so a page only invalidates the domains it
+ * actually shows. */
 typedef struct {
-    mosaic_settings_ops_t ops;
-    mosaic_settings_snapshot_t snapshot;
+    mosaic_cap_display_t display;
+    mosaic_cap_audio_t audio;
+    mosaic_cap_haptic_t haptic;
+    mosaic_cap_power_t power;
+    mosaic_cap_update_t update;
+    mosaic_cap_lifecycle_t lifecycle;
+    mosaic_cap_wifi_t network;
+    mosaic_cap_agent_config_t agent;
+} settings_device_t;
+
+typedef struct {
+    settings_device_t device;
     esp_gsp_handle_t ui;
     int32_t brightness;
     int32_t volume;
@@ -166,10 +191,10 @@ typedef struct {
     uint8_t *qr_temp;
     uint8_t *qr_code;
     settings_qr_frame_t qr_frames[SETTINGS_INTEGRATION_QR_FRAMES];
-    char rendered_channel_qr[MOSAIC_SETTINGS_LLM_URL_LEN];
-    char rendered_llm_qr[MOSAIC_SETTINGS_LLM_URL_LEN];
-    char rendered_phone_qr[MOSAIC_SETTINGS_PHONE_QR_LEN];
-    char provisioning_ap_ssid[MOSAIC_SETTINGS_SSID_LEN];
+    char rendered_channel_qr[MOSAIC_CAP_LLM_URL_LEN];
+    char rendered_llm_qr[MOSAIC_CAP_LLM_URL_LEN];
+    char rendered_phone_qr[MOSAIC_CAP_PHONE_QR_LEN];
+    char provisioning_ap_ssid[MOSAIC_CAP_SSID_LEN];
     atomic_bool display_render_pending;
     void *display_render_timer;
     bool wlan_page_active;
@@ -203,8 +228,8 @@ typedef struct {
     settings_wlan_state_t wlan;
 } settings_ui_state_t;
 
-static mosaic_settings_wifi_ap_t
-    s_wlan_networks[MOSAIC_SETTINGS_WIFI_SCAN_MAX];
+static mosaic_cap_wifi_ap_t
+    s_wlan_networks[MOSAIC_CAP_WIFI_SCAN_MAX];
 static size_t s_wlan_network_count;
 
 static esp_gsp_list_t s_wlan_list = ESP_GSP_LIST_NONE;
@@ -220,8 +245,8 @@ typedef struct {
 static settings_update_note_line_t
     s_update_note_lines[SETTINGS_UPDATE_NOTE_MAX_ROWS];
 static size_t s_update_note_count;
-static char s_rendered_update_title[MOSAIC_SETTINGS_UPDATE_TITLE_LEN];
-static char s_rendered_update_summary[MOSAIC_SETTINGS_UPDATE_SUMMARY_LEN];
+static char s_rendered_update_title[MOSAIC_CAP_UPDATE_TITLE_LEN];
+static char s_rendered_update_summary[MOSAIC_CAP_UPDATE_SUMMARY_LEN];
 
 typedef enum {
     SETTINGS_DETAIL_ABOUT,
@@ -235,7 +260,7 @@ static void settings_wlan_request_scan(void);
 static void settings_wlan_phone_refresh(esp_gsp_handle_t ui);
 static void settings_wlan_complete_phone_setup(esp_gsp_handle_t ui);
 static void settings_wlan_apply_phone_status(
-    esp_gsp_handle_t ui, const mosaic_settings_network_t *network);
+    esp_gsp_handle_t ui, const mosaic_cap_wifi_t *network);
 static settings_ui_state_t s_state = {
     .brightness = SETTINGS_DEFAULT_BRIGHTNESS,
     .volume = SETTINGS_DEFAULT_VOLUME,
@@ -247,38 +272,6 @@ static settings_ui_state_t s_state = {
     },
 };
 
-typedef struct {
-    mosaic_battery_event_cb_t callback;
-    void *user_ctx;
-} mosaic_battery_subscriber_t;
-
-typedef struct {
-    mosaic_wifi_event_cb_t callback;
-    void *user_ctx;
-} mosaic_wifi_subscriber_t;
-
-#if defined(ESP_PLATFORM)
-static portMUX_TYPE s_battery_lock = portMUX_INITIALIZER_UNLOCKED;
-#define MOSAIC_BATTERY_LOCK()   portENTER_CRITICAL(&s_battery_lock)
-#define MOSAIC_BATTERY_UNLOCK() portEXIT_CRITICAL(&s_battery_lock)
-static portMUX_TYPE s_wifi_lock = portMUX_INITIALIZER_UNLOCKED;
-#define MOSAIC_WIFI_LOCK()   portENTER_CRITICAL(&s_wifi_lock)
-#define MOSAIC_WIFI_UNLOCK() portEXIT_CRITICAL(&s_wifi_lock)
-#else
-#define MOSAIC_BATTERY_LOCK()   ((void)0)
-#define MOSAIC_BATTERY_UNLOCK() ((void)0)
-#define MOSAIC_WIFI_LOCK()   ((void)0)
-#define MOSAIC_WIFI_UNLOCK() ((void)0)
-#endif
-static mosaic_settings_battery_t s_battery_cache;
-static bool s_battery_cache_valid;
-static mosaic_battery_subscriber_t
-    s_battery_subscribers[MOSAIC_SETTINGS_BATTERY_SUBSCRIBER_MAX];
-static mosaic_settings_network_t s_wifi_cache;
-static bool s_wifi_cache_valid;
-static mosaic_wifi_subscriber_t
-    s_wifi_subscribers[MOSAIC_SETTINGS_WIFI_SUBSCRIBER_MAX];
-
 static void keep_first_error(esp_err_t *result, esp_err_t candidate)
 {
     if (*result == ESP_OK && candidate != ESP_OK) {
@@ -286,429 +279,100 @@ static void keep_first_error(esp_err_t *result, esp_err_t candidate)
     }
 }
 
-esp_err_t mosaic_settings_configure(const mosaic_settings_ops_t *ops)
+/* Boards without a Wi-Fi radio leave net.wifi unregistered, which is what
+ * puts the WLAN pages into their mock/demo presentation. */
+static bool settings_wifi_backend_available(void)
 {
-    if (ops == NULL || ops->get_snapshot == NULL ||
-            ops->set_rotation == NULL || ops->set_brightness == NULL ||
-            ops->set_volume == NULL ||
-            ops->request_network_reconfigure == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    s_state.ops = *ops;
-    return ESP_OK;
+    return mosaic_capability_available("net.wifi") &&
+        mosaic_capability_available("net.wifi.scan");
 }
 
-esp_err_t mosaic_settings_set_brightness(int brightness, bool persist)
+static esp_err_t settings_wifi_status(mosaic_cap_wifi_t *out)
 {
-    if (brightness < 0 || brightness > 100) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_state.ops.set_brightness == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.set_brightness(
-        s_state.ops.user_ctx, brightness, persist);
+    return mosaic_capability_read("net.wifi", SETTINGS_CAPABILITIES,
+        out, sizeof(*out));
 }
 
-esp_err_t mosaic_settings_set_volume(int volume, bool persist)
+static esp_err_t settings_wifi_set_enabled(bool enabled)
 {
-    if (volume < 0 || volume > 100) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_state.ops.set_volume == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.set_volume(s_state.ops.user_ctx, volume, persist);
+    const mosaic_cap_wifi_enable_args_t args = { .enabled = enabled };
+    return mosaic_capability_invoke("net.wifi", SETTINGS_CAPABILITIES,
+        "set_enabled", &args, sizeof(args), NULL, 0);
 }
 
-esp_err_t mosaic_settings_set_vibration(bool enabled)
+static esp_err_t settings_wifi_connect(const char *ssid, const char *password)
 {
-    if (s_state.ops.set_vibration == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
+    mosaic_cap_wifi_connect_args_t args = {0};
+    strlcpy(args.ssid, ssid, sizeof(args.ssid));
+    if (password != NULL) {
+        strlcpy(args.password, password, sizeof(args.password));
     }
-    return s_state.ops.set_vibration(s_state.ops.user_ctx, enabled);
+    return mosaic_capability_invoke("net.wifi", SETTINGS_CAPABILITIES,
+        "connect", &args, sizeof(args), NULL, 0);
 }
 
-esp_err_t mosaic_settings_set_screen_timeout(uint32_t timeout_ms)
+static esp_err_t settings_wifi_forget(void)
 {
-    if (s_state.ops.set_screen_timeout == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.set_screen_timeout(s_state.ops.user_ctx, timeout_ms);
+    return mosaic_capability_invoke("net.wifi", SETTINGS_CAPABILITIES,
+        "forget", NULL, 0, NULL, 0);
 }
 
-esp_err_t mosaic_settings_factory_reset(void)
+static esp_err_t settings_wifi_request_scan(void)
 {
-    if (s_state.ops.factory_reset == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.factory_reset(s_state.ops.user_ctx);
+    return mosaic_capability_invoke("net.wifi.scan", SETTINGS_CAPABILITIES,
+        "start", NULL, 0, NULL, 0);
 }
 
-esp_err_t mosaic_settings_request_update_check(void)
+/* Scan results are ~900 bytes, so they are staged on the heap and copied out
+ * into the caller's fixed-size list. */
+static esp_err_t settings_wifi_scan_results(
+    mosaic_cap_wifi_ap_t *entries, size_t *out_count)
 {
-    if (s_state.ops.request_update_check == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.request_update_check(s_state.ops.user_ctx);
-}
-
-esp_err_t mosaic_settings_get_snapshot(
-    mosaic_settings_snapshot_t *ret_snapshot)
-{
-    if (ret_snapshot == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    memset(ret_snapshot, 0, sizeof(*ret_snapshot));
-    if (s_state.ops.get_snapshot == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.get_snapshot(s_state.ops.user_ctx, ret_snapshot);
-}
-
-esp_err_t mosaic_settings_set_wifi_enabled(bool enabled)
-{
-    if (s_state.ops.set_wifi_enabled == NULL) {
-        return ESP_OK;
-    }
-    return s_state.ops.set_wifi_enabled(s_state.ops.user_ctx, enabled);
-}
-
-bool mosaic_settings_wifi_backend_available(void)
-{
-    return s_state.ops.get_wifi_status != NULL &&
-        s_state.ops.scan_wifi != NULL &&
-        s_state.ops.connect_wifi != NULL;
-}
-
-esp_err_t mosaic_settings_request_wifi_scan(void)
-{
-    if (s_state.ops.request_wifi_scan == NULL) {
-        /* Synchronous/fake providers expose their results through scan_wifi
-         * directly and need no separate request operation. */
-        return s_state.ops.scan_wifi != NULL ? ESP_OK : ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.request_wifi_scan(s_state.ops.user_ctx);
-}
-
-esp_err_t mosaic_settings_scan_wifi(mosaic_settings_wifi_ap_t *records,
-                                    size_t capacity, size_t *out_count)
-{
-    if (records == NULL || capacity == 0 || out_count == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_state.ops.scan_wifi == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.scan_wifi(
-        s_state.ops.user_ctx, records, capacity, out_count);
-}
-
-esp_err_t mosaic_settings_connect_wifi(
-    const char *ssid, const char *password)
-{
-    if (ssid == NULL || ssid[0] == '\0' || password == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_state.ops.connect_wifi == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.connect_wifi(s_state.ops.user_ctx, ssid, password);
-}
-
-esp_err_t mosaic_settings_forget_wifi(void)
-{
-    if (s_state.ops.forget_wifi == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.forget_wifi(s_state.ops.user_ctx);
-}
-
-esp_err_t mosaic_settings_get_phone_setup(
-    char *ap_ssid, size_t ap_ssid_size,
-    char *qr_payload, size_t qr_payload_size)
-{
-    if (ap_ssid == NULL || ap_ssid_size == 0U ||
-            qr_payload == NULL || qr_payload_size == 0U) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (s_state.ops.get_phone_setup == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    return s_state.ops.get_phone_setup(
-        s_state.ops.user_ctx, ap_ssid, ap_ssid_size,
-        qr_payload, qr_payload_size);
-}
-
-esp_err_t mosaic_settings_get_battery(mosaic_settings_battery_t *ret_battery)
-{
-    if (ret_battery == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    memset(ret_battery, 0, sizeof(*ret_battery));
-
-    MOSAIC_BATTERY_LOCK();
-    const bool cached = s_battery_cache_valid;
-    mosaic_settings_battery_t local = s_battery_cache;
-    MOSAIC_BATTERY_UNLOCK();
-    if (cached) {
-        *ret_battery = local;
-        return ESP_OK;
-    }
-
-    if (s_state.ops.get_battery != NULL) {
-        esp_err_t err =
-            s_state.ops.get_battery(s_state.ops.user_ctx, ret_battery);
-        if (err == ESP_OK) {
-            mosaic_settings_notify_battery(ret_battery);
-        }
-        return err;
-    }
-    if (s_state.ops.get_snapshot == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    mosaic_settings_snapshot_t *snapshot = calloc(1, sizeof(*snapshot));
-    if (snapshot == NULL) {
+    mosaic_cap_wifi_scan_t *scan = calloc(1, sizeof(*scan));
+    if (scan == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t err = s_state.ops.get_snapshot(s_state.ops.user_ctx, snapshot);
+    const esp_err_t err = mosaic_capability_read("net.wifi.scan",
+        SETTINGS_CAPABILITIES, scan, sizeof(*scan));
     if (err == ESP_OK) {
-        *ret_battery = snapshot->battery;
-        mosaic_settings_notify_battery(ret_battery);
+        size_t count = scan->count;
+        if (count > MOSAIC_CAP_WIFI_SCAN_MAX) {
+            count = MOSAIC_CAP_WIFI_SCAN_MAX;
+        }
+        if (count > 0) {
+            memcpy(entries, scan->entries, count * sizeof(scan->entries[0]));
+        }
+        *out_count = count;
     }
-    free(snapshot);
+    free(scan);
     return err;
 }
 
-void mosaic_settings_notify_battery(const mosaic_settings_battery_t *info)
+static esp_err_t settings_set_brightness(int32_t brightness, bool persist)
 {
-    if (info == NULL) {
-        return;
-    }
-    mosaic_settings_battery_t published = *info;
-    mosaic_battery_subscriber_t listeners[MOSAIC_SETTINGS_BATTERY_SUBSCRIBER_MAX];
-    size_t listener_count = 0;
-
-    MOSAIC_BATTERY_LOCK();
-    if (!s_battery_cache_valid) {
-        published.sequence = 1U;
-    } else if (published.sequence == 0U ||
-               published.sequence <= s_battery_cache.sequence) {
-        published.sequence = s_battery_cache.sequence + 1U;
-    }
-    s_battery_cache = published;
-    s_battery_cache_valid = true;
-    for (size_t i = 0; i < MOSAIC_SETTINGS_BATTERY_SUBSCRIBER_MAX; ++i) {
-        if (s_battery_subscribers[i].callback != NULL) {
-            listeners[listener_count++] = s_battery_subscribers[i];
-        }
-    }
-    MOSAIC_BATTERY_UNLOCK();
-
-    for (size_t i = 0; i < listener_count; ++i) {
-        listeners[i].callback(&published, listeners[i].user_ctx);
-    }
+    const mosaic_cap_display_brightness_args_t args = {
+        .brightness = brightness,
+        .persist = persist,
+    };
+    return mosaic_capability_invoke("system.display", SETTINGS_CAPABILITIES,
+        "set_brightness", &args, sizeof(args), NULL, 0);
 }
 
-esp_err_t mosaic_settings_subscribe_battery(mosaic_battery_event_cb_t cb,
-                                            void *user_ctx)
+static esp_err_t settings_set_volume(int32_t volume, bool persist)
 {
-    if (cb == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    bool delivered = false;
-    mosaic_settings_battery_t snapshot = {0};
-
-    MOSAIC_BATTERY_LOCK();
-    for (size_t i = 0; i < MOSAIC_SETTINGS_BATTERY_SUBSCRIBER_MAX; ++i) {
-        if (s_battery_subscribers[i].callback == cb &&
-                s_battery_subscribers[i].user_ctx == user_ctx) {
-            if (s_battery_cache_valid) {
-                snapshot = s_battery_cache;
-                delivered = true;
-            }
-            MOSAIC_BATTERY_UNLOCK();
-            if (delivered) {
-                cb(&snapshot, user_ctx);
-            }
-            return ESP_OK;
-        }
-    }
-    for (size_t i = 0; i < MOSAIC_SETTINGS_BATTERY_SUBSCRIBER_MAX; ++i) {
-        if (s_battery_subscribers[i].callback == NULL) {
-            s_battery_subscribers[i].callback = cb;
-            s_battery_subscribers[i].user_ctx = user_ctx;
-            if (s_battery_cache_valid) {
-                snapshot = s_battery_cache;
-                delivered = true;
-            }
-            MOSAIC_BATTERY_UNLOCK();
-            if (delivered) {
-                cb(&snapshot, user_ctx);
-            }
-            return ESP_OK;
-        }
-    }
-    MOSAIC_BATTERY_UNLOCK();
-    return ESP_ERR_NO_MEM;
+    const mosaic_cap_audio_volume_args_t args = {
+        .volume = volume,
+        .persist = persist,
+    };
+    return mosaic_capability_invoke("system.audio", SETTINGS_CAPABILITIES,
+        "set_volume", &args, sizeof(args), NULL, 0);
 }
 
-esp_err_t mosaic_settings_unsubscribe_battery(mosaic_battery_event_cb_t cb,
-                                              void *user_ctx)
-{
-    if (cb == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    MOSAIC_BATTERY_LOCK();
-    for (size_t i = 0; i < MOSAIC_SETTINGS_BATTERY_SUBSCRIBER_MAX; ++i) {
-        if (s_battery_subscribers[i].callback == cb &&
-                s_battery_subscribers[i].user_ctx == user_ctx) {
-            s_battery_subscribers[i].callback = NULL;
-            s_battery_subscribers[i].user_ctx = NULL;
-            MOSAIC_BATTERY_UNLOCK();
-            return ESP_OK;
-        }
-    }
-    MOSAIC_BATTERY_UNLOCK();
-    return ESP_ERR_NOT_FOUND;
-}
-
-esp_err_t mosaic_settings_get_wifi(mosaic_settings_network_t *ret_network)
-{
-    if (ret_network == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    memset(ret_network, 0, sizeof(*ret_network));
-
-    /* Prefer the live provider so Hub can refresh RSSI without waiting for
-     * a Wi-Fi state event. Cache is updated quietly (no subscriber fan-out). */
-    if (s_state.ops.get_wifi_status != NULL) {
-        esp_err_t err =
-            s_state.ops.get_wifi_status(s_state.ops.user_ctx, ret_network);
-        if (err == ESP_OK) {
-            MOSAIC_WIFI_LOCK();
-            s_wifi_cache = *ret_network;
-            s_wifi_cache_valid = true;
-            MOSAIC_WIFI_UNLOCK();
-        }
-        return err;
-    }
-
-    MOSAIC_WIFI_LOCK();
-    const bool cached = s_wifi_cache_valid;
-    mosaic_settings_network_t local = s_wifi_cache;
-    MOSAIC_WIFI_UNLOCK();
-    if (cached) {
-        *ret_network = local;
-        return ESP_OK;
-    }
-    if (s_state.ops.get_snapshot == NULL) {
-        return ESP_ERR_NOT_SUPPORTED;
-    }
-    mosaic_settings_snapshot_t *snapshot = calloc(1, sizeof(*snapshot));
-    if (snapshot == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    esp_err_t err = s_state.ops.get_snapshot(s_state.ops.user_ctx, snapshot);
-    if (err == ESP_OK) {
-        *ret_network = snapshot->network;
-        mosaic_settings_notify_wifi(ret_network);
-    }
-    free(snapshot);
-    return err;
-}
-
-void mosaic_settings_notify_wifi(const mosaic_settings_network_t *info)
-{
-    if (info == NULL) {
-        return;
-    }
-    mosaic_settings_network_t published = *info;
-    mosaic_wifi_subscriber_t listeners[MOSAIC_SETTINGS_WIFI_SUBSCRIBER_MAX];
-    size_t listener_count = 0;
-
-    MOSAIC_WIFI_LOCK();
-    s_wifi_cache = published;
-    s_wifi_cache_valid = true;
-    for (size_t i = 0; i < MOSAIC_SETTINGS_WIFI_SUBSCRIBER_MAX; ++i) {
-        if (s_wifi_subscribers[i].callback != NULL) {
-            listeners[listener_count++] = s_wifi_subscribers[i];
-        }
-    }
-    MOSAIC_WIFI_UNLOCK();
-
-    for (size_t i = 0; i < listener_count; ++i) {
-        listeners[i].callback(&published, listeners[i].user_ctx);
-    }
-}
-
-esp_err_t mosaic_settings_subscribe_wifi(mosaic_wifi_event_cb_t cb,
-                                         void *user_ctx)
-{
-    if (cb == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    bool delivered = false;
-    mosaic_settings_network_t snapshot = {0};
-
-    MOSAIC_WIFI_LOCK();
-    for (size_t i = 0; i < MOSAIC_SETTINGS_WIFI_SUBSCRIBER_MAX; ++i) {
-        if (s_wifi_subscribers[i].callback == cb &&
-                s_wifi_subscribers[i].user_ctx == user_ctx) {
-            if (s_wifi_cache_valid) {
-                snapshot = s_wifi_cache;
-                delivered = true;
-            }
-            MOSAIC_WIFI_UNLOCK();
-            if (delivered) {
-                cb(&snapshot, user_ctx);
-            }
-            return ESP_OK;
-        }
-    }
-    for (size_t i = 0; i < MOSAIC_SETTINGS_WIFI_SUBSCRIBER_MAX; ++i) {
-        if (s_wifi_subscribers[i].callback == NULL) {
-            s_wifi_subscribers[i].callback = cb;
-            s_wifi_subscribers[i].user_ctx = user_ctx;
-            if (s_wifi_cache_valid) {
-                snapshot = s_wifi_cache;
-                delivered = true;
-            }
-            MOSAIC_WIFI_UNLOCK();
-            if (delivered) {
-                cb(&snapshot, user_ctx);
-            }
-            return ESP_OK;
-        }
-    }
-    MOSAIC_WIFI_UNLOCK();
-    return ESP_ERR_NO_MEM;
-}
-
-esp_err_t mosaic_settings_unsubscribe_wifi(mosaic_wifi_event_cb_t cb,
-                                           void *user_ctx)
-{
-    if (cb == NULL) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    MOSAIC_WIFI_LOCK();
-    for (size_t i = 0; i < MOSAIC_SETTINGS_WIFI_SUBSCRIBER_MAX; ++i) {
-        if (s_wifi_subscribers[i].callback == cb &&
-                s_wifi_subscribers[i].user_ctx == user_ctx) {
-            s_wifi_subscribers[i].callback = NULL;
-            s_wifi_subscribers[i].user_ctx = NULL;
-            MOSAIC_WIFI_UNLOCK();
-            return ESP_OK;
-        }
-    }
-    MOSAIC_WIFI_UNLOCK();
-    return ESP_ERR_NOT_FOUND;
-}
 
 static esp_err_t settings_display_render(esp_gsp_handle_t ui)
 {
     char value[8];
-    const uint32_t timeout_ms = s_state.snapshot.screen_timeout_ms;
+    const uint32_t timeout_ms = s_state.device.display.screen_timeout_ms;
     uint32_t timeout_index = 5U;
     if (timeout_ms == 10000U) {
         timeout_index = 0U;
@@ -721,7 +385,7 @@ static esp_err_t settings_display_render(esp_gsp_handle_t ui)
     } else if (timeout_ms == 300000U) {
         timeout_index = 4U;
     }
-    uint32_t rotation_index = s_state.snapshot.rotation / 90U;
+    uint32_t rotation_index = s_state.device.display.rotation_degrees / 90U;
     if (rotation_index > 3U) {
         rotation_index = 0U;
     }
@@ -801,7 +465,9 @@ static void settings_display_render_timer_cb(
             if (elapsed >= SETTINGS_FACTORY_HOLD_US) {
                 s_state.factory_hold_active = false;
                 s_state.factory_hold_completed = true;
-                esp_err_t err = mosaic_settings_factory_reset();
+                esp_err_t err = mosaic_capability_invoke(
+                    "system.lifecycle", SETTINGS_CAPABILITIES,
+                    "factory_reset", NULL, 0, NULL, 0);
                 if (err == ESP_OK) {
                     (void)mosaic_top_notice_show(
                         ui, &s_top_notice, "Erase Started",
@@ -891,8 +557,8 @@ static gsp_err_t settings_detail_bind_item(
     if (s_detail_kind == SETTINGS_DETAIL_ABOUT) {
         switch (item_index) {
         case 1:
-            value = s_state.snapshot.software_version[0] != '\0'
-                ? s_state.snapshot.software_version : "--";
+            value = s_state.device.lifecycle.software_version[0] != '\0'
+                ? s_state.device.lifecycle.software_version : "--";
             break;
         case 2:
             (void)snprintf(value_text, sizeof(value_text), "v%u.%u.%u",
@@ -901,27 +567,27 @@ static gsp_err_t settings_detail_bind_item(
             value = value_text;
             break;
         case 5:
-            switch (s_state.snapshot.update.state) {
-            case MOSAIC_SETTINGS_UPDATE_CHECKING:
+            switch (s_state.device.update.state) {
+            case MOSAIC_CAP_UPDATE_CHECKING:
                 value = "Checking...";
                 break;
-            case MOSAIC_SETTINGS_UPDATE_UP_TO_DATE:
+            case MOSAIC_CAP_UPDATE_UP_TO_DATE:
                 value = "Up to date";
                 break;
-            case MOSAIC_SETTINGS_UPDATE_AVAILABLE:
-                if (s_state.snapshot.update.latest_version[0] != '\0') {
+            case MOSAIC_CAP_UPDATE_AVAILABLE:
+                if (s_state.device.update.latest_version[0] != '\0') {
                     (void)snprintf(value_text, sizeof(value_text), "v%s available",
-                                   s_state.snapshot.update.latest_version);
+                                   s_state.device.update.latest_version);
                     value = value_text;
                 }
                 break;
-            case MOSAIC_SETTINGS_UPDATE_DEVICE_AHEAD:
+            case MOSAIC_CAP_UPDATE_DEVICE_AHEAD:
                 value = "Device is newer";
                 break;
-            case MOSAIC_SETTINGS_UPDATE_FAILED:
+            case MOSAIC_CAP_UPDATE_FAILED:
                 value = "Check failed";
                 break;
-            case MOSAIC_SETTINGS_UPDATE_IDLE:
+            case MOSAIC_CAP_UPDATE_IDLE:
             default:
                 value = "Check now";
                 break;
@@ -931,12 +597,12 @@ static gsp_err_t settings_detail_bind_item(
             break;
         }
     } else if (s_detail_kind == SETTINGS_DETAIL_BATTERY &&
-            s_state.snapshot.battery.available) {
-        const mosaic_settings_battery_t *battery = &s_state.snapshot.battery;
+            s_state.device.power.available) {
+        const mosaic_cap_power_t *battery = &s_state.device.power;
         switch (item_index) {
         case 0:
             snprintf(value_text, sizeof(value_text), "%u%%",
-                     battery->state_of_charge);
+                     battery->percent);
             value = value_text;
             break;
         case 1:
@@ -1028,22 +694,22 @@ static const settings_root_row_t s_root_rows[] = {
 static const char *settings_wlan_summary(void)
 {
     const settings_wlan_state_t *wlan = &s_state.wlan;
-    if (!wlan->enabled || wlan->state == MOSAIC_SETTINGS_WIFI_DISABLED) {
+    if (!wlan->enabled || wlan->state == MOSAIC_CAP_WIFI_DISABLED) {
         return "Off";
     }
-    if (wlan->state == MOSAIC_SETTINGS_WIFI_SCANNING) {
+    if (wlan->state == MOSAIC_CAP_WIFI_SCANNING) {
         return "Scanning";
     }
-    if (wlan->state == MOSAIC_SETTINGS_WIFI_CONNECTING) {
+    if (wlan->state == MOSAIC_CAP_WIFI_CONNECTING) {
         return "Connecting";
     }
-    if (wlan->state == MOSAIC_SETTINGS_WIFI_AUTH_FAILED) {
+    if (wlan->state == MOSAIC_CAP_WIFI_AUTH_FAILED) {
         return "Wrong password";
     }
-    if (wlan->state == MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND) {
+    if (wlan->state == MOSAIC_CAP_WIFI_AP_NOT_FOUND) {
         return "Not found";
     }
-    if (wlan->state == MOSAIC_SETTINGS_WIFI_RETRY_WAIT) {
+    if (wlan->state == MOSAIC_CAP_WIFI_RETRY_WAIT) {
         return "Retrying";
     }
     if (wlan->connected && wlan->current_ssid[0] != '\0') {
@@ -1054,15 +720,15 @@ static const char *settings_wlan_summary(void)
 
 static bool settings_llm_is_bound(void)
 {
-    return mosaic_settings_llm_is_configured(&s_state.snapshot);
+    return s_state.device.agent.llm_configured;
 }
 
 static bool settings_any_im_is_bound(void)
 {
-    return s_state.snapshot.im.wechat_configured ||
-           s_state.snapshot.im.qq_configured ||
-           s_state.snapshot.im.feishu_configured ||
-           s_state.snapshot.im.telegram_configured;
+    return s_state.device.agent.im_wechat_configured ||
+           s_state.device.agent.im_qq_configured ||
+           s_state.device.agent.im_feishu_configured ||
+           s_state.device.agent.im_telegram_configured;
 }
 
 static gsp_err_t settings_root_list_bind_item(
@@ -1094,9 +760,9 @@ static gsp_err_t settings_root_list_bind_item(
                        s_state.volume);
         break;
     case 6:
-        if (s_state.snapshot.battery.available) {
+        if (s_state.device.power.available) {
             (void)snprintf(value, sizeof(value), "%u%%",
-                           s_state.snapshot.battery.state_of_charge);
+                           s_state.device.power.percent);
         } else {
             value_text = "--";
         }
@@ -1180,15 +846,10 @@ static void settings_wlan_refresh_list(esp_gsp_handle_t ui)
 
 static void settings_wlan_scan(esp_gsp_handle_t ui)
 {
-    mosaic_settings_wifi_ap_t
-        networks[MOSAIC_SETTINGS_WIFI_SCAN_MAX] = {0};
+    mosaic_cap_wifi_ap_t
+        networks[MOSAIC_CAP_WIFI_SCAN_MAX] = {0};
     size_t count = 0;
-    if (s_state.ops.scan_wifi == NULL) {
-        return;
-    }
-    esp_err_t scan_err = s_state.ops.scan_wifi(
-                             s_state.ops.user_ctx, networks,
-                             MOSAIC_SETTINGS_WIFI_SCAN_MAX, &count);
+    esp_err_t scan_err = settings_wifi_scan_results(networks, &count);
     if (scan_err != ESP_OK) {
         if (!s_state.wlan_scan_waiting &&
                 s_state.wlan_scan_next_us == 0) {
@@ -1199,13 +860,13 @@ static void settings_wlan_scan(esp_gsp_handle_t ui)
     /* Host providers can publish a synchronous result without scan metadata.
      * Device providers complete through scan_revision below. */
     if (s_state.wlan_scan_waiting &&
-            s_state.snapshot.network.scan_revision == 0U) {
+            s_state.device.network.scan_revision == 0U) {
         s_state.wlan_scan_waiting = false;
         s_state.wlan_scan_next_us = esp_timer_get_time() +
             SETTINGS_WLAN_SCAN_REFRESH_US;
     }
-    if (count > MOSAIC_SETTINGS_WIFI_SCAN_MAX) {
-        count = MOSAIC_SETTINGS_WIFI_SCAN_MAX;
+    if (count > MOSAIC_CAP_WIFI_SCAN_MAX) {
+        count = MOSAIC_CAP_WIFI_SCAN_MAX;
     }
     const bool changed = count != s_wlan_network_count ||
         (count != 0 && memcmp(s_wlan_networks, networks,
@@ -1220,13 +881,13 @@ static void settings_wlan_scan(esp_gsp_handle_t ui)
 
 static void settings_wlan_request_scan(void)
 {
-    if (s_state.ops.request_wifi_scan == NULL || !s_state.wlan.enabled ||
-            s_state.snapshot.network.radio_state !=
-                MOSAIC_SETTINGS_WIFI_RADIO_ON) {
+    if (!settings_wifi_backend_available() || !s_state.wlan.enabled ||
+            s_state.device.network.radio_state !=
+                MOSAIC_CAP_WIFI_RADIO_ON) {
         return;
     }
     const int64_t now = esp_timer_get_time();
-    esp_err_t err = s_state.ops.request_wifi_scan(s_state.ops.user_ctx);
+    esp_err_t err = settings_wifi_request_scan();
     if (err == ESP_OK) {
         s_state.wlan_scan_waiting = true;
         s_state.wlan_scan_next_us = now + SETTINGS_WLAN_SCAN_TIMEOUT_US;
@@ -1242,11 +903,11 @@ static void settings_wlan_update_summary(esp_gsp_handle_t ui)
 {
     const settings_wlan_state_t *wlan = &s_state.wlan;
     settings_root_list_refresh(ui);
-    s_state.snapshot.network.connected =
+    s_state.device.network.connected =
         wlan->enabled && wlan->connected;
     if (wlan->connected && wlan->current_ssid[0] != '\0') {
-        strlcpy(s_state.snapshot.network.ssid, wlan->current_ssid,
-                sizeof(s_state.snapshot.network.ssid));
+        strlcpy(s_state.device.network.ssid, wlan->current_ssid,
+                sizeof(s_state.device.network.ssid));
     }
 }
 
@@ -1409,22 +1070,22 @@ static esp_err_t settings_wlan_render(esp_gsp_handle_t ui)
          * in Joining until a terminal success/failure event arrives. */
         status = "Joining...";
     } else switch (wlan->state) {
-    case MOSAIC_SETTINGS_WIFI_CONNECTING:
+    case MOSAIC_CAP_WIFI_CONNECTING:
         status = "Joining...";
         break;
-    case MOSAIC_SETTINGS_WIFI_CONNECTED:
+    case MOSAIC_CAP_WIFI_CONNECTED:
         status = "Current Network";
         break;
-    case MOSAIC_SETTINGS_WIFI_RETRY_WAIT:
+    case MOSAIC_CAP_WIFI_RETRY_WAIT:
         status = "Waiting to reconnect";
         break;
-    case MOSAIC_SETTINGS_WIFI_AUTH_FAILED:
+    case MOSAIC_CAP_WIFI_AUTH_FAILED:
         status = "Incorrect password";
         break;
-    case MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND:
+    case MOSAIC_CAP_WIFI_AP_NOT_FOUND:
         status = "Network not found";
         break;
-    case MOSAIC_SETTINGS_WIFI_FAILED:
+    case MOSAIC_CAP_WIFI_FAILED:
         status = "Connection failed";
         break;
     default:
@@ -1495,34 +1156,33 @@ static esp_err_t settings_wlan_render(esp_gsp_handle_t ui)
 
 static void settings_wlan_refresh_status(esp_gsp_handle_t ui)
 {
-    if (s_state.ops.get_wifi_status == NULL) {
+    if (!settings_wifi_backend_available()) {
         return;
     }
-    mosaic_settings_network_t network = s_state.snapshot.network;
-    if (s_state.ops.get_wifi_status(
-            s_state.ops.user_ctx, &network) != ESP_OK) {
+    mosaic_cap_wifi_t network = s_state.device.network;
+    if (settings_wifi_status(&network) != ESP_OK) {
         return;
     }
     const bool was_enabled = s_state.wlan.enabled;
-    const mosaic_settings_wifi_radio_state_t previous_radio =
-        s_state.snapshot.network.radio_state;
+    const mosaic_cap_wifi_radio_state_t previous_radio =
+        s_state.device.network.radio_state;
     const bool host_terminal_without_operation =
         network.operation_id == 0U &&
         s_state.wlan_connect_operation_id == 0U &&
-        (network.state == MOSAIC_SETTINGS_WIFI_CONNECTED ||
-         network.state == MOSAIC_SETTINGS_WIFI_AUTH_FAILED ||
-         network.state == MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND ||
-         network.state == MOSAIC_SETTINGS_WIFI_FAILED);
+        (network.state == MOSAIC_CAP_WIFI_CONNECTED ||
+         network.state == MOSAIC_CAP_WIFI_AUTH_FAILED ||
+         network.state == MOSAIC_CAP_WIFI_AP_NOT_FOUND ||
+         network.state == MOSAIC_CAP_WIFI_FAILED);
     const bool stale_connect_snapshot = s_state.wlan_connect_pending &&
         network.operation_id == s_state.wlan_connect_operation_id &&
         !host_terminal_without_operation;
     const bool presentation_changed =
         !stale_connect_snapshot &&
-        (s_state.snapshot.network.desired_enabled != network.desired_enabled ||
-         s_state.snapshot.network.connected != network.connected ||
-         s_state.snapshot.network.state != network.state ||
-         strcmp(s_state.snapshot.network.ssid, network.ssid) != 0);
-    s_state.snapshot.network = network;
+        (s_state.device.network.desired_enabled != network.desired_enabled ||
+         s_state.device.network.connected != network.connected ||
+         s_state.device.network.state != network.state ||
+         strcmp(s_state.device.network.ssid, network.ssid) != 0);
+    s_state.device.network = network;
     s_state.wlan.enabled = network.desired_enabled;
     if (!stale_connect_snapshot) {
         s_state.wlan.connected = network.connected;
@@ -1558,8 +1218,8 @@ static void settings_wlan_refresh_status(esp_gsp_handle_t ui)
         }
     } else if (s_state.wlan_page_active &&
             (!was_enabled ||
-             (previous_radio != MOSAIC_SETTINGS_WIFI_RADIO_ON &&
-              network.radio_state == MOSAIC_SETTINGS_WIFI_RADIO_ON))) {
+             (previous_radio != MOSAIC_CAP_WIFI_RADIO_ON &&
+              network.radio_state == MOSAIC_CAP_WIFI_RADIO_ON))) {
         s_state.wlan_scan_next_us = now;
         settings_wlan_list_attach(ui);
     }
@@ -1581,40 +1241,38 @@ static void settings_wlan_refresh_status(esp_gsp_handle_t ui)
         const char *title = NULL;
         const char *message = NULL;
         switch (network.state) {
-        case MOSAIC_SETTINGS_WIFI_CONNECTED:
+        case MOSAIC_CAP_WIFI_CONNECTED:
             if (network.connected) {
                 s_state.wlan_connect_pending = false;
                 s_state.wlan_connect_operation_id = network.operation_id;
                 s_state.wlan_scan_next_us = now;
             }
             break;
-        case MOSAIC_SETTINGS_WIFI_AUTH_FAILED:
+        case MOSAIC_CAP_WIFI_AUTH_FAILED:
             title = "Incorrect password";
             message = "Check the password and try again";
             s_state.wlan_connect_pending = false;
             s_state.wlan_connect_operation_id = network.operation_id;
-            if (s_state.ops.forget_wifi != NULL) {
-                (void)s_state.ops.forget_wifi(s_state.ops.user_ctx);
-            }
+            (void)settings_wifi_forget();
             s_state.wlan.connected = false;
             s_state.wlan.current_ssid[0] = '\0';
-            s_state.snapshot.network.connected = false;
-            s_state.snapshot.network.configured = false;
-            s_state.snapshot.network.ssid[0] = '\0';
+            s_state.device.network.connected = false;
+            s_state.device.network.configured = false;
+            s_state.device.network.ssid[0] = '\0';
             break;
-        case MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND:
+        case MOSAIC_CAP_WIFI_AP_NOT_FOUND:
             title = "Network unavailable";
             message = "The selected WLAN was not found";
             s_state.wlan_connect_pending = false;
             s_state.wlan_connect_operation_id = network.operation_id;
             break;
-        case MOSAIC_SETTINGS_WIFI_FAILED:
+        case MOSAIC_CAP_WIFI_FAILED:
             title = "Connection failed";
             message = "Check the network and try again";
             s_state.wlan_connect_pending = false;
             s_state.wlan_connect_operation_id = network.operation_id;
             break;
-        case MOSAIC_SETTINGS_WIFI_DISABLED:
+        case MOSAIC_CAP_WIFI_DISABLED:
             s_state.wlan_connect_pending = false;
             s_state.wlan_connect_operation_id = network.operation_id;
             break;
@@ -1674,7 +1332,7 @@ static void settings_wlan_fake_connect(esp_gsp_handle_t ui, const char *ssid)
     strlcpy(s_state.wlan.current_ssid, ssid,
             sizeof(s_state.wlan.current_ssid));
     s_state.wlan.connected = true;
-    s_state.wlan.state = MOSAIC_SETTINGS_WIFI_CONNECTED;
+    s_state.wlan.state = MOSAIC_CAP_WIFI_CONNECTED;
     s_state.wlan.selected_ssid[0] = '\0';
     (void)settings_wlan_render(ui);
     settings_wlan_refresh_list(ui);
@@ -1687,7 +1345,7 @@ static void settings_wlan_connection_started(
     s_state.wlan_connect_deadline_us = esp_timer_get_time() +
         SETTINGS_WLAN_CONNECT_TIMEOUT_US;
     s_state.wlan.connected = false;
-    s_state.wlan.state = MOSAIC_SETTINGS_WIFI_CONNECTING;
+    s_state.wlan.state = MOSAIC_CAP_WIFI_CONNECTING;
     strlcpy(s_state.wlan.current_ssid, ssid,
             sizeof(s_state.wlan.current_ssid));
     (void)settings_wlan_render(ui);
@@ -1819,13 +1477,12 @@ static void settings_wlan_handle_network_select(
     }
     settings_wlan_prepare_password(ssid);
     if (!s_wlan_networks[index].secured) {
-        if (s_state.ops.connect_wifi == NULL) {
+        if (!settings_wifi_backend_available()) {
             settings_wlan_fake_connect(ui, ssid);
         } else {
             s_state.wlan_connect_operation_id =
-                s_state.snapshot.network.operation_id;
-            if (s_state.ops.connect_wifi(
-                    s_state.ops.user_ctx, ssid, "") == ESP_OK) {
+                s_state.device.network.operation_id;
+            if (settings_wifi_connect(ssid, "") == ESP_OK) {
                 settings_wlan_connection_started(ui, ssid);
                 settings_wlan_refresh_status(ui);
             } else {
@@ -1874,12 +1531,12 @@ static bool settings_wlan_handle_connect(esp_gsp_handle_t ui)
     char ssid[sizeof(s_state.wlan.selected_ssid)];
     strlcpy(ssid, s_state.wlan.selected_ssid, sizeof(ssid));
     strlcpy(s_state.wlan.password, password, sizeof(s_state.wlan.password));
-    const bool simulated = s_state.ops.connect_wifi == NULL;
+    const bool simulated = !settings_wifi_backend_available();
     s_state.wlan_connect_pending = !simulated;
     s_state.wlan_connect_operation_id =
-        s_state.snapshot.network.operation_id;
-    if (!simulated && s_state.ops.connect_wifi(
-            s_state.ops.user_ctx, ssid, password) != ESP_OK) {
+        s_state.device.network.operation_id;
+    if (!simulated &&
+            settings_wifi_connect(ssid, password) != ESP_OK) {
         s_state.wlan_connect_pending = false;
         ESP_LOGW(TAG, "connect WLAN %s failed", ssid);
         (void)mosaic_top_notice_show(
@@ -1919,7 +1576,7 @@ static void settings_wlan_complete_phone_setup(esp_gsp_handle_t ui)
 }
 
 static void settings_wlan_apply_phone_status(
-    esp_gsp_handle_t ui, const mosaic_settings_network_t *network)
+    esp_gsp_handle_t ui, const mosaic_cap_wifi_t *network)
 {
     if (!s_state.wlan_phone_active || s_state.wlan_phone_exit_pending ||
             network == NULL ||
@@ -1930,20 +1587,20 @@ static void settings_wlan_apply_phone_status(
     const char *title = NULL;
     const char *message = NULL;
     switch (network->state) {
-    case MOSAIC_SETTINGS_WIFI_CONNECTED:
+    case MOSAIC_CAP_WIFI_CONNECTED:
         if (network->connected) {
             settings_wlan_complete_phone_setup(ui);
         }
         return;
-    case MOSAIC_SETTINGS_WIFI_AUTH_FAILED:
+    case MOSAIC_CAP_WIFI_AUTH_FAILED:
         title = "Incorrect password";
         message = "Update the password on your phone";
         break;
-    case MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND:
+    case MOSAIC_CAP_WIFI_AP_NOT_FOUND:
         title = "Network unavailable";
         message = "Choose another WLAN on your phone";
         break;
-    case MOSAIC_SETTINGS_WIFI_FAILED:
+    case MOSAIC_CAP_WIFI_FAILED:
         title = "Connection failed";
         message = "Check the settings and try again";
         break;
@@ -1990,8 +1647,8 @@ static void settings_wlan_handle_forget(esp_gsp_handle_t ui)
      * asynchronous StackView pop has changed its reported top. Latch the
      * navigation before calling the provider so exactly one pop is queued. */
     s_state.wlan_forget_pending = true;
-    if (s_state.ops.forget_wifi != NULL &&
-            s_state.ops.forget_wifi(s_state.ops.user_ctx) != ESP_OK) {
+    if (settings_wifi_backend_available() &&
+            settings_wifi_forget() != ESP_OK) {
         ESP_LOGW(TAG, "forget WLAN failed");
         s_state.wlan_forget_pending = false;
         return;
@@ -1999,8 +1656,8 @@ static void settings_wlan_handle_forget(esp_gsp_handle_t ui)
     s_state.wlan.connected = false;
     s_state.wlan.current_ssid[0] = '\0';
     s_state.wlan.selected_ssid[0] = '\0';
-    s_state.snapshot.network.connected = false;
-    s_state.snapshot.network.ssid[0] = '\0';
+    s_state.device.network.connected = false;
+    s_state.device.network.ssid[0] = '\0';
     (void)settings_wlan_render(ui);
     if (esp_gsp_stack_view_pop(
             ui, GSP_OBJ_KEY_SETTINGS_STACK, true) != ESP_GSP_OK) {
@@ -2010,24 +1667,24 @@ static void settings_wlan_handle_forget(esp_gsp_handle_t ui)
 
 static esp_err_t settings_render_snapshot(esp_gsp_handle_t ui)
 {
-    const mosaic_settings_snapshot_t *snapshot = &s_state.snapshot;
+    const settings_device_t *device = &s_state.device;
     char text[48];
     esp_err_t result = ESP_OK;
-    s_state.wlan.enabled = snapshot->network.desired_enabled;
+    s_state.wlan.enabled = device->network.desired_enabled;
     const bool stale_connect_snapshot = s_state.wlan_connect_pending &&
-        snapshot->network.operation_id ==
+        device->network.operation_id ==
             s_state.wlan_connect_operation_id;
     if (!stale_connect_snapshot) {
-        s_state.wlan.connected = snapshot->network.connected;
-        s_state.wlan.state = snapshot->network.state;
-        strlcpy(s_state.wlan.current_ssid, snapshot->network.ssid,
+        s_state.wlan.connected = device->network.connected;
+        s_state.wlan.state = device->network.state;
+        strlcpy(s_state.wlan.current_ssid, device->network.ssid,
                 sizeof(s_state.wlan.current_ssid));
     }
     if (!s_state.brightness_drag_active) {
-        s_state.brightness = snapshot->brightness;
+        s_state.brightness = device->display.brightness;
     }
     if (!s_state.volume_drag_active) {
-        s_state.volume = snapshot->volume;
+        s_state.volume = device->audio.volume;
     }
     settings_display_request_render();
 
@@ -2044,23 +1701,55 @@ static esp_err_t settings_render_snapshot(esp_gsp_handle_t ui)
 
 static void settings_refresh_snapshot(esp_gsp_handle_t ui)
 {
-    if (s_state.ops.get_snapshot == NULL) {
+    /* The aggregate is a couple of kilobytes because of the agent config
+     * strings, so it is collected on the heap and published in one step. */
+    settings_device_t *device = calloc(1, sizeof(*device));
+    if (device == NULL) {
+        ESP_LOGE(TAG, "allocate Settings device record failed");
         return;
     }
-    mosaic_settings_snapshot_t *snapshot = calloc(1, sizeof(*snapshot));
-    if (snapshot == NULL) {
-        ESP_LOGE(TAG, "allocate Settings snapshot failed");
-        return;
+    static const struct {
+        const char *name;
+        size_t offset;
+        size_t size;
+        /* An unregistered domain leaves its record zeroed rather than
+         * failing the whole refresh. */
+        bool required;
+    } domains[] = {
+        { "system.display", offsetof(settings_device_t, display),
+          sizeof(mosaic_cap_display_t), true },
+        { "system.audio", offsetof(settings_device_t, audio),
+          sizeof(mosaic_cap_audio_t), true },
+        { "system.haptic", offsetof(settings_device_t, haptic),
+          sizeof(mosaic_cap_haptic_t), true },
+        { "system.power", offsetof(settings_device_t, power),
+          sizeof(mosaic_cap_power_t), false },
+        { "system.update", offsetof(settings_device_t, update),
+          sizeof(mosaic_cap_update_t), false },
+        { "system.lifecycle", offsetof(settings_device_t, lifecycle),
+          sizeof(mosaic_cap_lifecycle_t), true },
+        { "net.wifi", offsetof(settings_device_t, network),
+          sizeof(mosaic_cap_wifi_t), false },
+        { "config.agent", offsetof(settings_device_t, agent),
+          sizeof(mosaic_cap_agent_config_t), true },
+    };
+    esp_err_t err = ESP_OK;
+    for (size_t index = 0;
+            index < sizeof(domains) / sizeof(domains[0]); ++index) {
+        const esp_err_t read_err = mosaic_capability_read(
+            domains[index].name, SETTINGS_CAPABILITIES,
+            (uint8_t *)device + domains[index].offset, domains[index].size);
+        if (read_err != ESP_OK && domains[index].required) {
+            keep_first_error(&err, read_err);
+        }
     }
-    esp_err_t err = s_state.ops.get_snapshot(
-        s_state.ops.user_ctx, snapshot);
     if (err == ESP_OK) {
-        s_state.snapshot = *snapshot;
+        s_state.device = *device;
         err = settings_render_snapshot(ui);
     }
-    free(snapshot);
+    free(device);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "refresh Settings snapshot failed: %s",
+        ESP_LOGW(TAG, "refresh Settings device state failed: %s",
                  esp_err_to_name(err));
     }
 }
@@ -2245,7 +1934,7 @@ static void settings_update_notes_park(esp_gsp_handle_t ui)
 
 static void settings_render_update_page(esp_gsp_handle_t ui)
 {
-    const mosaic_settings_update_t *update = &s_state.snapshot.update;
+    const mosaic_cap_update_t *update = &s_state.device.update;
     const char *icon = "i";
     const char *status = "Ready to Check";
     const char *status_detail = "Compare with the published release";
@@ -2258,7 +1947,7 @@ static void settings_render_update_page(esp_gsp_handle_t ui)
     const char *action = "Check Again";
     bool published_visible = false;
     switch (update->state) {
-    case MOSAIC_SETTINGS_UPDATE_CHECKING:
+    case MOSAIC_CAP_UPDATE_CHECKING:
         icon = "…";
         status = "Checking for Updates";
         status_detail = "Contacting the update server";
@@ -2268,7 +1957,7 @@ static void settings_render_update_page(esp_gsp_handle_t ui)
         summary = "The device is reading the published version and release notes.";
         action = "Checking...";
         break;
-    case MOSAIC_SETTINGS_UPDATE_AVAILABLE:
+    case MOSAIC_CAP_UPDATE_AVAILABLE:
         icon = "^";
         status = "Update Available";
         status_detail = "Visit https://mosaico.espressif.com/";
@@ -2282,12 +1971,12 @@ static void settings_render_update_page(esp_gsp_handle_t ui)
             ? update->summary : "Review the published release information.";
         published_visible = update->published_at[0] != '\0';
         break;
-    case MOSAIC_SETTINGS_UPDATE_UP_TO_DATE:
+    case MOSAIC_CAP_UPDATE_UP_TO_DATE:
         icon = "OK";
         status = "Up to Date";
         status_detail = "This device matches the published release";
         latest = update->latest_version[0] != '\0'
-            ? update->latest_version : s_state.snapshot.software_version;
+            ? update->latest_version : s_state.device.lifecycle.software_version;
         heading = "LATEST RELEASE";
         title = update->title[0] != '\0'
             ? update->title : "Your software is current";
@@ -2295,7 +1984,7 @@ static void settings_render_update_page(esp_gsp_handle_t ui)
             ? update->summary : "No newer published version was found.";
         published_visible = update->published_at[0] != '\0';
         break;
-    case MOSAIC_SETTINGS_UPDATE_DEVICE_AHEAD:
+    case MOSAIC_CAP_UPDATE_DEVICE_AHEAD:
         icon = "^";
         status = "Development Version";
         status_detail = "This device is newer than the published release";
@@ -2307,7 +1996,7 @@ static void settings_render_update_page(esp_gsp_handle_t ui)
             ? update->summary : "This device is ahead of the published release.";
         published_visible = update->published_at[0] != '\0';
         break;
-    case MOSAIC_SETTINGS_UPDATE_FAILED:
+    case MOSAIC_CAP_UPDATE_FAILED:
         icon = "!";
         status = "Check Failed";
         status_detail = "The update manifest could not be loaded";
@@ -2318,7 +2007,7 @@ static void settings_render_update_page(esp_gsp_handle_t ui)
         summary = update->summary[0] != '\0' ? update->summary
             : "Confirm the connection and manifest URL, then try again.";
         break;
-    case MOSAIC_SETTINGS_UPDATE_IDLE:
+    case MOSAIC_CAP_UPDATE_IDLE:
     default:
         break;
     }
@@ -2339,13 +2028,13 @@ static void settings_render_update_page(esp_gsp_handle_t ui)
                            status_detail_2);
     (void)esp_gsp_set_text(
         ui, GSP_BIND_SETTINGS_UPDATE_CURRENT_VERSION,
-        s_state.snapshot.software_version[0] != '\0'
-            ? s_state.snapshot.software_version : "--");
+        s_state.device.lifecycle.software_version[0] != '\0'
+            ? s_state.device.lifecycle.software_version : "--");
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_UPDATE_LATEST_VERSION,
                            latest);
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_UPDATE_HEADING, heading);
     settings_update_notes_render(ui, title, summary);
-    char published_at[MOSAIC_SETTINGS_UPDATE_PUBLISHED_AT_LEN];
+    char published_at[MOSAIC_CAP_UPDATE_PUBLISHED_AT_LEN];
     strlcpy(published_at, update->published_at, sizeof(published_at));
     char *time_separator = strchr(published_at, 'T');
     if (time_separator != NULL) {
@@ -2383,8 +2072,8 @@ static void settings_render_update_error(esp_gsp_handle_t ui,
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_UPDATE_ARROW, ">");
     (void)esp_gsp_set_text(
         ui, GSP_BIND_SETTINGS_UPDATE_CURRENT_VERSION,
-        s_state.snapshot.software_version[0] != '\0'
-            ? s_state.snapshot.software_version : "--");
+        s_state.device.lifecycle.software_version[0] != '\0'
+            ? s_state.device.lifecycle.software_version : "--");
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_UPDATE_STATUS_ICON, "!");
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_UPDATE_STATUS, status);
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_UPDATE_STATUS_DETAIL, detail);
@@ -2407,18 +2096,19 @@ static void settings_render_update_error(esp_gsp_handle_t ui,
 
 static void settings_start_update_check(esp_gsp_handle_t ui)
 {
-    if (s_state.snapshot.update.state == MOSAIC_SETTINGS_UPDATE_CHECKING) {
+    if (s_state.device.update.state == MOSAIC_CAP_UPDATE_CHECKING) {
         settings_render_update_page(ui);
         return;
     }
-    if (!s_state.snapshot.network.connected) {
+    if (!s_state.device.network.connected) {
         settings_render_update_error(
             ui, "Unable to Check", "No internet connection",
             "Connect to Wi-Fi",
             "A network connection is required to check the published version.");
         return;
     }
-    const esp_err_t err = mosaic_settings_request_update_check();
+    const esp_err_t err = mosaic_capability_invoke("system.update",
+        SETTINGS_CAPABILITIES, "check", NULL, 0, NULL, 0);
     if (err != ESP_OK) {
         settings_render_update_error(
             ui, "Check Unavailable", "Update source is not configured",
@@ -2428,7 +2118,7 @@ static void settings_start_update_check(esp_gsp_handle_t ui)
                 : "Unable to start the update check.");
         return;
     }
-    s_state.snapshot.update.state = MOSAIC_SETTINGS_UPDATE_CHECKING;
+    s_state.device.update.state = MOSAIC_CAP_UPDATE_CHECKING;
     settings_refresh_about_detail(ui);
     settings_render_update_page(ui);
 }
@@ -2474,11 +2164,11 @@ static void settings_leave_update_page(esp_gsp_handle_t ui)
 
 static void settings_show_update_result(esp_gsp_handle_t ui)
 {
-    const mosaic_settings_update_t *update = &s_state.snapshot.update;
+    const mosaic_cap_update_t *update = &s_state.device.update;
     if (update->sequence == 0U ||
             update->sequence == s_state.update_notice_sequence ||
-            update->state == MOSAIC_SETTINGS_UPDATE_IDLE ||
-            update->state == MOSAIC_SETTINGS_UPDATE_CHECKING) {
+            update->state == MOSAIC_CAP_UPDATE_IDLE ||
+            update->state == MOSAIC_CAP_UPDATE_CHECKING) {
         return;
     }
     s_state.update_notice_sequence = update->sequence;
@@ -2488,7 +2178,7 @@ static void settings_show_update_result(esp_gsp_handle_t ui)
     char title[96];
     char message[256];
     switch (update->state) {
-    case MOSAIC_SETTINGS_UPDATE_AVAILABLE:
+    case MOSAIC_CAP_UPDATE_AVAILABLE:
         if (update->title[0] != '\0') {
             strlcpy(title, update->title, sizeof(title));
         } else {
@@ -2499,22 +2189,22 @@ static void settings_show_update_result(esp_gsp_handle_t ui)
             strlcpy(message, update->summary, sizeof(message));
         } else {
             (void)snprintf(message, sizeof(message), "Current %s · Latest %s",
-                           s_state.snapshot.software_version,
+                           s_state.device.lifecycle.software_version,
                            update->latest_version);
         }
         break;
-    case MOSAIC_SETTINGS_UPDATE_UP_TO_DATE:
+    case MOSAIC_CAP_UPDATE_UP_TO_DATE:
         strlcpy(title, "Up to Date", sizeof(title));
         (void)snprintf(message, sizeof(message), "Version %s is current",
-                       s_state.snapshot.software_version);
+                       s_state.device.lifecycle.software_version);
         break;
-    case MOSAIC_SETTINGS_UPDATE_DEVICE_AHEAD:
+    case MOSAIC_CAP_UPDATE_DEVICE_AHEAD:
         strlcpy(title, "Development Version", sizeof(title));
         (void)snprintf(message, sizeof(message), "Device %s · Published %s",
-                       s_state.snapshot.software_version,
+                       s_state.device.lifecycle.software_version,
                        update->latest_version);
         break;
-    case MOSAIC_SETTINGS_UPDATE_FAILED:
+    case MOSAIC_CAP_UPDATE_FAILED:
     default:
         strlcpy(title, "Check Failed", sizeof(title));
         strlcpy(message, "Check the network and manifest, then try again",
@@ -2528,19 +2218,18 @@ static void settings_show_update_result(esp_gsp_handle_t ui)
 
 static void settings_refresh_battery_detail(esp_gsp_handle_t ui)
 {
-    if (s_state.ops.get_battery == NULL ||
-            s_detail_list == ESP_GSP_LIST_NONE) {
+    if (s_detail_list == ESP_GSP_LIST_NONE) {
         return;
     }
-    mosaic_settings_battery_t battery = {0};
-    esp_err_t err = s_state.ops.get_battery(
-        s_state.ops.user_ctx, &battery);
+    mosaic_cap_power_t battery = {0};
+    esp_err_t err = mosaic_capability_read("system.power",
+        SETTINGS_CAPABILITIES, &battery, sizeof(battery));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "refresh Battery detail failed: %s",
                  esp_err_to_name(err));
         return;
     }
-    s_state.snapshot.battery = battery;
+    s_state.device.power = battery;
     esp_gsp_err_t gsp_err = esp_gsp_list_refresh(
         ui, s_detail_list);
     if (gsp_err != ESP_GSP_OK) {
@@ -2687,22 +2376,18 @@ static void settings_qr_push(
 
 static void settings_wlan_phone_refresh(esp_gsp_handle_t ui)
 {
-    char ap_ssid[MOSAIC_SETTINGS_SSID_LEN] = {0};
-    char *payload = calloc(1, MOSAIC_SETTINGS_PHONE_QR_LEN);
-    if (payload == NULL) {
+    mosaic_cap_provisioning_t *provisioning = calloc(1, sizeof(*provisioning));
+    if (provisioning == NULL) {
         return;
     }
-    esp_err_t err = s_state.ops.get_phone_setup != NULL
-        ? s_state.ops.get_phone_setup(
-              s_state.ops.user_ctx, ap_ssid, sizeof(ap_ssid),
-              payload, MOSAIC_SETTINGS_PHONE_QR_LEN)
-        : ESP_ERR_NOT_SUPPORTED;
+    esp_err_t err = mosaic_capability_read("net.provisioning",
+        SETTINGS_CAPABILITIES, provisioning, sizeof(*provisioning));
     if (err == ESP_OK) {
         (void)esp_gsp_set_text(
-            ui, GSP_BIND_SETTINGS_WLAN_PHONE_AP_SSID, ap_ssid);
+            ui, GSP_BIND_SETTINGS_WLAN_PHONE_AP_SSID, provisioning->ap_ssid);
         settings_qr_push(
             ui, GSP_BIND_SETTINGS_WLAN_PHONE_QR_CANVAS,
-            SETTINGS_WLAN_PHONE_QR_SIZE, payload,
+            SETTINGS_WLAN_PHONE_QR_SIZE, provisioning->qr_payload,
             s_state.rendered_phone_qr,
             sizeof(s_state.rendered_phone_qr));
     } else {
@@ -2712,7 +2397,7 @@ static void settings_wlan_phone_refresh(esp_gsp_handle_t ui)
         ESP_LOGW(TAG, "read phone provisioning QR failed: %s",
                  esp_err_to_name(err));
     }
-    free(payload);
+    free(provisioning);
 }
 
 static void settings_llm_render(esp_gsp_handle_t ui)
@@ -2740,21 +2425,21 @@ static void settings_llm_render(esp_gsp_handle_t ui)
 }
 
 static void settings_build_configuration_url(
-    const mosaic_settings_snapshot_t *snapshot, const char *fragment,
+    const settings_device_t *device, const char *fragment,
     char *url, size_t url_size)
 {
-    if (snapshot == NULL || fragment == NULL || url == NULL ||
+    if (device == NULL || fragment == NULL || url == NULL ||
             url_size == 0U) {
         return;
     }
-    if (snapshot->network.connected && snapshot->network.ip[0] != '\0') {
+    if (device->network.connected && device->network.ip[0] != '\0') {
         (void)snprintf(url, url_size, "http://%s/#%s",
-                       snapshot->network.ip, fragment);
+                       device->network.ip, fragment);
         return;
     }
 
-    const char *portal = snapshot->network.portal_url[0] != '\0'
-        ? snapshot->network.portal_url : "http://192.168.4.1/";
+    const char *portal = device->network.portal_url[0] != '\0'
+        ? device->network.portal_url : "http://192.168.4.1/";
     const size_t portal_len = strlen(portal);
     (void)snprintf(url, url_size, "%s%s#%s", portal,
                    portal_len > 0U && portal[portal_len - 1U] == '/' ? "" : "/",
@@ -2762,26 +2447,27 @@ static void settings_build_configuration_url(
 }
 
 static void settings_build_connection_hint(
-    const mosaic_settings_snapshot_t *snapshot, char *hint, size_t hint_size)
+    const settings_device_t *device, char *hint, size_t hint_size)
 {
-    if (snapshot == NULL || hint == NULL || hint_size == 0U) {
+    if (device == NULL || hint == NULL || hint_size == 0U) {
         return;
     }
-    if (snapshot->network.connected && snapshot->network.ssid[0] != '\0') {
+    if (device->network.connected && device->network.ssid[0] != '\0') {
         (void)snprintf(hint, hint_size, "STA: %s",
-                       snapshot->network.ssid);
+                       device->network.ssid);
         return;
     }
-    if (s_state.provisioning_ap_ssid[0] == '\0' &&
-            s_state.ops.get_phone_setup != NULL) {
-        char *payload = calloc(1, MOSAIC_SETTINGS_PHONE_QR_LEN);
-        if (payload != NULL) {
-            (void)s_state.ops.get_phone_setup(
-                s_state.ops.user_ctx,
-                s_state.provisioning_ap_ssid,
-                sizeof(s_state.provisioning_ap_ssid),
-                payload, MOSAIC_SETTINGS_PHONE_QR_LEN);
-            free(payload);
+    if (s_state.provisioning_ap_ssid[0] == '\0') {
+        mosaic_cap_provisioning_t *provisioning =
+            calloc(1, sizeof(*provisioning));
+        if (provisioning != NULL) {
+            if (mosaic_capability_read("net.provisioning",
+                    SETTINGS_CAPABILITIES, provisioning,
+                    sizeof(*provisioning)) == ESP_OK) {
+                strlcpy(s_state.provisioning_ap_ssid, provisioning->ap_ssid,
+                        sizeof(s_state.provisioning_ap_ssid));
+            }
+            free(provisioning);
         }
     }
     (void)snprintf(hint, hint_size, "AP: %s",
@@ -2792,28 +2478,28 @@ static void settings_build_connection_hint(
 static void settings_llm_refresh(esp_gsp_handle_t ui)
 {
     settings_refresh_snapshot(ui);
-    const mosaic_settings_snapshot_t *snapshot = &s_state.snapshot;
+    const settings_device_t *device = &s_state.device;
     (void)esp_gsp_set_text(ui,
         GSP_BIND_SETTINGS_INTEGRATIONS_LLM_BACKEND,
-        snapshot->llm.backend[0] ? snapshot->llm.backend : "Not configured");
+        device->agent.llm_backend[0] ? device->agent.llm_backend : "Not configured");
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_INTEGRATIONS_LLM_MODEL,
-        snapshot->llm.model[0] ? snapshot->llm.model : "Not configured");
+        device->agent.llm_model[0] ? device->agent.llm_model : "Not configured");
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_INTEGRATIONS_LLM_BASE_URL,
-        snapshot->llm.base_url[0] ? snapshot->llm.base_url : "Not configured");
+        device->agent.llm_base_url[0] ? device->agent.llm_base_url : "Not configured");
     char capabilities[48];
     (void)snprintf(capabilities, sizeof(capabilities), "Tools %s · Vision %s",
-        snapshot->llm.supports_tools ? "On" : "Off",
-        snapshot->llm.supports_vision ? "On" : "Off");
+        device->agent.llm_supports_tools ? "On" : "Off",
+        device->agent.llm_supports_vision ? "On" : "Off");
     (void)esp_gsp_set_text(ui,
         GSP_BIND_SETTINGS_INTEGRATIONS_LLM_CAPABILITIES, capabilities);
-    char url[MOSAIC_SETTINGS_LLM_URL_LEN] = {0};
-    char connection_hint[MOSAIC_SETTINGS_SSID_LEN + 32U] = {0};
+    char url[MOSAIC_CAP_LLM_URL_LEN] = {0};
+    char connection_hint[MOSAIC_CAP_SSID_LEN + 32U] = {0};
     settings_build_connection_hint(
-        snapshot, connection_hint, sizeof(connection_hint));
+        device, connection_hint, sizeof(connection_hint));
     (void)esp_gsp_set_text(ui,
         GSP_BIND_SETTINGS_INTEGRATIONS_LLM_CONNECTION_HINT,
         connection_hint);
-    settings_build_configuration_url(snapshot, "llm", url, sizeof(url));
+    settings_build_configuration_url(device, "llm", url, sizeof(url));
     (void)esp_gsp_set_text(ui,
         GSP_BIND_SETTINGS_INTEGRATIONS_LLM_CONFIG_URL,
         url[0] ? url : "Unavailable");
@@ -2831,12 +2517,12 @@ static void settings_llm_refresh(esp_gsp_handle_t ui)
 static void settings_channels_refresh(esp_gsp_handle_t ui)
 {
     settings_refresh_snapshot(ui);
-    const mosaic_settings_snapshot_t *snapshot = &s_state.snapshot;
+    const settings_device_t *device = &s_state.device;
     const bool configured[] = {
-        snapshot->im.wechat_configured,
-        snapshot->im.qq_configured,
-        snapshot->im.feishu_configured,
-        snapshot->im.telegram_configured,
+        device->agent.im_wechat_configured,
+        device->agent.im_qq_configured,
+        device->agent.im_feishu_configured,
+        device->agent.im_telegram_configured,
     };
     const uint16_t on_binds[] = {
         GSP_BIND_SETTINGS_CHANNELS_WECHAT_ON_VISIBLE,
@@ -2855,13 +2541,13 @@ static void settings_channels_refresh(esp_gsp_handle_t ui)
         (void)esp_gsp_set_visible(ui, off_binds[i], !configured[i]);
     }
 
-    char url[MOSAIC_SETTINGS_LLM_URL_LEN] = {0};
-    char connection_hint[MOSAIC_SETTINGS_SSID_LEN + 32U] = {0};
+    char url[MOSAIC_CAP_LLM_URL_LEN] = {0};
+    char connection_hint[MOSAIC_CAP_SSID_LEN + 32U] = {0};
     settings_build_connection_hint(
-        snapshot, connection_hint, sizeof(connection_hint));
+        device, connection_hint, sizeof(connection_hint));
     (void)esp_gsp_set_text(ui,
         GSP_BIND_SETTINGS_CHANNELS_CONNECTION_HINT, connection_hint);
-    settings_build_configuration_url(snapshot, "im", url, sizeof(url));
+    settings_build_configuration_url(device, "im", url, sizeof(url));
     (void)esp_gsp_set_text(ui, GSP_BIND_SETTINGS_CHANNELS_CONFIG_URL,
                            url[0] ? url : "Unavailable");
     settings_qr_push(ui, GSP_BIND_SETTINGS_CHANNELS_CONFIG_QR_CANVAS,
@@ -2954,7 +2640,7 @@ static void settings_dispatch_call(
             settings_refresh_snapshot(ui);
             settings_open_detail(ui, SETTINGS_DETAIL_ABOUT);
             s_state.update_notice_sequence =
-                s_state.snapshot.update.sequence;
+                s_state.device.update.sequence;
             return;
         }
         static const uint16_t pages[] = {
@@ -3006,14 +2692,18 @@ static void settings_dispatch_call(
             return;
         }
         const uint16_t degrees = (uint16_t)(index * 90U);
-        esp_err_t err = s_state.ops.set_rotation(
-            s_state.ops.user_ctx, degrees);
+        const mosaic_cap_display_rotation_args_t rotation_args = {
+            .degrees = degrees,
+        };
+        esp_err_t err = mosaic_capability_invoke("system.display",
+            SETTINGS_CAPABILITIES, "set_rotation", &rotation_args,
+            sizeof(rotation_args), NULL, 0);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "set rotation failed: %s", esp_err_to_name(err));
             settings_refresh_snapshot(ui);
             return;
         }
-        s_state.snapshot.rotation = degrees;
+        s_state.device.display.rotation_degrees = degrees;
         settings_display_request_render();
         return;
     }
@@ -3028,13 +2718,18 @@ static void settings_dispatch_call(
             return;
         }
         const uint32_t timeout_ms = timeout_options_ms[index];
-        esp_err_t err = mosaic_settings_set_screen_timeout(timeout_ms);
+        const mosaic_cap_display_timeout_args_t timeout_args = {
+            .timeout_ms = timeout_ms,
+        };
+        esp_err_t err = mosaic_capability_invoke("system.display",
+            SETTINGS_CAPABILITIES, "set_screen_timeout", &timeout_args,
+            sizeof(timeout_args), NULL, 0);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "set screen timeout failed: %s", esp_err_to_name(err));
             settings_refresh_snapshot(ui);
             return;
         }
-        s_state.snapshot.screen_timeout_ms = timeout_ms;
+        s_state.device.display.screen_timeout_ms = timeout_ms;
         settings_display_request_render();
         return;
     }
@@ -3106,7 +2801,7 @@ static void settings_dispatch_call(
         }
         s_state.wlan_toggle_last_us = event->timestamp_us;
         const bool enabled = !s_state.wlan.enabled;
-        if (mosaic_settings_set_wifi_enabled(enabled) != ESP_OK) {
+        if (settings_wifi_set_enabled(enabled) != ESP_OK) {
             ESP_LOGW(TAG, "set WLAN enabled state failed");
             return;
         }
@@ -3114,7 +2809,7 @@ static void settings_dispatch_call(
          * authoritative and reconciles this optimistic state later. */
         s_state.wlan.enabled = enabled;
         s_state.wlan.state = enabled
-            ? MOSAIC_SETTINGS_WIFI_IDLE : MOSAIC_SETTINGS_WIFI_DISABLED;
+            ? MOSAIC_CAP_WIFI_IDLE : MOSAIC_CAP_WIFI_DISABLED;
         if (!enabled) {
             s_state.wlan_connect_pending = false;
             s_state.wlan_connect_deadline_us = 0;
@@ -3164,7 +2859,7 @@ static void settings_dispatch_call(
         s_state.wlan_phone_active = true;
         s_state.wlan_phone_exit_pending = false;
         s_state.wlan_phone_operation_id =
-            s_state.snapshot.network.operation_id;
+            s_state.device.network.operation_id;
         s_state.rendered_phone_qr[0] = '\0';
         settings_wlan_phone_refresh(ui);
         return;
@@ -3262,10 +2957,9 @@ static void settings_dispatch_pointer(
     }
     if (!event->data.pointer.pressed) {
         if (s_state.brightness_drag_active && s_state.brightness_dirty &&
-                s_state.brightness_hw_available &&
-                s_state.ops.set_brightness != NULL) {
-            esp_err_t err = s_state.ops.set_brightness(
-                s_state.ops.user_ctx, s_state.brightness, true);
+                s_state.brightness_hw_available) {
+            esp_err_t err = settings_set_brightness(
+                s_state.brightness, true);
             if (err == ESP_ERR_NOT_SUPPORTED) {
                 s_state.brightness_hw_available = false;
             } else if (err != ESP_OK) {
@@ -3274,10 +2968,8 @@ static void settings_dispatch_pointer(
                 settings_refresh_snapshot(ui);
             }
         }
-        if (s_state.volume_drag_active && s_state.volume_dirty &&
-                s_state.ops.set_volume != NULL) {
-            esp_err_t err = s_state.ops.set_volume(
-                s_state.ops.user_ctx, s_state.volume, true);
+        if (s_state.volume_drag_active && s_state.volume_dirty) {
+            esp_err_t err = settings_set_volume(s_state.volume, true);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "persist volume failed: %s",
                          esp_err_to_name(err));
@@ -3364,10 +3056,8 @@ static void settings_dispatch_pointer(
         if (level == s_state.brightness) {
             return;
         }
-        if (s_state.brightness_hw_available &&
-                s_state.ops.set_brightness != NULL) {
-            esp_err_t err = s_state.ops.set_brightness(
-                s_state.ops.user_ctx, level, false);
+        if (s_state.brightness_hw_available) {
+            esp_err_t err = settings_set_brightness(level, false);
             if (err == ESP_ERR_NOT_SUPPORTED) {
                 s_state.brightness_hw_available = false;
                 ESP_LOGW(TAG,
@@ -3379,7 +3069,7 @@ static void settings_dispatch_pointer(
             }
         }
         s_state.brightness = level;
-        s_state.snapshot.brightness = level;
+        s_state.device.display.brightness = level;
         s_state.brightness_dirty = true;
         settings_display_request_render();
         return;
@@ -3388,17 +3078,13 @@ static void settings_dispatch_pointer(
     if (volume == s_state.volume) {
         return;
     }
-    esp_err_t err = ESP_OK;
-    if (s_state.ops.set_volume != NULL) {
-        err = s_state.ops.set_volume(
-            s_state.ops.user_ctx, volume, false);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "set volume failed: %s", esp_err_to_name(err));
-            return;
-        }
+    esp_err_t err = settings_set_volume(volume, false);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set volume failed: %s", esp_err_to_name(err));
+        return;
     }
     s_state.volume = volume;
-    s_state.snapshot.volume = volume;
+    s_state.device.audio.volume = volume;
     s_state.volume_dirty = true;
     settings_display_request_render();
 }
@@ -3475,14 +3161,14 @@ static void settings_event(
         s_state.update_leave_pending = false;
         settings_refresh_snapshot(ui);
         s_state.update_notice_sequence =
-            s_state.snapshot.update.sequence;
+            s_state.device.update.sequence;
         s_state.wlan_scan_revision =
-            s_state.snapshot.network.scan_revision;
+            s_state.device.network.scan_revision;
         settings_root_list_attach(ui);
-        if (s_state.snapshot.network.ssid[0] != '\0') {
-            s_state.wlan.connected = s_state.snapshot.network.connected;
+        if (s_state.device.network.ssid[0] != '\0') {
+            s_state.wlan.connected = s_state.device.network.connected;
             strlcpy(s_state.wlan.current_ssid,
-                    s_state.snapshot.network.ssid,
+                    s_state.device.network.ssid,
                     sizeof(s_state.wlan.current_ssid));
         }
         (void)settings_wlan_render(ui);
@@ -3551,8 +3237,7 @@ static void settings_event(
                 }
                 if (event->timestamp_us >= s_state.integration_deadline_us) {
                     settings_llm_refresh(ui);
-                    if (!mosaic_settings_llm_is_configured(
-                            &s_state.snapshot)) {
+                    if (!s_state.device.agent.llm_configured) {
                         s_state.llm_phase = SETTINGS_LLM_CONFIGURING;
                         settings_llm_render(ui);
                         (void)mosaic_top_notice_show(
@@ -3563,8 +3248,8 @@ static void settings_event(
                 }
             }
         }
-        if (s_state.snapshot.update.state ==
-                MOSAIC_SETTINGS_UPDATE_CHECKING) {
+        if (s_state.device.update.state ==
+                MOSAIC_CAP_UPDATE_CHECKING) {
             settings_refresh_snapshot(ui);
             settings_refresh_about_detail(ui);
             if (s_state.update_page_active) {
@@ -3613,8 +3298,8 @@ static void settings_event(
                 !s_state.wlan_phone_active && s_state.wlan.enabled) {
             settings_wlan_scan(ui);
             settings_wlan_list_attach(ui);
-            if (s_state.snapshot.network.radio_state ==
-                    MOSAIC_SETTINGS_WIFI_RADIO_ON &&
+            if (s_state.device.network.radio_state ==
+                    MOSAIC_CAP_WIFI_RADIO_ON &&
                     wlan_now >= s_state.wlan_scan_next_us) {
                 s_state.wlan_scan_waiting = false;
                 settings_wlan_request_scan();

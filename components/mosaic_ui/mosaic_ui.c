@@ -22,7 +22,8 @@
 #include "mosaic_hub_app.h"
 #include "mosaic_loader.h"
 #include "mosaic_logic.h"
-#include "mosaic_settings.h"
+#include "mosaic_capability.h"
+#include "mosaic_capability_contracts.h"
 #include "mosaic_system.h"
 #include "mosaic_system_flow.h"
 #include "mosaic_ai_create_runtime.h"
@@ -39,7 +40,7 @@ static bool s_started;
 static const char s_present_producer;
 static mosaic_system_flow_t s_system_flow;
 static bool s_system_flow_ready;
-static bool s_battery_notice_subscribed;
+static mosaic_capability_subscription_handle_t s_battery_notice_subscription;
 static bool s_low_battery_notice_issued;
 static bool s_critical_battery_notice_issued;
 
@@ -48,24 +49,29 @@ static bool s_critical_battery_notice_issued;
 #define MOSAIC_BATTERY_LOW_NOTICE_MS 2500U
 #define MOSAIC_BATTERY_CRITICAL_NOTICE_MS 1500U
 
-static void on_battery_notice(
-    const mosaic_settings_battery_t *battery, void *user_ctx)
+static void on_battery_notice(void *user_ctx, const char *name,
+    const void *payload, size_t payload_size)
 {
     (void)user_ctx;
-    if (battery == NULL || !battery->available) {
+    (void)name;
+    if (payload == NULL || payload_size != sizeof(mosaic_cap_power_t)) {
         return;
     }
-    if (battery->state_of_charge >= MOSAIC_BATTERY_LOW_NOTICE_SOC) {
+    const mosaic_cap_power_t *battery = payload;
+    if (!battery->available) {
+        return;
+    }
+    if (battery->percent >= MOSAIC_BATTERY_LOW_NOTICE_SOC) {
         s_low_battery_notice_issued = false;
     }
     if (battery->charging ||
-            battery->state_of_charge >= MOSAIC_BATTERY_CRITICAL_NOTICE_SOC) {
+            battery->percent >= MOSAIC_BATTERY_CRITICAL_NOTICE_SOC) {
         s_critical_battery_notice_issued = false;
     }
     if (battery->charging) {
         return;
     }
-    if (battery->state_of_charge < MOSAIC_BATTERY_CRITICAL_NOTICE_SOC) {
+    if (battery->percent < MOSAIC_BATTERY_CRITICAL_NOTICE_SOC) {
         if (!s_critical_battery_notice_issued &&
                 mosaic_loader_show_system_notice(
                     MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL,
@@ -75,7 +81,7 @@ static void on_battery_notice(
         }
         return;
     }
-    if (battery->state_of_charge < MOSAIC_BATTERY_LOW_NOTICE_SOC &&
+    if (battery->percent < MOSAIC_BATTERY_LOW_NOTICE_SOC &&
             !s_low_battery_notice_issued &&
             mosaic_loader_show_system_notice(
                 MOSAIC_SYSTEM_NOTICE_BATTERY_LOW,
@@ -451,11 +457,12 @@ esp_err_t mosaic_ui_start(void)
     }
     screen_rearm_idle_timer();
     ESP_RETURN_ON_ERROR(mosaic_loader_start_hub(), TAG, "mosaic_loader_start_hub failed");
-    if (!s_battery_notice_subscribed) {
-        ESP_RETURN_ON_ERROR(mosaic_settings_subscribe_battery(
-                                on_battery_notice, NULL),
-                            TAG, "subscribe to battery notices");
-        s_battery_notice_subscribed = true;
+    if (s_battery_notice_subscription == NULL) {
+        ESP_RETURN_ON_ERROR(
+            mosaic_capability_subscribe("system.power",
+                MOSAIC_CAP_SYSTEM_POWER_READ, on_battery_notice, NULL,
+                &s_battery_notice_subscription),
+            TAG, "subscribe to battery notices");
     }
 
     const char *initial_app = NULL;

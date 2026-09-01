@@ -25,7 +25,7 @@ typedef struct {
     void *user_ctx;
 } mosaic_imu_ops_t;
 
-/** Configure the device IMU provider. A NULL provider restores simulation. */
+/** Configure the device IMU provider. A NULL provider unregisters it. */
 esp_err_t mosaic_imu_configure(const mosaic_imu_ops_t *ops);
 
 #ifdef __cplusplus

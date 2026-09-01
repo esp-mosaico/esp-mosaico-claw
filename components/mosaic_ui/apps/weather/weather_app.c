@@ -10,6 +10,8 @@
 
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_capability.h"
+#include "mosaic_capability_contracts.h"
 #include "weather_binds.h"
 #include "weather_forecast_icon_data.h"
 #include "weather_objects.h"
@@ -24,6 +26,9 @@ typedef struct {
     const uint8_t *icon;
     size_t icon_size;
 } weather_forecast_row_t;
+
+/* The App only reads the forecast; refreshing is the service's schedule. */
+#define WEATHER_CAPABILITIES (MOSAIC_CAP_NET_WEATHER_READ)
 
 static weather_forecast_row_t s_forecast_rows[WEATHER_FORECAST_DAYS];
 static esp_gsp_list_t s_forecast_list = ESP_GSP_LIST_NONE;
@@ -110,43 +115,8 @@ static void weather_forecast_attach(esp_gsp_handle_t ui)
     }
 }
 
-#if defined(ESP_PLATFORM)
-#include "freertos/FreeRTOS.h"
-#include "weather_service.h"
-
-static weather_service_snapshot_t s_pending;
-static bool s_pending_valid;
-static bool s_subscribed;
-static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
-
-static void weather_stage(const weather_service_snapshot_t *snapshot,
-                          void *user_ctx)
-{
-    (void)user_ctx;
-    if (!snapshot) {
-        return;
-    }
-    portENTER_CRITICAL(&s_lock);
-    s_pending = *snapshot;
-    s_pending_valid = true;
-    portEXIT_CRITICAL(&s_lock);
-}
-
-static bool weather_take(weather_service_snapshot_t *snapshot)
-{
-    bool ready;
-    portENTER_CRITICAL(&s_lock);
-    ready = s_pending_valid;
-    if (ready) {
-        *snapshot = s_pending;
-        s_pending_valid = false;
-    }
-    portEXIT_CRITICAL(&s_lock);
-    return ready;
-}
-
 static void weather_render(esp_gsp_handle_t ui,
-                           const weather_service_snapshot_t *snapshot)
+                           const mosaic_cap_weather_t *snapshot)
 {
     char temperature[12] = "--";
     const char *condition = "Unavailable";
@@ -162,8 +132,8 @@ static void weather_render(esp_gsp_handle_t ui,
     (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_TEMPERATURE, temperature);
     (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_CONDITION, condition);
     (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_CITY, city);
-    for (size_t i = 0; i < WEATHER_SERVICE_FORECAST_DAYS; ++i) {
-        const weather_service_day_t *day = &snapshot->forecast[i];
+    for (size_t i = 0; i < MOSAIC_CAP_WEATHER_FORECAST_DAYS; ++i) {
+        const mosaic_cap_weather_day_t *day = &snapshot->forecast[i];
         weather_forecast_row_t *row = &s_forecast_rows[i];
         if (day->date[0]) {
             strlcpy(row->date, day->date, sizeof(row->date));
@@ -171,8 +141,7 @@ static void weather_render(esp_gsp_handle_t ui,
         if (day->valid) {
             snprintf(row->high, sizeof(row->high), "%d°",
                      (int)day->temperature_max_c);
-            if (day->temperature_sample_count >= 2U &&
-                    day->temperature_min_c != day->temperature_max_c) {
+            if (day->low_valid) {
                 snprintf(row->low, sizeof(row->low), "%d°",
                          (int)day->temperature_min_c);
             } else {
@@ -205,34 +174,30 @@ static void weather_render(esp_gsp_handle_t ui,
     (void)esp_gsp_set_visible(ui, GSP_BIND_WEATHER_ART_CLOUDY_VISIBLE, cloudy);
     (void)esp_gsp_set_visible(ui, GSP_BIND_WEATHER_ART_OVERCAST_VISIBLE, overcast);
 }
-#endif
+
+/* Polling the capability keeps every snapshot handoff on the UI task, so the
+ * App needs no staging buffer for the service's worker thread. */
+static void weather_refresh(esp_gsp_handle_t ui)
+{
+    mosaic_cap_weather_t snapshot;
+    if (mosaic_capability_read("net.weather", WEATHER_CAPABILITIES,
+            &snapshot, sizeof(snapshot)) != ESP_OK) {
+        memset(&snapshot, 0, sizeof(snapshot));
+    }
+    weather_render(ui, &snapshot);
+}
 
 static void weather_tick(esp_gsp_handle_t ui, void *user_ctx)
 {
     (void)user_ctx;
-#if defined(ESP_PLATFORM)
-    weather_service_snapshot_t snapshot;
-    if (weather_take(&snapshot)) {
-        weather_render(ui, &snapshot);
-    }
-#else
-    (void)ui;
-#endif
+    weather_refresh(ui);
 }
 
 static void weather_started(esp_gsp_handle_t ui)
 {
     weather_render_dates(ui);
     weather_forecast_attach(ui);
-#if defined(ESP_PLATFORM)
-    weather_service_snapshot_t snapshot = {0};
-    if (!s_subscribed && weather_service_subscribe(weather_stage, NULL) == ESP_OK) {
-        s_subscribed = true;
-    }
-    if (weather_service_get_snapshot(&snapshot) == ESP_OK) {
-        weather_render(ui, &snapshot);
-    }
-#endif
+    weather_refresh(ui);
     (void)esp_gsp_timer_create(ui, 1000, weather_tick, NULL);
 }
 
@@ -240,15 +205,6 @@ static void weather_stopping(esp_gsp_handle_t ui)
 {
     (void)ui;
     s_forecast_list = ESP_GSP_LIST_NONE;
-#if defined(ESP_PLATFORM)
-    if (s_subscribed) {
-        (void)weather_service_unsubscribe(weather_stage, NULL);
-        s_subscribed = false;
-    }
-    portENTER_CRITICAL(&s_lock);
-    s_pending_valid = false;
-    portEXIT_CRITICAL(&s_lock);
-#endif
 }
 
 const mosaic_app_descriptor_t mosaic_weather_app = {

@@ -14,7 +14,7 @@ idf_component_register(
     SRCS "mosaic_ui.c"
          "core/mosaic_camera.c"
          "core/mosaic_loader.c"
-         "core/mosaic_esp_platform.c"
+         "core/mosaic_gsp_backend.c"
          "logic/mosaic_logic.c"
          "logic/mosaic_native_logic.c"
          "logic/mosaic_lua_logic.c"

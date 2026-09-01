@@ -28,9 +28,7 @@ typedef uint64_t mosaic_capability_mask_t;
 #define MOSAIC_CAP_BIT(index) (UINT64_C(1) << (index))
 
 #define MOSAIC_CAP_SENSOR_IMU_READ           MOSAIC_CAP_BIT(0)
-#define MOSAIC_CAP_SYSTEM_BATTERY_READ       MOSAIC_CAP_BIT(1)
 #define MOSAIC_CAP_SYSTEM_TIME_READ          MOSAIC_CAP_BIT(2)
-#define MOSAIC_CAP_SYSTEM_STATUS_READ        MOSAIC_CAP_BIT(3)
 #define MOSAIC_CAP_SYSTEM_DISPLAY_READ       MOSAIC_CAP_BIT(4)
 #define MOSAIC_CAP_SYSTEM_DISPLAY_CONTROL    MOSAIC_CAP_BIT(5)
 #define MOSAIC_CAP_SYSTEM_AUDIO_READ         MOSAIC_CAP_BIT(6)
@@ -90,7 +88,7 @@ typedef struct {
 } mosaic_capability_field_t;
 
 typedef struct mosaic_capability_contract {
-    /** Stable versioned id, e.g. "system.battery/v1". */
+    /** Stable versioned id, e.g. "system.power/v1". */
     const char *id;
     uint16_t size;
     const mosaic_capability_field_t *fields;

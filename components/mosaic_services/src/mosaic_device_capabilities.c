@@ -14,15 +14,20 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "mosaic_capability.h"
 #include "mosaic_capability_contracts.h"
+#include "mosaic_media_bluetooth.h"
+#include "mosaic_media_player.h"
 #include "mosaic_settings.h"
 
 #define MOSAIC_DEVICE_HAPTIC_PULSE_MS 25U
 
 static mosaic_haptic_pulse_fn s_haptic_pulse;
 static void *s_haptic_user_ctx;
+static mosaic_imu_read_fn s_imu_read;
+static void *s_imu_user_ctx;
 
 /** Copy a model string into a fixed contract field, always terminated. */
 static void copy_field(char *dst, size_t capacity, const char *src)
@@ -186,11 +191,22 @@ static esp_err_t haptic_invoke(void *user_ctx, uint16_t command,
         const mosaic_cap_haptic_enable_args_t *request = args;
         return mosaic_settings_set_vibration(request->enabled);
     }
-    case MOSAIC_CAP_HAPTIC_CMD_PULSE:
+    case MOSAIC_CAP_HAPTIC_CMD_PULSE: {
         if (s_haptic_pulse == NULL) {
+            return ESP_ERR_NOT_SUPPORTED;
+        }
+        mosaic_settings_snapshot_t *snapshot = NULL;
+        const esp_err_t err = with_snapshot(&snapshot);
+        if (err != ESP_OK) {
+            return err;
+        }
+        const bool enabled = snapshot->vibration_enabled;
+        free(snapshot);
+        if (!enabled) {
             return ESP_OK;
         }
         return s_haptic_pulse(s_haptic_user_ctx, MOSAIC_DEVICE_HAPTIC_PULSE_MS);
+    }
     default:
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -199,6 +215,31 @@ static esp_err_t haptic_invoke(void *user_ctx, uint16_t command,
 static const mosaic_capability_ops_t s_haptic_ops = {
     .read = haptic_read,
     .invoke = haptic_invoke,
+};
+
+/* ---------------- sensor.imu ---------------- */
+
+static esp_err_t imu_read(
+    void *user_ctx, void *out_payload, size_t payload_size)
+{
+    (void)user_ctx;
+    if (out_payload == NULL ||
+            payload_size != sizeof(mosaic_cap_orientation_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_imu_read == NULL) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    return s_imu_read(s_imu_user_ctx, (mosaic_cap_orientation_t *)out_payload);
+}
+
+static const mosaic_capability_ops_t s_imu_ops = {
+    .read = imu_read,
+};
+
+static const mosaic_capability_provider_t s_imu_provider = {
+    .name = "sensor.imu",
+    .ops = &s_imu_ops,
 };
 
 /* ---------------- system.power ---------------- */
@@ -551,6 +592,42 @@ static const mosaic_capability_ops_t s_agent_config_ops = {
     .read = agent_config_read,
 };
 
+/* ---------------- system.time ---------------- */
+
+static esp_err_t time_read(
+    void *user_ctx, void *out_payload, size_t payload_size)
+{
+    (void)user_ctx;
+    if (out_payload == NULL || payload_size != sizeof(mosaic_cap_time_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const time_t now = time(NULL);
+    if (now == (time_t)-1) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    struct tm local = {0};
+    struct tm utc = {0};
+    if (localtime_r(&now, &local) == NULL ||
+            gmtime_r(&now, &utc) == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    local.tm_isdst = -1;
+    utc.tm_isdst = -1;
+    const time_t local_epoch = mktime(&local);
+    const time_t utc_as_local = mktime(&utc);
+    if (local_epoch == (time_t)-1 || utc_as_local == (time_t)-1) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    mosaic_cap_time_t *out = out_payload;
+    out->unix_seconds = (int64_t)now;
+    out->utc_offset_minutes = (int32_t)((local_epoch - utc_as_local) / 60);
+    return ESP_OK;
+}
+
+static const mosaic_capability_ops_t s_time_ops = {
+    .read = time_read,
+};
+
 /* ---------------- registration ---------------- */
 
 void mosaic_device_capabilities_set_haptic(
@@ -560,49 +637,167 @@ void mosaic_device_capabilities_set_haptic(
     s_haptic_user_ctx = user_ctx;
 }
 
+void mosaic_device_capabilities_set_imu(
+    mosaic_imu_read_fn read, void *user_ctx)
+{
+    s_imu_read = read;
+    s_imu_user_ctx = user_ctx;
+    if (!s_initialized) {
+        return;
+    }
+    if (read == NULL) {
+        if (s_imu_registered) {
+            unregister_provider("sensor.imu");
+            s_imu_registered = false;
+        }
+        return;
+    }
+    if (s_imu_registered) {
+        return;
+    }
+    if (mosaic_capability_register(&s_imu_provider) == ESP_OK) {
+        s_imu_registered = true;
+    }
+}
+
+static const mosaic_capability_provider_t s_core_providers[] = {
+    { .name = "system.time", .ops = &s_time_ops },
+    { .name = "system.display", .ops = &s_display_ops },
+    { .name = "system.audio", .ops = &s_audio_ops },
+    { .name = "system.haptic", .ops = &s_haptic_ops },
+    { .name = "system.power", .ops = &s_power_ops },
+    { .name = "system.update", .ops = &s_update_ops },
+    { .name = "system.lifecycle", .ops = &s_lifecycle_ops },
+    { .name = "net.provisioning", .ops = &s_provisioning_ops },
+    { .name = "config.agent", .ops = &s_agent_config_ops },
+};
+
+static const mosaic_capability_provider_t s_wifi_providers[] = {
+    { .name = "net.wifi", .ops = &s_wifi_ops },
+    { .name = "net.wifi.scan", .ops = &s_wifi_scan_ops },
+};
+
+static bool s_initialized;
+static bool s_core_registered;
+static bool s_media_initialized;
+static bool s_battery_subscribed;
+static bool s_wifi_registered;
+static bool s_wifi_subscribed;
+static bool s_imu_registered;
+
+static void unregister_provider(const char *name)
+{
+    (void)mosaic_capability_unregister(name, NULL);
+}
+
+void mosaic_device_capabilities_deinit(void)
+{
+    if (s_wifi_subscribed) {
+        (void)mosaic_settings_unsubscribe_wifi(on_wifi_sample, NULL);
+        s_wifi_subscribed = false;
+    }
+    if (s_wifi_registered) {
+        for (size_t index = 0;
+                index < sizeof(s_wifi_providers) / sizeof(s_wifi_providers[0]);
+                ++index) {
+            unregister_provider(s_wifi_providers[index].name);
+        }
+        s_wifi_registered = false;
+    }
+    if (s_battery_subscribed) {
+        (void)mosaic_settings_unsubscribe_battery(on_battery_sample, NULL);
+        s_battery_subscribed = false;
+    }
+    mosaic_media_bluetooth_deinit();
+    mosaic_media_player_deinit();
+    s_media_initialized = false;
+    if (s_core_registered) {
+        for (size_t index = 0;
+                index < sizeof(s_core_providers) / sizeof(s_core_providers[0]);
+                ++index) {
+            unregister_provider(s_core_providers[index].name);
+        }
+        s_core_registered = false;
+    }
+    if (s_imu_registered) {
+        unregister_provider("sensor.imu");
+        s_imu_registered = false;
+    }
+    s_haptic_pulse = NULL;
+    s_haptic_user_ctx = NULL;
+    s_initialized = false;
+}
+
 esp_err_t mosaic_device_capabilities_init(void)
 {
-    static const mosaic_capability_provider_t providers[] = {
-        { .name = "system.display", .ops = &s_display_ops },
-        { .name = "system.audio", .ops = &s_audio_ops },
-        { .name = "system.haptic", .ops = &s_haptic_ops },
-        { .name = "system.power", .ops = &s_power_ops },
-        { .name = "system.update", .ops = &s_update_ops },
-        { .name = "system.lifecycle", .ops = &s_lifecycle_ops },
-        { .name = "net.provisioning", .ops = &s_provisioning_ops },
-        { .name = "config.agent", .ops = &s_agent_config_ops },
-    };
-    for (size_t index = 0;
-            index < sizeof(providers) / sizeof(providers[0]); ++index) {
-        const esp_err_t err = mosaic_capability_register(&providers[index]);
-        if (err != ESP_OK) {
-            return err;
-        }
+    if (s_initialized) {
+        return ESP_OK;
     }
 
-    esp_err_t err = mosaic_settings_subscribe_battery(on_battery_sample, NULL);
+    for (size_t index = 0;
+            index < sizeof(s_core_providers) / sizeof(s_core_providers[0]);
+            ++index) {
+        const esp_err_t err = mosaic_capability_register(&s_core_providers[index]);
+        if (err != ESP_OK) {
+            mosaic_device_capabilities_deinit();
+            return err;
+        }
+        s_core_registered = true;
+    }
+
+    esp_err_t err = ESP_OK;
+    if (s_imu_read != NULL) {
+        err = mosaic_capability_register(&s_imu_provider);
+        if (err != ESP_OK) {
+            mosaic_device_capabilities_deinit();
+            return err;
+        }
+        s_imu_registered = true;
+    }
+
+    err = mosaic_media_player_init();
     if (err != ESP_OK) {
+        mosaic_device_capabilities_deinit();
         return err;
     }
+    err = mosaic_media_bluetooth_init();
+    if (err != ESP_OK) {
+        mosaic_device_capabilities_deinit();
+        return err;
+    }
+    s_media_initialized = true;
+
+    err = mosaic_settings_subscribe_battery(on_battery_sample, NULL);
+    if (err != ESP_OK) {
+        mosaic_device_capabilities_deinit();
+        return err;
+    }
+    s_battery_subscribed = true;
 
     /* A board without a Wi-Fi backend leaves the net.wifi capabilities
      * unbound rather than bound to a provider that answers
      * ESP_ERR_NOT_SUPPORTED, so mosaic_capability_available() stays an
      * honest feature probe for consumers. */
     if (!mosaic_settings_wifi_backend_available()) {
+        s_initialized = true;
         return ESP_OK;
     }
-    static const mosaic_capability_provider_t wifi_providers[] = {
-        { .name = "net.wifi", .ops = &s_wifi_ops },
-        { .name = "net.wifi.scan", .ops = &s_wifi_scan_ops },
-    };
     for (size_t index = 0;
-            index < sizeof(wifi_providers) / sizeof(wifi_providers[0]);
+            index < sizeof(s_wifi_providers) / sizeof(s_wifi_providers[0]);
             ++index) {
-        err = mosaic_capability_register(&wifi_providers[index]);
+        err = mosaic_capability_register(&s_wifi_providers[index]);
         if (err != ESP_OK) {
+            mosaic_device_capabilities_deinit();
             return err;
         }
+        s_wifi_registered = true;
     }
-    return mosaic_settings_subscribe_wifi(on_wifi_sample, NULL);
+    err = mosaic_settings_subscribe_wifi(on_wifi_sample, NULL);
+    if (err != ESP_OK) {
+        mosaic_device_capabilities_deinit();
+        return err;
+    }
+    s_wifi_subscribed = true;
+    s_initialized = true;
+    return ESP_OK;
 }

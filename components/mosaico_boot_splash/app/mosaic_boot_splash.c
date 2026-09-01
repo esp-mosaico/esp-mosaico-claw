@@ -64,11 +64,6 @@ static void write_be565(uint8_t *dst, uint16_t color)
 esp_err_t __attribute__((used)) mosaico_lcd_prepare_first_frame(
     esp_lcd_panel_handle_t panel, esp_lcd_panel_io_handle_t io)
 {
-#if !CONFIG_ESP_BOARD_ESP_MOSAICO
-    (void)panel;
-    (void)io;
-    return ESP_ERR_NOT_SUPPORTED;
-#else
     ESP_RETURN_ON_FALSE(panel != NULL && io != NULL, ESP_ERR_INVALID_ARG, TAG,
                         "boot LCD handles missing");
 
@@ -138,5 +133,4 @@ esp_err_t __attribute__((used)) mosaico_lcd_prepare_first_frame(
         ESP_LOGI(TAG, "early boot logo visible");
     }
     return err;
-#endif
 }

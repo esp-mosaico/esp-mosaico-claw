@@ -317,10 +317,17 @@ static esp_err_t settings_wifi_forget(void)
         "forget", NULL, 0, NULL, 0);
 }
 
+/* Async wifi commands complete through publish; invoke returns
+ * ESP_ERR_NOT_FINISHED when the request was accepted. */
+static bool settings_wifi_accepted(esp_err_t err)
+{
+    return err == ESP_OK || err == ESP_ERR_NOT_FINISHED;
+}
+
 static esp_err_t settings_wifi_request_scan(void)
 {
-    return mosaic_capability_invoke("net.wifi.scan", SETTINGS_CAPABILITIES,
-        "start", NULL, 0, NULL, 0);
+    return mosaic_capability_invoke("net.wifi", SETTINGS_CAPABILITIES,
+        "scan", NULL, 0, NULL, 0);
 }
 
 /* Scan results are ~900 bytes, so they are staged on the heap and copied out
@@ -888,7 +895,7 @@ static void settings_wlan_request_scan(void)
     }
     const int64_t now = esp_timer_get_time();
     esp_err_t err = settings_wifi_request_scan();
-    if (err == ESP_OK) {
+    if (settings_wifi_accepted(err)) {
         s_state.wlan_scan_waiting = true;
         s_state.wlan_scan_next_us = now + SETTINGS_WLAN_SCAN_TIMEOUT_US;
     } else {
@@ -1482,7 +1489,7 @@ static void settings_wlan_handle_network_select(
         } else {
             s_state.wlan_connect_operation_id =
                 s_state.device.network.operation_id;
-            if (settings_wifi_connect(ssid, "") == ESP_OK) {
+            if (settings_wifi_accepted(settings_wifi_connect(ssid, ""))) {
                 settings_wlan_connection_started(ui, ssid);
                 settings_wlan_refresh_status(ui);
             } else {
@@ -1536,7 +1543,7 @@ static bool settings_wlan_handle_connect(esp_gsp_handle_t ui)
     s_state.wlan_connect_operation_id =
         s_state.device.network.operation_id;
     if (!simulated &&
-            settings_wifi_connect(ssid, password) != ESP_OK) {
+            !settings_wifi_accepted(settings_wifi_connect(ssid, password))) {
         s_state.wlan_connect_pending = false;
         ESP_LOGW(TAG, "connect WLAN %s failed", ssid);
         (void)mosaic_top_notice_show(

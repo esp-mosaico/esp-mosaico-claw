@@ -15,6 +15,8 @@
 #include "air_battle_actions.h"
 #include "air_battle_binds.h"
 #include "air_battle_objects.h"
+#include "chiptune.h"
+#include "chiptune_bgm.h"
 #include "esp_gsp_debug.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -22,11 +24,8 @@
 #include "mosaic_hub_actions.h"
 #include "mosaic_runtime.h"
 #include "mosaic_ui.h"
-#include "music_audio.h"
 
 #if defined(ESP_PLATFORM)
-#include <sys/stat.h>
-#include "claw_paths.h"
 #include "nvs.h"
 #endif
 
@@ -279,8 +278,6 @@ typedef struct {
 
 static air_battle_t s_game;
 static render_cache_t s_render;
-static music_audio_handle_t s_audio;
-static int s_audio_poll_ms;
 static int s_rail_render_key = -1;
 
 /* Per-slot cache for telemetry rails. When a render_key transition fires
@@ -747,33 +744,22 @@ static void save_preferences(void)
 #endif
 }
 
+/* Playback plumbing.  All the actual work happens in the chiptune engine's
+ * producer task; these helpers just gate the BGM sequencer on top-level
+ * game state and the persisted audio_enabled preference. */
+
 static void battle_audio_start(void)
 {
     if (!s_game.audio_enabled || s_game.state != ST_PLAY) {
         return;
     }
-    if (s_audio == NULL && music_audio_create(&s_audio) != ESP_OK) {
-        return;
-    }
-#if defined(ESP_PLATFORM)
-    char path[256];
-    struct stat info;
-    if (claw_paths_join(
-            CLAW_PATH_DATA, "music/space-quest-loop.mp3",
-            path, sizeof(path)) != ESP_OK ||
-            stat(path, &info) != 0 || info.st_size <= 0) {
-        return;
-    }
-    (void)music_audio_play(s_audio, path, (uint64_t)info.st_size);
-#endif
-    s_audio_poll_ms = 0;
+    chiptune_engine_set_song(&chiptune_bgm_air_battle);
+    chiptune_engine_resume();
 }
 
 static void battle_audio_pause(void)
 {
-    if (s_audio != NULL) {
-        (void)music_audio_pause(s_audio);
-    }
+    chiptune_engine_pause();
 }
 
 static void battle_audio_resume(void)
@@ -781,34 +767,23 @@ static void battle_audio_resume(void)
     if (!s_game.audio_enabled || s_game.state != ST_PLAY) {
         return;
     }
-    if (s_audio == NULL || music_audio_resume(s_audio) != ESP_OK) {
-        battle_audio_start();
-    }
+    chiptune_engine_set_song(&chiptune_bgm_air_battle);
+    chiptune_engine_resume();
 }
 
 static void battle_audio_stop(void)
 {
-    if (s_audio != NULL) {
-        (void)music_audio_stop(s_audio);
-    }
-    s_audio_poll_ms = 0;
+    chiptune_engine_set_song(NULL);
 }
 
-static void battle_audio_tick(int ms)
+/* No status polling required: the chiptune sequencer loops itself. */
+static inline void battle_audio_tick(int ms) { (void)ms; }
+
+/* Trigger a one-shot SFX overlay if the player hasn't muted the game. */
+static inline void battle_sfx(chiptune_sfx_t sfx)
 {
-    if (!s_game.audio_enabled || s_game.state != ST_PLAY ||
-            s_audio == NULL) {
-        return;
-    }
-    s_audio_poll_ms += ms;
-    if (s_audio_poll_ms < 250) {
-        return;
-    }
-    s_audio_poll_ms = 0;
-    music_audio_status_t status;
-    if (music_audio_status(s_audio, &status) == ESP_OK &&
-            status.state == MUSIC_AUDIO_FINISHED) {
-        battle_audio_start();
+    if (s_game.audio_enabled && s_game.state == ST_PLAY) {
+        chiptune_engine_trigger_sfx(sfx);
     }
 }
 
@@ -1116,9 +1091,13 @@ static void spawn_score_pop(float x, float y, int value)
 
 static void register_kill(enemy_t *enemy)
 {
+    const int prev_multiplier = s_game.multiplier;
     s_game.combo = s_game.combo_ms > 0 ? s_game.combo + 1 : 1;
     s_game.combo_ms = COMBO_WINDOW_MS;
     s_game.multiplier = combo_multiplier(s_game.combo);
+    if (s_game.multiplier == 4 && prev_multiplier < 4) {
+        battle_sfx(CHIPTUNE_SFX_POWERUP);
+    }
     if (s_game.haptic_cooldown_ms == 0) {
         (void)mosaic_ui_haptic_feedback(
             s_game.multiplier == 4 ? 18U : 12U);
@@ -1147,6 +1126,7 @@ static bool lose_life(void)
     s_game.invuln_ms = DAMAGE_COOLDOWN_MS;
     s_game.damage_flash_ms = DAMAGE_FLASH_MS;
     reset_combo();
+    battle_sfx(CHIPTUNE_SFX_HIT);
     if (s_game.lives <= 0) {
         s_game.lives = 0;
         s_game.state = ST_OVER;
@@ -1195,6 +1175,7 @@ static void fire_player(void)
         .x = s_game.player_x + PLAYER_W / 2.0f - BULLET_W / 2.0f,
         .y = s_game.player_y - BULLET_H,
     };
+    battle_sfx(CHIPTUNE_SFX_LASER);
 }
 
 static void fire_enemy(enemy_t *enemy, const difficulty_t *difficulty)
@@ -1235,6 +1216,7 @@ static void fire_enemy(enemy_t *enemy, const difficulty_t *difficulty)
         };
     }
     enemy->fire_cooldown_ms += enemy->fire_every_ms;
+    battle_sfx(CHIPTUNE_SFX_ENEMY_SHOT);
 }
 
 static void set_unlock_for_level(int level)
@@ -1271,6 +1253,7 @@ static void resolve_player_shot_hits(void)
                 register_kill(enemy);
                 enemy->alive = false;
                 bullet->alive = false;
+                battle_sfx(CHIPTUNE_SFX_EXPLOSION);
                 break;
             }
         }
@@ -2190,6 +2173,7 @@ static void air_battle_started(esp_gsp_handle_t ui)
     (void)ui;
     load_preferences();
     reset_idle();
+    (void)chiptune_engine_start();
     battle_audio_stop();
 #if AIR_BATTLE_PROFILE
     prof_reset(ui);
@@ -2200,11 +2184,7 @@ static void air_battle_stopping(esp_gsp_handle_t ui)
 {
     (void)ui;
     save_preferences();
-    battle_audio_stop();
-    if (s_audio != NULL) {
-        music_audio_delete(s_audio);
-        s_audio = NULL;
-    }
+    chiptune_engine_stop();
 }
 
 static void air_battle_event(

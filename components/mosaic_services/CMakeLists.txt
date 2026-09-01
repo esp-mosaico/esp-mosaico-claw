@@ -13,9 +13,10 @@ set(MOSAIC_SERVICES_SRCS
     "src/music_controller.c"
     "src/music_audio.c")
 
-# The A2DP sink runtime is platform code and lives with the provider that
-# owns it, not with the App that renders it.
-if(ESP_PLATFORM AND CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO)
+# Always compile the A2DP runtime on device. The implementation is
+# CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO-gated inside the .c files; listing the
+# sources here avoids dropping them during Kconfig early expansion.
+if(ESP_PLATFORM)
     list(APPEND MOSAIC_SERVICES_SRCS
         "src/bluetooth_audio_runtime.c"
         "src/bluetooth_a2dp_lifecycle.c")

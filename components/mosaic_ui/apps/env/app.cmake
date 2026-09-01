@@ -1,7 +1,0 @@
-set(MOSAIC_APP_NAME env)
-set(MOSAIC_APP_MODULE_SOURCE env_app.c)
-set(MOSAIC_APP_MODULE_SYMBOL mosaic_env_app)
-set(MOSAIC_APP_BUNDLE generated/env.gspb)
-set(MOSAIC_APP_SCENE_DIR scene)
-set(MOSAIC_APP_SCENE_JSON scene/env_480.json)
-set(MOSAIC_APP_GENERATOR scene/gen_scene.py)

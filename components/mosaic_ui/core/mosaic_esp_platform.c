@@ -16,6 +16,7 @@
 #include "esp_heap_caps.h"
 #include "esp_mmap_assets.h"
 #include "esp_timer.h"
+#include "esp_gsp_deployable.h"
 #include "gsp/gsp_font_catalog.h"
 #include "mosaic_app_shell.h"
 #include "mosaic_logic.h"
@@ -35,6 +36,7 @@ typedef struct {
     const mosaic_app_package_t* package;
     esp_gsp_handle_t ui;
     mosaic_logic_handle_t logic;
+    esp_gsp_deployable_bundle_t* deployable;
     mosaic_platform_ui_event_cb_t event_cb;
     void* event_ctx;
     uint32_t generation;
@@ -205,18 +207,35 @@ static esp_err_t open_font_catalog(mosaic_esp_platform_handle_t platform)
     return ESP_OK;
 }
 
-static esp_gsp_config_t app_config_for(
+static esp_err_t app_config_for(
     const mosaic_esp_platform_handle_t platform, const void* bundle,
-    size_t bundle_size, const mosaic_app_descriptor_t* descriptor)
+    size_t bundle_size, mosaic_esp_app_t* app, esp_gsp_config_t* out_config)
 {
+    const mosaic_app_descriptor_t* descriptor = app->package->descriptor;
     esp_gsp_config_t config = ESP_GSP_CONFIG_INIT();
-    config.bundle = bundle;
-    config.bundle_size = bundle_size;
-    if (descriptor->directories != NULL &&
+    if (app->package->deployable) {
+        esp_gsp_err_t gsp_err = esp_gsp_deployable_bundle_open(bundle,
+            bundle_size, !CONFIG_MOSAIC_UI_DISABLE_BUNDLE_CRC,
+            &app->deployable);
+        if (gsp_err != ESP_GSP_OK) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        gsp_err = esp_gsp_deployable_bundle_make_config(
+            app->deployable, &config);
+        if (gsp_err != ESP_GSP_OK) {
+            esp_gsp_deployable_bundle_close(app->deployable);
+            app->deployable = NULL;
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+    } else {
+        config.bundle = bundle;
+        config.bundle_size = bundle_size;
+    }
+    if (!app->package->deployable && descriptor->directories != NULL &&
             descriptor->directory_count > 0) {
         config.directories = descriptor->directories;
         config.directory_count = descriptor->directory_count;
-    } else {
+    } else if (!app->package->deployable) {
         config.directories = &descriptor->directory;
         config.directory_count = 1;
     }
@@ -263,7 +282,8 @@ static esp_gsp_config_t app_config_for(
                 (unsigned)overrides[i].field_id, (int)result);
         }
     }
-    return config;
+    *out_config = config;
+    return ESP_OK;
 }
 
 static void on_gsp_event(
@@ -355,8 +375,10 @@ static esp_err_t start_ui(mosaic_esp_platform_handle_t platform,
     mosaic_esp_app_t* app, const void* bundle, size_t bundle_size)
 {
     const mosaic_app_descriptor_t* descriptor = app->package->descriptor;
-    const esp_gsp_config_t app_config
-        = app_config_for(platform, bundle, bundle_size, descriptor);
+    esp_gsp_config_t app_config;
+    ESP_RETURN_ON_ERROR(app_config_for(platform, bundle, bundle_size, app,
+                            &app_config),
+        "mosaic_platform", "prepare app config");
     if (descriptor == mosaic_app_root()) {
         if (platform->hub_session != NULL || platform->app_ui != NULL) {
             return ESP_ERR_INVALID_STATE;
@@ -511,6 +533,7 @@ fail:
         app->shell_attached = false;
     }
     ESP_ERROR_CHECK(recover_failed_open(platform, app));
+    esp_gsp_deployable_bundle_close(app->deployable);
     free(app);
     return err;
 }
@@ -545,6 +568,7 @@ static esp_err_t platform_close_app(
         (void)esp_gsp_on_event(app->ui, NULL, NULL);
     }
     mosaic_logic_delete(app->logic);
+    esp_gsp_deployable_bundle_close(app->deployable);
     platform->active = NULL;
     free(app);
     return ESP_OK;
@@ -596,15 +620,22 @@ static esp_err_t platform_replace_app(void* ctx,
     mosaic_logic_delete(old_app->logic);
     platform->active = NULL;
     platform->app_ui = NULL;
-    const esp_gsp_config_t app_config =
-        app_config_for(platform, bundle, bundle_size, descriptor);
-    esp_err_t err = esp_gsp_esp_lcd_replace_on_session_prepared(
+    esp_gsp_config_t app_config;
+    esp_err_t err = app_config_for(platform, bundle, bundle_size, next_app,
+        &app_config);
+    if (err != ESP_OK) {
+        free(next_app);
+        return err;
+    }
+    err = esp_gsp_esp_lcd_replace_on_session_prepared(
         platform->hub_session, old_app->ui, &app_config, prepare_app_ui,
         next_app, &next_app->ui);
+    esp_gsp_deployable_bundle_close(old_app->deployable);
     free(old_app);
     if (err != ESP_OK) {
         platform->hub_ui = NULL;
         platform->hub_session = NULL;
+        esp_gsp_deployable_bundle_close(next_app->deployable);
         free(next_app);
         return err;
     }
@@ -646,6 +677,7 @@ static esp_err_t platform_replace_app(void* ctx,
         platform->hub_ui = hub;
         platform->hub_session = NULL;
         platform->app_ui = NULL;
+        esp_gsp_deployable_bundle_close(next_app->deployable);
         free(next_app);
         return err;
     }

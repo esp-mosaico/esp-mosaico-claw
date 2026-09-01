@@ -17,9 +17,9 @@ trap 'rm -rf "$OUT"' EXIT
     --profile "$PROFILE" -o "$OUT"
 
 mkdir -p "$GENERATED_DIR"
-"$GSPC" bundle -o "$GENERATED_DIR/${STEM}.gspb" \
-    "$OUT/${STEM}.gsb" \
-    "$OUT"/${STEM}_font*.gfb
+"$GSPC" pack "${STEM}_480.json" \
+    --deployable --profile "$PROFILE" --gen-dir "$OUT" \
+    -o "$GENERATED_DIR/${STEM}.gspb"
 
 cp "$OUT/${STEM}_binds.h" "$GENERATED_DIR/${STEM}_binds.h"
 cp "$OUT/${STEM}_actions.h" "$GENERATED_DIR/${STEM}_actions.h"

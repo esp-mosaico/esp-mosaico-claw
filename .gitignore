@@ -6,6 +6,12 @@ build-host/
 tmp/
 releases/
 firmware_output/
+# Emscripten bundle produced by simulator/scripts/build_wasm.sh
+dist/
+
+# Host simulator and the frame dumps it writes to the repository root.
+simulator/
+/*.ppm
 
 # ESP-IDF
 sdkconfig

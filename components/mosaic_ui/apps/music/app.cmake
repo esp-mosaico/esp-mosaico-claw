@@ -12,6 +12,6 @@ set(MOSAIC_APP_SCENE_SOURCES
     ../../common/assets/music/music_loop.png
     ../../common/assets/music/music_shuffle.png
     ../../common/assets/music/music_list.png)
-set(MOSAIC_APP_EXTRA_SOURCES music_controller.c music_presenter.c music_audio.c)
+set(MOSAIC_APP_EXTRA_SOURCES music_presenter.c)
 set(MOSAIC_APP_LOGIC NATIVE)
 set(MOSAIC_APP_TICK_MS 100)

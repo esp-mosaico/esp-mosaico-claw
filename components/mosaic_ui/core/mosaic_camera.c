@@ -38,6 +38,10 @@
 #define MOSAIC_CAMERA_OUTPUT_W 450U
 #define MOSAIC_CAMERA_OUTPUT_X ((MOSAIC_CAMERA_W - MOSAIC_CAMERA_OUTPUT_W) / 2U)
 
+/* Scene binds are owned by the hosting App and handed over at start, so the
+ * preview pipeline stays independent of any App scene header. */
+static mosaic_camera_binds_t s_binds;
+
 #if defined(ESP_PLATFORM)
 
 #define MOSAIC_CAMERA_BUFFER_ALIGN 64U
@@ -123,7 +127,7 @@ static void camera_set_missing_hint(esp_gsp_handle_t ui, bool visible)
     if (ui == NULL) {
         return;
     }
-    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_MISSING_VISIBLE, visible);
+    (void)esp_gsp_set_visible(ui, s_binds.missing_hint_visible, visible);
 }
 
 static uint8_t *camera_alloc_preview_pixels(void)
@@ -693,13 +697,18 @@ done:
     vTaskDelete(NULL);
 }
 
-esp_err_t mosaic_camera_start(esp_gsp_handle_t ui)
+esp_err_t mosaic_camera_start(
+    esp_gsp_handle_t ui, const mosaic_camera_binds_t *binds)
 {
+    if (binds == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
     portENTER_CRITICAL(&s_camera.lock);
     if (s_camera.started) {
         portEXIT_CRITICAL(&s_camera.lock);
         return ESP_ERR_INVALID_STATE;
     }
+    s_binds = *binds;
     s_camera.started = true;
     s_camera.stopping = false;
     s_camera.sequence = 0;
@@ -886,7 +895,7 @@ void mosaic_camera_tick(esp_gsp_handle_t ui)
     }
 
     const esp_gsp_err_t err = esp_gsp_canvas_try_push(
-        ui, GSP_BIND_CAMERA_CANVAS, s_camera.frames[selected].pixels,
+        ui, s_binds.canvas, s_camera.frames[selected].pixels,
         MOSAIC_CAMERA_STRIDE, frame_released, (void *)(uintptr_t)selected);
     if (err != ESP_GSP_OK) {
         frame_released((void *)(uintptr_t)selected);
@@ -911,7 +920,7 @@ void mosaic_camera_stop(esp_gsp_handle_t ui)
     s_camera.stopping = true;
     portEXIT_CRITICAL(&s_camera.lock);
 
-    (void)esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_CANVAS);
+    (void)esp_gsp_canvas_stop(ui, s_binds.canvas);
     if (submit_lock != NULL) {
         xSemaphoreGive(submit_lock);
     }
@@ -1028,7 +1037,7 @@ static void stream_open(void)
 static void stream_close(esp_gsp_handle_t ui)
 {
     if (s_streaming) {
-        (void)esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_CANVAS);
+        (void)esp_gsp_canvas_stop(ui, s_binds.canvas);
     }
     s_streaming = false;
     for (size_t i = 0; i < MOSAIC_CAMERA_BUFFERS; ++i) {
@@ -1057,16 +1066,21 @@ static void stream_push(esp_gsp_handle_t ui)
     fill_frame(s_frames[slot], s_phase++);
     s_busy[slot] = true;
     esp_gsp_err_t ret = esp_gsp_canvas_push(
-        ui, GSP_BIND_CAMERA_CANVAS, s_frames[slot], MOSAIC_CAMERA_STRIDE,
+        ui, s_binds.canvas, s_frames[slot], MOSAIC_CAMERA_STRIDE,
         frame_released, (void *)(uintptr_t)slot);
     if (ret != ESP_GSP_OK) {
         s_busy[slot] = false;
     }
 }
 
-esp_err_t mosaic_camera_start(esp_gsp_handle_t ui)
+esp_err_t mosaic_camera_start(
+    esp_gsp_handle_t ui, const mosaic_camera_binds_t *binds)
 {
     (void)ui;
+    if (binds == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    s_binds = *binds;
     if (!s_streaming) {
         stream_open();
     }

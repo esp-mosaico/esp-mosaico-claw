@@ -9,8 +9,8 @@
 
 /*
  * Select the power-state surface. Unplugged shows AOD; charging shows CHRG.
- * Battery UI follows mosaic_settings_subscribe_battery() publishes
- * (platform get/info sampler + notify-on-change).
+ * Battery UI follows system.power capability publishes
+ * (platform sampler + notify-on-change).
  * The transition is a hard cut and is safe to call repeatedly.
  */
 void mosaic_hub_set_charging(bool charging);

@@ -7,12 +7,19 @@
 #include "music_actions.h"
 #include "music_binds.h"
 #include "music_objects.h"
-#include "mosaic_settings.h"
+#include "mosaic_capability.h"
+#include "mosaic_capability_contracts.h"
 
-#include "music_controller.h"
+#include "mosaic_media_player.h"
 #include "music_presenter.h"
 
 #include <stdio.h>
+
+/* The App drives local playback and the shared output level, and reaches
+ * nothing else on the device. */
+#define MUSIC_CAPABILITIES ( \
+    MOSAIC_CAP_SYSTEM_AUDIO_READ | MOSAIC_CAP_SYSTEM_AUDIO_CONTROL | \
+    MOSAIC_CAP_MEDIA_PLAYER_READ | MOSAIC_CAP_MEDIA_PLAYER_CONTROL)
 
 #define MUSIC_APP_ID          5U
 #define MUSIC_LIBRARY_PAGE    0U
@@ -21,11 +28,35 @@
 #define MUSIC_VOLUME_X_MAX    479
 #define MUSIC_VOLUME_Y_MIN    88
 #define MUSIC_VOLUME_Y_MAX    292
-static music_controller_handle_t s_controller;
+static bool s_player_started;
 static music_presenter_handle_t s_presenter;
 static uint16_t s_page = MUSIC_PLAYER_PAGE;
 static bool s_volume_drag_active;
 static int s_volume = 65;
+
+static esp_err_t music_player_invoke(const char *command,
+    const void *args, size_t args_size)
+{
+    return mosaic_capability_invoke("media.player",
+        MUSIC_CAPABILITIES, command, args, args_size, NULL, 0);
+}
+
+/* START and STEP advance the same controller clock, so they share args. */
+static esp_err_t music_player_tick(const char *command, int64_t now_us)
+{
+    const mosaic_cap_player_time_args_t args = { .now_us = now_us };
+    return music_player_invoke(command, &args, sizeof(args));
+}
+
+static esp_err_t music_set_volume(int32_t volume, bool persist)
+{
+    const mosaic_cap_audio_volume_args_t args = {
+        .volume = volume,
+        .persist = persist,
+    };
+    return mosaic_capability_invoke("system.audio",
+        MUSIC_CAPABILITIES, "set_volume", &args, sizeof(args), NULL, 0);
+}
 
 static const mosaic_app_route_t s_music_routes[] = {
     { .action_id = GSP_ACT_ID_MUSIC_BLUETOOTH, .target_name = "bluetooth" },
@@ -47,9 +78,10 @@ static void show_page(esp_gsp_handle_t ui, uint16_t page, bool animated)
 
 static void render(esp_gsp_handle_t ui, bool force)
 {
-    music_snapshot_t snapshot;
-    if (s_controller == NULL || s_presenter == NULL ||
-            music_controller_snapshot(s_controller, &snapshot) != ESP_OK) {
+    mosaic_cap_player_t snapshot;
+    if (!s_player_started || s_presenter == NULL ||
+            mosaic_capability_read("media.player", MUSIC_CAPABILITIES,
+                &snapshot, sizeof(snapshot)) != ESP_OK) {
         return;
     }
     (void)music_presenter_render(s_presenter, ui, &snapshot, force);
@@ -76,7 +108,7 @@ static void handle_volume_pointer(esp_gsp_handle_t ui,
 {
     if (!event->data.pointer.pressed) {
         if (s_volume_drag_active) {
-            (void)mosaic_settings_set_volume(s_volume, true);
+            (void)music_set_volume(s_volume, true);
         }
         s_volume_drag_active = false;
         return;
@@ -95,7 +127,7 @@ static void handle_volume_pointer(esp_gsp_handle_t ui,
     char text[8];
     snprintf(text, sizeof(text), "%d%%", s_volume);
     (void)esp_gsp_set_text(ui, GSP_BIND_MUSIC_VOLUME_TEXT, text);
-    (void)mosaic_settings_set_volume(s_volume, false);
+    (void)music_set_volume(s_volume, false);
 }
 
 static void music_started(esp_gsp_handle_t ui)
@@ -103,16 +135,18 @@ static void music_started(esp_gsp_handle_t ui)
     (void)ui;
     s_page = MUSIC_PLAYER_PAGE;
     s_volume_drag_active = false;
-    mosaic_settings_snapshot_t settings;
-    if (mosaic_settings_get_snapshot(&settings) == ESP_OK) {
-        s_volume = settings.volume;
+    mosaic_cap_audio_t audio = {0};
+    if (mosaic_capability_read("system.audio", MUSIC_CAPABILITIES,
+            &audio, sizeof(audio)) == ESP_OK) {
+        s_volume = audio.volume;
     }
-    if (music_controller_create(&s_controller) != ESP_OK) {
+    if (mosaic_media_player_start() != ESP_OK) {
         return;
     }
+    s_player_started = true;
     if (music_presenter_create(&s_presenter) != ESP_OK) {
-        music_controller_delete(s_controller);
-        s_controller = NULL;
+        mosaic_media_player_stop();
+        s_player_started = false;
         return;
     }
 }
@@ -121,9 +155,9 @@ static void music_stopping(esp_gsp_handle_t ui)
 {
     (void)ui;
     music_presenter_delete(s_presenter);
-    music_controller_delete(s_controller);
+    mosaic_media_player_stop();
     s_presenter = NULL;
-    s_controller = NULL;
+    s_player_started = false;
 }
 
 static void handle_call(esp_gsp_handle_t ui, uint16_t action)
@@ -142,24 +176,26 @@ static void handle_call(esp_gsp_handle_t ui, uint16_t action)
     case GSP_ACT_ID_MUSIC_TRACK_0:
     case GSP_ACT_ID_MUSIC_TRACK_1:
     case GSP_ACT_ID_MUSIC_TRACK_2: {
-        const size_t index = action == GSP_ACT_ID_MUSIC_TRACK_0 ? 0U
-            : action == GSP_ACT_ID_MUSIC_TRACK_1 ? 1U : 2U;
-        (void)music_controller_select(s_controller, index);
+        const mosaic_cap_player_select_args_t args = {
+            .track_index = action == GSP_ACT_ID_MUSIC_TRACK_0 ? 0U
+                : action == GSP_ACT_ID_MUSIC_TRACK_1 ? 1U : 2U,
+        };
+        (void)music_player_invoke("select", &args, sizeof(args));
         render(ui, false);
         show_page(ui, MUSIC_PLAYER_PAGE, true);
         return;
     }
     case GSP_ACT_ID_MUSIC_PREVIOUS:
-        (void)music_controller_previous(s_controller);
+        (void)music_player_invoke("previous", NULL, 0);
         break;
     case GSP_ACT_ID_MUSIC_TOGGLE:
-        (void)music_controller_toggle(s_controller);
+        (void)music_player_invoke("toggle", NULL, 0);
         break;
     case GSP_ACT_ID_MUSIC_NEXT:
-        (void)music_controller_next(s_controller);
+        (void)music_player_invoke("next", NULL, 0);
         break;
     case GSP_ACT_ID_MUSIC_REPEAT:
-        (void)music_controller_toggle_shuffle(s_controller);
+        (void)music_player_invoke("toggle_shuffle", NULL, 0);
         break;
     default:
         return;
@@ -171,12 +207,12 @@ static void music_event(
     esp_gsp_handle_t ui, const struct mosaic_event *raw_event)
 {
     const mosaic_event_t *event = raw_event;
-    if (event == NULL || s_controller == NULL || s_presenter == NULL) {
+    if (event == NULL || !s_player_started || s_presenter == NULL) {
         return;
     }
     switch (event->type) {
     case MOSAIC_EVENT_START:
-        if (music_controller_start(s_controller, event->timestamp_us) != ESP_OK) {
+        if (music_player_tick("start", event->timestamp_us) != ESP_OK) {
             break;
         }
         render(ui, true);
@@ -188,7 +224,7 @@ static void music_event(
         handle_volume_pointer(ui, event);
         break;
     case MOSAIC_EVENT_TIMER:
-        if (music_controller_step(s_controller, event->timestamp_us) == ESP_OK) {
+        if (music_player_tick("step", event->timestamp_us) == ESP_OK) {
             render(ui, false);
         }
         break;

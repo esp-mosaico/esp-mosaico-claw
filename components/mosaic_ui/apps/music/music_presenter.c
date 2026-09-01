@@ -15,10 +15,10 @@
 
 struct music_presenter_t {
     uint32_t rendered_revision;
-    size_t rendered_track_index;
+    uint32_t rendered_track_index;
     uint32_t rendered_elapsed_seconds;
     uint32_t rendered_remaining_seconds;
-    music_playback_state_t rendered_state;
+    int32_t rendered_state;
     bool rendered_shuffle_enabled;
     bool valid;
 };
@@ -61,7 +61,7 @@ void music_presenter_invalidate(music_presenter_handle_t presenter)
 }
 
 esp_err_t music_presenter_render(music_presenter_handle_t presenter,
-    esp_gsp_handle_t ui, const music_snapshot_t *snapshot, bool force)
+    esp_gsp_handle_t ui, const mosaic_cap_player_t *snapshot, bool force)
 {
     if (presenter == NULL || ui == NULL || snapshot == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -134,10 +134,10 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
     }
     if (state_changed && err == ESP_OK) {
         err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_TOGGLE_TEXT,
-            snapshot->state == MUSIC_PLAYBACK_PLAYING ? "PAUSE" : "PLAY");
+            snapshot->state == MOSAIC_CAP_PLAYER_PLAYING ? "PAUSE" : "PLAY");
     }
     if (state_changed) {
-        const bool playing = snapshot->state == MUSIC_PLAYBACK_PLAYING;
+        const bool playing = snapshot->state == MOSAIC_CAP_PLAYER_PLAYING;
         err = set_visible(ui, GSP_BIND_MUSIC_PLAY_VISIBLE, !playing, err);
         err = set_visible(ui, GSP_BIND_MUSIC_PAUSE_VISIBLE, playing, err);
     }
@@ -173,11 +173,11 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
             err = set_visible(ui, row_binds[index], populated, err);
             if (populated && err == ESP_OK) {
                 err = esp_gsp_set_text(ui, title_binds[index],
-                                       snapshot->library_titles[index]);
+                                       snapshot->library[index].title);
             }
             if (populated && err == ESP_OK) {
                 err = esp_gsp_set_text(ui, artist_binds[index],
-                                       snapshot->library_artists[index]);
+                                       snapshot->library[index].artist);
             }
             err = set_visible(ui, playing_binds[index],
                               populated && index == snapshot->track_index,

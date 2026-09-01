@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": 43,
+  "name": "breakout",
+  "title": "Bricks",
+  "launch_action": 4,
+  "bundle": "breakout.gspb",
+  "logic": "breakout.lua",
+  "tick_ms": 16,
+  "disable_swipe": true,
+  "capabilities": []
+}

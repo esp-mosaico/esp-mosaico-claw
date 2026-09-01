@@ -14,6 +14,11 @@ function(mosaic_setup_bundle_generation_for_target
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     set(mosaic_python_requirements "${CMAKE_SOURCE_DIR}/requirements.txt")
     if(NOT EXISTS "${mosaic_python_requirements}")
+        get_filename_component(mosaic_repo_root "${root}/../.." ABSOLUTE)
+        set(mosaic_python_requirements
+            "${mosaic_repo_root}/requirements.txt")
+    endif()
+    if(NOT EXISTS "${mosaic_python_requirements}")
         message(FATAL_ERROR
             "mosaic_ui: Python requirements file is missing: "
             "${mosaic_python_requirements}")

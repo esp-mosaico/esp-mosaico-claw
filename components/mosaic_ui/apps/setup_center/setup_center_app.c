@@ -553,10 +553,15 @@ static esp_err_t setup_network_status(mosaic_cap_wifi_t *out)
         out, sizeof(*out));
 }
 
+static bool setup_wifi_accepted(esp_err_t err)
+{
+    return err == ESP_OK || err == ESP_ERR_NOT_FINISHED;
+}
+
 static esp_err_t setup_network_scan_request(void)
 {
-    return mosaic_capability_invoke("net.wifi.scan",
-        SETUP_CENTER_CAPABILITIES, "start", NULL, 0, NULL, 0);
+    return mosaic_capability_invoke("net.wifi",
+        SETUP_CENTER_CAPABILITIES, "scan", NULL, 0, NULL, 0);
 }
 
 static esp_err_t setup_network_connect(const char *ssid, const char *password)
@@ -642,7 +647,7 @@ static void setup_network_request_scan(int64_t now_us)
     s_setup.network_count = 0;
     SETUP_MODEL_UNLOCK();
     const esp_err_t err = setup_network_scan_request();
-    if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
+    if (!setup_wifi_accepted(err) && err != ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGW(TAG, "request Wi-Fi scan failed: %s",
                  esp_err_to_name(err));
     }
@@ -1237,7 +1242,8 @@ static void setup_network_select(const mosaic_event_t *event)
         s_setup.ui, s_setup.selected_ssid);
     if (!secured && setup_network_backend_available()) {
         s_setup.network_connect_pending = true;
-        if (setup_network_connect(s_setup.selected_ssid, "") == ESP_OK) {
+        if (setup_wifi_accepted(
+                setup_network_connect(s_setup.selected_ssid, ""))) {
             /* A Join of the already-connected SSID may not publish a new
              * manager revision. Re-evaluate the current snapshot as part of
              * this newly armed transaction. */
@@ -1288,7 +1294,7 @@ static bool setup_network_join(int64_t now_us)
         s_setup.network_connect_pending = true;
         const esp_err_t err = setup_network_connect(
             s_setup.selected_ssid, password);
-        if (err != ESP_OK) {
+        if (!setup_wifi_accepted(err)) {
             s_setup.network_connect_pending = false;
             (void)mosaic_top_notice_show(
                 s_setup.ui, &s_notice, "Unable to join network",

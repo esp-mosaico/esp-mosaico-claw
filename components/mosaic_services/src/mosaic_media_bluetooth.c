@@ -33,12 +33,11 @@ static const char *TAG = "mosaic_bt_cap";
 
 typedef struct {
     bluetooth_audio_runtime_handle_t runtime;
-    /* Cover payload taken from the runtime and retained until the borrower
-     * releases it, so ownership never crosses the capability boundary. */
-    uint8_t *cover_data;
-    size_t cover_size;
-    uint32_t cover_revision;
 } mosaic_media_bluetooth_t;
+
+typedef struct {
+    uint8_t *data;
+} mosaic_bluetooth_cover_borrow_t;
 
 static mosaic_media_bluetooth_t s_bluetooth;
 static bool s_registered;
@@ -115,10 +114,6 @@ static void bluetooth_shutdown(void)
     }
     bluetooth_audio_runtime_delete(s_bluetooth.runtime);
     s_bluetooth.runtime = NULL;
-    free(s_bluetooth.cover_data);
-    s_bluetooth.cover_data = NULL;
-    s_bluetooth.cover_size = 0;
-    s_bluetooth.cover_revision = 0;
 }
 
 static esp_err_t bluetooth_read(void *user_ctx, void *out, size_t size)
@@ -190,22 +185,24 @@ static esp_err_t bluetooth_borrow(void *user_ctx, uint16_t blob_id,
     if (s_bluetooth.runtime == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    /* Only one cover is retained at a time; a newer one replaces it. */
+    mosaic_bluetooth_cover_borrow_t *borrow = calloc(1, sizeof(*borrow));
+    if (borrow == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
     uint8_t *data = NULL;
     size_t size = 0;
     uint32_t revision = 0;
     const esp_err_t err = bluetooth_audio_runtime_take_cover(
         s_bluetooth.runtime, &data, &size, &revision);
     if (err != ESP_OK) {
+        free(borrow);
         return err;
     }
-    free(s_bluetooth.cover_data);
-    s_bluetooth.cover_data = data;
-    s_bluetooth.cover_size = size;
-    s_bluetooth.cover_revision = revision;
+    (void)revision;
+    borrow->data = data;
     out_blob->data = data;
     out_blob->size = size;
-    out_blob->token = (void *)(uintptr_t)revision;
+    out_blob->token = borrow;
     return ESP_OK;
 }
 
@@ -215,13 +212,9 @@ static void bluetooth_release(void *user_ctx, mosaic_capability_blob_t *blob)
     if (blob == NULL) {
         return;
     }
-    /* A stale token means a newer cover already replaced this buffer, which
-     * the newer borrow freed. */
-    if ((uint32_t)(uintptr_t)blob->token == s_bluetooth.cover_revision) {
-        free(s_bluetooth.cover_data);
-        s_bluetooth.cover_data = NULL;
-        s_bluetooth.cover_size = 0;
-    }
+    mosaic_bluetooth_cover_borrow_t *borrow = blob->token;
+    free(borrow != NULL ? borrow->data : NULL);
+    free(borrow);
     blob->data = NULL;
     blob->size = 0;
     blob->token = NULL;

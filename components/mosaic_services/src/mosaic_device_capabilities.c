@@ -28,6 +28,18 @@ static mosaic_haptic_pulse_fn s_haptic_pulse;
 static void *s_haptic_user_ctx;
 static mosaic_imu_read_fn s_imu_read;
 static void *s_imu_user_ctx;
+static bool s_initialized;
+static bool s_core_registered;
+static bool s_media_initialized;
+static bool s_battery_subscribed;
+static bool s_wifi_registered;
+static bool s_wifi_subscribed;
+static bool s_imu_registered;
+
+static void unregister_provider(const char *name)
+{
+    (void)mosaic_capability_unregister(name, NULL);
+}
 
 /** Copy a model string into a fixed contract field, always terminated. */
 static void copy_field(char *dst, size_t capacity, const char *src)
@@ -676,19 +688,6 @@ static const mosaic_capability_provider_t s_wifi_providers[] = {
     { .name = "net.wifi", .ops = &s_wifi_ops },
     { .name = "net.wifi.scan", .ops = &s_wifi_scan_ops },
 };
-
-static bool s_initialized;
-static bool s_core_registered;
-static bool s_media_initialized;
-static bool s_battery_subscribed;
-static bool s_wifi_registered;
-static bool s_wifi_subscribed;
-static bool s_imu_registered;
-
-static void unregister_provider(const char *name)
-{
-    (void)mosaic_capability_unregister(name, NULL);
-}
 
 void mosaic_device_capabilities_deinit(void)
 {

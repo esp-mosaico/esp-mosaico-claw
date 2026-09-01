@@ -6,9 +6,6 @@ function(mosaic_collect_app_modules root binary_dir)
     file(GLOB app_manifests CONFIGURE_DEPENDS
         "${root}/hub/app.cmake"
         "${root}/apps/*/app.cmake")
-    # ENV and TOF are placeholder demos without product entry points. Keep
-    # their sources in the tree, but do not compile, generate, or package them.
-    list(FILTER app_manifests EXCLUDE REGEX "/apps/(env|tof)/app\\.cmake$")
     list(SORT app_manifests)
     set(_hub_manifest "${root}/hub/app.cmake")
     if("${_hub_manifest}" IN_LIST app_manifests)

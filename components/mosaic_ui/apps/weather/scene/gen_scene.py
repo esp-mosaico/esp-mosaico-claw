@@ -97,10 +97,6 @@ def main():
     objs.append(label(row, 349, 0, 58, 24, "--", size=24,
                       color="#FCFCFF", align="right", name="high",
                       font_charset="-0123456789°"))
-    objs.append(label(content, 366, 70, 90, 22, "OFFLINE", size=16,
-                      color="#91919B", align="right", bind="weather_status",
-                      name="weather_status", font_charset=CHARSET))
-
     write_scene(scene_out_path(HERE, "weather_480.json"),
                 "weather", objs, font=FONT)
 

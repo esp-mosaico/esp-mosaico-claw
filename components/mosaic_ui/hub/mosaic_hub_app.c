@@ -33,11 +33,11 @@
 #define MOSAIC_AOD_UNLOCK_X_MIN      120
 #define MOSAIC_AOD_UNLOCK_X_MAX      360
 #define MOSAIC_AOD_UNLOCK_Y_MIN      384
-#define MOSAIC_HOME_TEMP_X_MIN        34
-#define MOSAIC_HOME_TEMP_X_MAX       239
-#define MOSAIC_HOME_TEMP_Y_MIN        43
-#define MOSAIC_HOME_TEMP_Y_MAX       141
-#define MOSAIC_HOME_TEMP_TAP_SLOP     16
+#define MOSAIC_HOME_WEATHER_X_MIN     13
+#define MOSAIC_HOME_WEATHER_X_MAX    260
+#define MOSAIC_HOME_WEATHER_Y_MIN     10
+#define MOSAIC_HOME_WEATHER_Y_MAX    219
+#define MOSAIC_HOME_WEATHER_TAP_SLOP  16
 #define MOSAIC_CHARGE_LEVELS         10U
 #define MOSAIC_BATTERY_APPLY_MS      200U
 #define MOSAIC_WIFI_POLL_TICKS       5U   /* 5 * 200 ms ≈ 1 s RSSI refresh */
@@ -94,10 +94,10 @@ static bool s_aod_hint_dim;
 static bool s_pointer_down;
 static bool s_quick_brightness_drag;
 static bool s_quick_volume_drag;
-static bool s_home_temp_tracking;
-static bool s_home_temp_tap_valid;
-static int32_t s_home_temp_x0;
-static int32_t s_home_temp_y0;
+static bool s_home_weather_tracking;
+static bool s_home_weather_tap_valid;
+static int32_t s_home_weather_x0;
+static int32_t s_home_weather_y0;
 static int32_t s_quick_level;
 static bool s_quick_wlan = true;
 static bool s_quick_vibration = true;
@@ -1111,35 +1111,35 @@ static bool mosaic_hub_intercept_pointer(
 {
     (void)user_ctx;
 
-    /* The Home weather shortcut deliberately owns only the temperature
-     * number.  Handling it before scene hit-testing avoids the generic
-     * pressed scrim, so neither the card nor the temperature flashes black. */
+    /* The Home weather shortcut owns the complete left half of the card:
+     * temperature, condition, and city. Handling it before scene hit-testing
+     * avoids the generic pressed scrim while the right clock stays inert. */
     if (!mosaic_hub_lock_visible()) {
         if (pressed && !s_pointer_down &&
                 mosaic_hub_home_surface_visible(ui) &&
-                x >= MOSAIC_HOME_TEMP_X_MIN &&
-                x < MOSAIC_HOME_TEMP_X_MAX &&
-                y >= MOSAIC_HOME_TEMP_Y_MIN &&
-                y < MOSAIC_HOME_TEMP_Y_MAX) {
-            s_home_temp_tracking = true;
-            s_home_temp_tap_valid = true;
-            s_home_temp_x0 = x;
-            s_home_temp_y0 = y;
+                x >= MOSAIC_HOME_WEATHER_X_MIN &&
+                x < MOSAIC_HOME_WEATHER_X_MAX &&
+                y >= MOSAIC_HOME_WEATHER_Y_MIN &&
+                y < MOSAIC_HOME_WEATHER_Y_MAX) {
+            s_home_weather_tracking = true;
+            s_home_weather_tap_valid = true;
+            s_home_weather_x0 = x;
+            s_home_weather_y0 = y;
         }
-        if (s_home_temp_tracking) {
-            const int32_t dx = x - s_home_temp_x0;
-            const int32_t dy = y - s_home_temp_y0;
-            if (dx < -MOSAIC_HOME_TEMP_TAP_SLOP ||
-                    dx > MOSAIC_HOME_TEMP_TAP_SLOP ||
-                    dy < -MOSAIC_HOME_TEMP_TAP_SLOP ||
-                    dy > MOSAIC_HOME_TEMP_TAP_SLOP) {
-                s_home_temp_tap_valid = false;
+        if (s_home_weather_tracking) {
+            const int32_t dx = x - s_home_weather_x0;
+            const int32_t dy = y - s_home_weather_y0;
+            if (dx < -MOSAIC_HOME_WEATHER_TAP_SLOP ||
+                    dx > MOSAIC_HOME_WEATHER_TAP_SLOP ||
+                    dy < -MOSAIC_HOME_WEATHER_TAP_SLOP ||
+                    dy > MOSAIC_HOME_WEATHER_TAP_SLOP) {
+                s_home_weather_tap_valid = false;
             }
             s_pointer_down = pressed;
             if (!pressed) {
-                const bool open_weather = s_home_temp_tap_valid;
-                s_home_temp_tracking = false;
-                s_home_temp_tap_valid = false;
+                const bool open_weather = s_home_weather_tap_valid;
+                s_home_weather_tracking = false;
+                s_home_weather_tap_valid = false;
                 if (open_weather) {
                     const mosaic_app_descriptor_t *weather =
                         mosaic_app_descriptor_for_action(
@@ -1152,8 +1152,8 @@ static bool mosaic_hub_intercept_pointer(
             return true;
         }
     } else {
-        s_home_temp_tracking = false;
-        s_home_temp_tap_valid = false;
+        s_home_weather_tracking = false;
+        s_home_weather_tap_valid = false;
     }
 
     bool drawer_open = false;
@@ -1219,8 +1219,8 @@ static bool mosaic_hub_intercept_pointer(
     s_pointer_down = false;
     s_quick_brightness_drag = false;
     s_quick_volume_drag = false;
-    s_home_temp_tracking = false;
-    s_home_temp_tap_valid = false;
+    s_home_weather_tracking = false;
+    s_home_weather_tap_valid = false;
 
     const int32_t dy = s_aod_y0 - y; /* up = positive */
     const int32_t dx = (x > s_aod_x0) ? (x - s_aod_x0) : (s_aod_x0 - x);

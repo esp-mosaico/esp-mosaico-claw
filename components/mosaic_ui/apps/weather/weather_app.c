@@ -153,10 +153,6 @@ static void weather_render(esp_gsp_handle_t ui,
     if (s_forecast_list != ESP_GSP_LIST_NONE) {
         (void)gsp_weather_weather_forecast_list_refresh(ui, s_forecast_list);
     }
-    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_STATUS,
-                          snapshot->stale ? "CACHED" :
-                          snapshot->online ? "LIVE" : "OFFLINE");
-
     const char *symbol = snapshot->symbol_code;
     const bool thunder = strstr(symbol, "thunder") != NULL ||
                          strstr(symbol, "rain") != NULL;

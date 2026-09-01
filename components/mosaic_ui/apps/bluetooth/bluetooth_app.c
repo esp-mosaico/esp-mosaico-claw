@@ -84,7 +84,6 @@ static int bluetooth_volume_from_y(int32_t y)
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "mosaic_loader.h"
-#include "mosaic_media_bluetooth.h"
 
 static const char *TAG = "bluetooth_app";
 static bool s_media_started;
@@ -270,7 +269,7 @@ static void bluetooth_render(esp_gsp_handle_t ui)
         progress = 100U;
     }
     bluetooth_set_progress(ui, (int32_t)progress);
-    snprintf(text, sizeof(text), "%d%%", s_snapshot.volume_percent);
+    snprintf(text, sizeof(text), "%" PRId32 "%%", s_snapshot.volume_percent);
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_VOLUME, text);
     (void)esp_gsp_set_value(ui, GSP_BIND_BT_VOLUME_LEVEL,
                             s_snapshot.volume_percent);
@@ -298,14 +297,7 @@ static void bluetooth_try_start(void)
     if (s_media_started) {
         return;
     }
-    esp_err_t err = mosaic_media_bluetooth_start();
-    if (err == ESP_ERR_INVALID_STATE) {
-        /* The mixer is not up yet; the next tick retries. */
-        return;
-    }
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "start Bluetooth App failed: %s",
-                 esp_err_to_name(err));
+    if (!mosaic_capability_available("media.bluetooth")) {
         return;
     }
     s_media_started = true;
@@ -399,9 +391,6 @@ static void bluetooth_event(esp_gsp_handle_t ui,
     case MOSAIC_EVENT_START:
         s_cover_revision = UINT32_MAX;
         atomic_store(&s_cover_published, false);
-        if (!audio_hub_is_started()) {
-            ESP_LOGW(TAG, "shared audio mixer is not ready");
-        }
         bluetooth_try_start();
         bluetooth_render(ui);
         break;
@@ -431,7 +420,7 @@ static void bluetooth_event(esp_gsp_handle_t ui,
                     s_snapshot_subscription) == ESP_OK) {
             s_snapshot_subscription = NULL;
         }
-        mosaic_media_bluetooth_stop();
+        (void)bluetooth_invoke("shutdown");
         mosaic_top_notice_detach(ui);
         s_media_started = false;
         s_cover_revision = UINT32_MAX;

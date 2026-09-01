@@ -26,32 +26,12 @@ typedef struct {
     float yaw_deg;
 } mosaic_cap_orientation_t;
 
-/* ---------------- system.battery ---------------- */
-
-typedef struct {
-    bool available;
-    bool charging;
-    uint32_t percent;
-    uint32_t voltage_mv;
-    int32_t current_ma;
-} mosaic_cap_battery_t;
-
 /* ---------------- system.time ---------------- */
 
 typedef struct {
     int64_t unix_seconds;
     int32_t utc_offset_minutes;
 } mosaic_cap_time_t;
-
-/* ---------------- system.status ---------------- */
-
-typedef struct {
-    bool battery_available;
-    bool charging;
-    bool network_enabled;
-    bool network_connected;
-    int32_t network_rssi;
-} mosaic_cap_status_t;
 
 /* ---------------- system.display ---------------- */
 
@@ -343,6 +323,8 @@ typedef enum {
     MOSAIC_CAP_BT_CMD_PREVIOUS,
     MOSAIC_CAP_BT_CMD_NEXT,
     MOSAIC_CAP_BT_CMD_SET_VOLUME,
+    /** Powers the A2DP sink down; the capability stays registered. */
+    MOSAIC_CAP_BT_CMD_SHUTDOWN,
 } mosaic_cap_bluetooth_command_t;
 
 /* ---------------- media.player ---------------- */
@@ -399,6 +381,8 @@ typedef enum {
     MOSAIC_CAP_PLAYER_CMD_SEEK,
     MOSAIC_CAP_PLAYER_CMD_START,
     MOSAIC_CAP_PLAYER_CMD_STEP,
+    /** Releases the decoder; the capability stays registered. */
+    MOSAIC_CAP_PLAYER_CMD_CLOSE,
 } mosaic_cap_player_command_t;
 
 /* ---------------- net.weather ---------------- */

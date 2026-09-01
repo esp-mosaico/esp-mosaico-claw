@@ -2,11 +2,9 @@
  * SPDX-FileCopyrightText: 2026 Espressif Systems (Shanghai) CO LTD
  * SPDX-License-Identifier: Apache-2.0
  */
-#include "mosaic_settings_platform.h"
+#include "mosaic_device_ops.h"
 
 #include "app_factory_reset.h"
-
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 
 #include <stdlib.h>
 #include <string.h>
@@ -27,11 +25,12 @@
 #include "mosaic_system.h"
 #include "mosaic_ui.h"
 #include "update_check_service.h"
+#include "mosaic_imu_platform.h"
 #include "esp_wifi.h"
 #include "wifi_manager.h"
 
-static const char *TAG = "mosaic_settings_platform";
-static mosaic_settings_platform_config_t s_config;
+static const char *TAG = "mosaic_device_ops";
+static mosaic_device_ops_config_t s_config;
 static TaskHandle_t s_rotation_task;
 
 static void delayed_factory_restart(void *arg)
@@ -144,7 +143,7 @@ static void wifi_state_event_cb(
     /* Do not read services or touch GSP from the ESP event-loop callback.
      * Invalidation schedules Settings to consume the new snapshot on its
      * normal UI frame. */
-    mosaic_settings_platform_notify_network_changed();
+    mosaic_device_ops_notify_network_changed();
 }
 
 static esp_err_t get_snapshot(
@@ -619,16 +618,10 @@ static esp_err_t request_network_reconfigure(void *user_ctx)
 
 static esp_err_t haptic_feedback(void *user_ctx, uint32_t duration_ms)
 {
-    app_system_config_t system_config;
-    if (app_system_config_load(&system_config) == ESP_OK &&
-            !system_config.vibration_enabled) {
-        return ESP_OK;
-    }
     (void)user_ctx;
     return app_cap_system_platform_vibrate(duration_ms);
 }
 
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
 extern esp_err_t lcd_panel_set_brightness_entry_t(
     esp_lcd_panel_handle_t panel, uint8_t percent);
 
@@ -638,10 +631,9 @@ static esp_err_t board_set_brightness(
     (void)user_ctx;
     return lcd_panel_set_brightness_entry_t(panel, percent);
 }
-#endif
 
-esp_err_t mosaic_settings_platform_init(
-    const mosaic_settings_platform_config_t *config)
+esp_err_t mosaic_device_ops_init(
+    const mosaic_device_ops_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config && config->settings && config->save_config,
                         ESP_ERR_INVALID_ARG, TAG, "invalid platform config");
@@ -658,10 +650,7 @@ esp_err_t mosaic_settings_platform_init(
     ESP_RETURN_ON_ERROR(wifi_manager_register_event_callback(
                             wifi_state_event_cb, NULL),
                         TAG, "subscribe to Wi-Fi state");
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
     display_service_set_brightness_provider(board_set_brightness, NULL);
-#endif
-    mosaic_ui_set_haptic_callback(haptic_feedback, NULL);
     ESP_RETURN_ON_ERROR(mosaic_system_configure(&(mosaic_system_ops_t) {
         .get_boot_stage = get_boot_stage,
         .set_boot_stage = set_boot_stage,
@@ -687,8 +676,10 @@ esp_err_t mosaic_settings_platform_init(
         .request_network_reconfigure = request_network_reconfigure,
         .user_ctx = config->settings,
     }), TAG, "configure settings ops");
+    ESP_RETURN_ON_ERROR(mosaic_imu_platform_init(), TAG, "bind board IMU");
     ESP_RETURN_ON_ERROR(mosaic_device_capabilities_init(), TAG,
                         "publish device capability domains");
+    mosaic_device_capabilities_set_haptic(haptic_feedback, NULL);
     ESP_RETURN_ON_ERROR(update_check_service_subscribe(
                             update_check_event_cb, NULL),
                         TAG, "subscribe to update checker");
@@ -700,34 +691,14 @@ esp_err_t mosaic_settings_platform_init(
     return ESP_OK;
 }
 
-esp_err_t mosaic_settings_platform_start_battery_monitor(void)
+esp_err_t mosaic_device_ops_start_battery_monitor(void)
 {
     /* The UI subscriber must be live before a critical sample can arm shutdown. */
     return mosaic_battery_platform_start();
 }
 
-void mosaic_settings_platform_notify_network_changed(void)
+void mosaic_device_ops_notify_network_changed(void)
 {
     static uint32_t revision;
     invalidate_settings_app(++revision);
 }
-
-#else
-
-esp_err_t mosaic_settings_platform_init(
-    const mosaic_settings_platform_config_t *config)
-{
-    (void)config;
-    return ESP_ERR_NOT_SUPPORTED;
-}
-
-esp_err_t mosaic_settings_platform_start_battery_monitor(void)
-{
-    return ESP_ERR_NOT_SUPPORTED;
-}
-
-void mosaic_settings_platform_notify_network_changed(void)
-{
-}
-
-#endif

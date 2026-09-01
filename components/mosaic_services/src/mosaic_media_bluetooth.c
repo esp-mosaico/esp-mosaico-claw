@@ -14,21 +14,22 @@
 
 #include "mosaic_media_bluetooth.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_log.h"
 #include "mosaic_capability.h"
 #include "mosaic_capability_contracts.h"
 
 #if defined(ESP_PLATFORM)
 #include "audio_hub.h"
 #include "bluetooth_audio_runtime.h"
+#include "esp_log.h"
+
+static const char *TAG = "mosaic_bt_cap";
 #endif
 
 #if defined(ESP_PLATFORM)
-
-static const char *TAG = "mosaic_bt_cap";
 
 typedef struct {
     bluetooth_audio_runtime_handle_t runtime;
@@ -40,6 +41,7 @@ typedef struct {
 } mosaic_media_bluetooth_t;
 
 static mosaic_media_bluetooth_t s_bluetooth;
+static bool s_registered;
 
 static void snapshot_to_payload(const bluetooth_audio_snapshot_t *in,
                                 mosaic_cap_bluetooth_t *out)
@@ -76,17 +78,63 @@ static void on_runtime_changed(uint32_t revision, void *user_ctx)
         "media.bluetooth", &payload, sizeof(payload));
 }
 
+static esp_err_t bluetooth_ensure(void)
+{
+    if (s_bluetooth.runtime != NULL) {
+        return ESP_OK;
+    }
+    audio_mixer_handle_t mixer = NULL;
+    if (audio_hub_get_mixer(&mixer) != ESP_OK || mixer == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const bluetooth_audio_runtime_config_t config = {
+        .mixer = mixer,
+        .on_changed = on_runtime_changed,
+        .user_ctx = NULL,
+    };
+    esp_err_t err = bluetooth_audio_runtime_create(
+        &config, &s_bluetooth.runtime);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "create Bluetooth runtime failed: %s",
+                 esp_err_to_name(err));
+        return err;
+    }
+    err = bluetooth_audio_runtime_start(s_bluetooth.runtime);
+    if (err != ESP_OK) {
+        bluetooth_audio_runtime_delete(s_bluetooth.runtime);
+        s_bluetooth.runtime = NULL;
+        return err;
+    }
+    return ESP_OK;
+}
+
+static void bluetooth_shutdown(void)
+{
+    if (s_bluetooth.runtime == NULL) {
+        return;
+    }
+    bluetooth_audio_runtime_delete(s_bluetooth.runtime);
+    s_bluetooth.runtime = NULL;
+    free(s_bluetooth.cover_data);
+    s_bluetooth.cover_data = NULL;
+    s_bluetooth.cover_size = 0;
+    s_bluetooth.cover_revision = 0;
+}
+
 static esp_err_t bluetooth_read(void *user_ctx, void *out, size_t size)
 {
     (void)user_ctx;
     if (out == NULL || size != sizeof(mosaic_cap_bluetooth_t)) {
         return ESP_ERR_INVALID_ARG;
     }
-    bluetooth_audio_snapshot_t snapshot = {0};
     if (s_bluetooth.runtime == NULL) {
-        memset(out, 0, size);
-        return ESP_OK;
+        const esp_err_t err = bluetooth_ensure();
+        if (err != ESP_OK) {
+            memset(out, 0, size);
+            return ESP_OK;
+        }
     }
+    bluetooth_audio_snapshot_t snapshot = {0};
     const esp_err_t err = bluetooth_audio_runtime_get_snapshot(
         s_bluetooth.runtime, &snapshot);
     if (err != ESP_OK) {
@@ -102,8 +150,13 @@ static esp_err_t bluetooth_invoke(void *user_ctx, uint16_t command,
     (void)user_ctx;
     (void)out_result;
     (void)result_size;
-    if (s_bluetooth.runtime == NULL) {
-        return ESP_ERR_INVALID_STATE;
+    if (command == MOSAIC_CAP_BT_CMD_SHUTDOWN) {
+        bluetooth_shutdown();
+        return ESP_OK;
+    }
+    const esp_err_t err = bluetooth_ensure();
+    if (err != ESP_OK) {
+        return err;
     }
     switch (command) {
     case MOSAIC_CAP_BT_CMD_TOGGLE_PLAY:
@@ -181,67 +234,86 @@ static const mosaic_capability_ops_t s_bluetooth_ops = {
     .release = bluetooth_release,
 };
 
-esp_err_t mosaic_media_bluetooth_start(void)
+esp_err_t mosaic_media_bluetooth_init(void)
 {
-    if (s_bluetooth.runtime != NULL) {
+    if (s_registered) {
         return ESP_OK;
     }
-    audio_mixer_handle_t mixer = NULL;
-    if (audio_hub_get_mixer(&mixer) != ESP_OK || mixer == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    const bluetooth_audio_runtime_config_t config = {
-        .mixer = mixer,
-        .on_changed = on_runtime_changed,
-        .user_ctx = NULL,
-    };
-    esp_err_t err = bluetooth_audio_runtime_create(
-        &config, &s_bluetooth.runtime);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "create Bluetooth runtime failed: %s",
-                 esp_err_to_name(err));
-        return err;
-    }
-    err = bluetooth_audio_runtime_start(s_bluetooth.runtime);
-    if (err != ESP_OK) {
-        bluetooth_audio_runtime_delete(s_bluetooth.runtime);
-        s_bluetooth.runtime = NULL;
-        return err;
-    }
-    err = mosaic_capability_register(&(mosaic_capability_provider_t) {
+    const esp_err_t err = mosaic_capability_register(&(mosaic_capability_provider_t) {
         .name = "media.bluetooth",
         .ops = &s_bluetooth_ops,
     });
-    if (err != ESP_OK) {
-        bluetooth_audio_runtime_delete(s_bluetooth.runtime);
-        s_bluetooth.runtime = NULL;
+    if (err == ESP_OK) {
+        s_registered = true;
     }
     return err;
 }
 
-void mosaic_media_bluetooth_stop(void)
+void mosaic_media_bluetooth_deinit(void)
 {
-    if (s_bluetooth.runtime == NULL) {
+    bluetooth_shutdown();
+    if (!s_registered) {
         return;
     }
     (void)mosaic_capability_unregister("media.bluetooth", NULL);
-    bluetooth_audio_runtime_delete(s_bluetooth.runtime);
-    s_bluetooth.runtime = NULL;
-    free(s_bluetooth.cover_data);
-    s_bluetooth.cover_data = NULL;
-    s_bluetooth.cover_size = 0;
-    s_bluetooth.cover_revision = 0;
+    s_registered = false;
 }
 
 #else /* !ESP_PLATFORM */
 
-esp_err_t mosaic_media_bluetooth_start(void)
+static bool s_registered;
+
+static esp_err_t bluetooth_host_read(void *user_ctx, void *out, size_t size)
 {
+    (void)user_ctx;
+    if (out == NULL || size != sizeof(mosaic_cap_bluetooth_t)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out, 0, size);
+    return ESP_OK;
+}
+
+static esp_err_t bluetooth_host_invoke(void *user_ctx, uint16_t command,
+    const void *args, size_t args_size, void *out_result, size_t result_size)
+{
+    (void)user_ctx;
+    (void)args;
+    (void)args_size;
+    (void)out_result;
+    (void)result_size;
+    if (command == MOSAIC_CAP_BT_CMD_SHUTDOWN) {
+        return ESP_OK;
+    }
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-void mosaic_media_bluetooth_stop(void)
+static const mosaic_capability_ops_t s_bluetooth_host_ops = {
+    .read = bluetooth_host_read,
+    .invoke = bluetooth_host_invoke,
+};
+
+esp_err_t mosaic_media_bluetooth_init(void)
 {
+    if (s_registered) {
+        return ESP_OK;
+    }
+    const esp_err_t err = mosaic_capability_register(&(mosaic_capability_provider_t) {
+        .name = "media.bluetooth",
+        .ops = &s_bluetooth_host_ops,
+    });
+    if (err == ESP_OK) {
+        s_registered = true;
+    }
+    return err;
+}
+
+void mosaic_media_bluetooth_deinit(void)
+{
+    if (!s_registered) {
+        return;
+    }
+    (void)mosaic_capability_unregister("media.bluetooth", NULL);
+    s_registered = false;
 }
 
 #endif /* ESP_PLATFORM */

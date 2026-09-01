@@ -32,6 +32,7 @@ idf_component_register(
     PRIV_REQUIRES
         audio_hub
         audio_playback
+        claw_core
         weather_service
         bt
         espressif__esp_audio_codec

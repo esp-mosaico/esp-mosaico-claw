@@ -9,8 +9,6 @@
 #include "music_objects.h"
 #include "mosaic_capability.h"
 #include "mosaic_capability_contracts.h"
-
-#include "mosaic_media_player.h"
 #include "music_presenter.h"
 
 #include <stdio.h>
@@ -140,12 +138,11 @@ static void music_started(esp_gsp_handle_t ui)
             &audio, sizeof(audio)) == ESP_OK) {
         s_volume = audio.volume;
     }
-    if (mosaic_media_player_start() != ESP_OK) {
+    if (!mosaic_capability_available("media.player")) {
         return;
     }
     s_player_started = true;
     if (music_presenter_create(&s_presenter) != ESP_OK) {
-        mosaic_media_player_stop();
         s_player_started = false;
         return;
     }
@@ -154,8 +151,10 @@ static void music_started(esp_gsp_handle_t ui)
 static void music_stopping(esp_gsp_handle_t ui)
 {
     (void)ui;
+    if (s_player_started) {
+        (void)music_player_invoke("close", NULL, 0);
+    }
     music_presenter_delete(s_presenter);
-    mosaic_media_player_stop();
     s_presenter = NULL;
     s_player_started = false;
 }

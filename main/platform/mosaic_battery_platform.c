@@ -45,7 +45,6 @@ static void battery_low_shutdown_task(void *arg)
     (void)arg;
     ESP_LOGW(TAG, "battery SoC below %u%%; requesting hardware power-off",
              (unsigned)MOSAIC_BATTERY_LOW_SHUTDOWN_SOC);
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
     const gpio_config_t power_off_cfg = {
         .pin_bit_mask = 1ULL << MOSAIC_BATTERY_POWER_OFF_GPIO,
         .mode = GPIO_MODE_OUTPUT,
@@ -68,9 +67,6 @@ static void battery_low_shutdown_task(void *arg)
     (void)gpio_set_level(MOSAIC_BATTERY_POWER_OFF_GPIO, 1);
     ESP_LOGW(TAG, "power-off pulse sent on GPIO57 (%u ms)",
              (unsigned)MOSAIC_BATTERY_POWER_OFF_PULSE_MS);
-#else
-    ESP_LOGE(TAG, "low-battery power-off is unsupported on this board");
-#endif
     vTaskDelete(NULL);
 }
 

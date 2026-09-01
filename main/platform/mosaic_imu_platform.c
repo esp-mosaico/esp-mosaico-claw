@@ -11,9 +11,11 @@
 
 #include "bmi2.h"
 #include "esp_board_manager.h"
+#include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-#include "mosaic_imu.h"
+#include "mosaic_capability_contracts.h"
+#include "mosaic_device_capabilities.h"
 
 #define RAD_TO_DEG 57.2957795f
 #define BMI270_GYRO_500DPS_SCALE 65.536f
@@ -82,9 +84,12 @@ static float wrap_heading(float degrees)
     return degrees;
 }
 
-static esp_err_t read_orientation(mosaic_imu_sample_t *out, void *user_ctx)
+static esp_err_t imu_read(void *user_ctx, mosaic_cap_orientation_t *out)
 {
     (void)user_ctx;
+    if (out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
     void *handle = NULL;
     esp_err_t err = get_imu_handle(&handle);
     if (err != ESP_OK) return err;
@@ -134,7 +139,6 @@ static esp_err_t read_orientation(mosaic_imu_sample_t *out, void *user_ctx)
 
 esp_err_t mosaic_imu_platform_init(void)
 {
-    return mosaic_imu_configure(&(mosaic_imu_ops_t) {
-        .read = read_orientation,
-    });
+    mosaic_device_capabilities_set_imu(imu_read, NULL);
+    return ESP_OK;
 }

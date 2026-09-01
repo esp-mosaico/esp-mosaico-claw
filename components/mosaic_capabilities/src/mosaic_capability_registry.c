@@ -5,12 +5,18 @@
 
 #include "mosaic_capability.h"
 
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
 
 #include "mosaic_capability_decls.h"
+
+#if defined(ESP_PLATFORM)
+#include "freertos/FreeRTOS.h"
+#include "freertos/portmacro.h"
+#else
+#include <pthread.h>
+#endif
 
 #define MOSAIC_CAPABILITY_PROVIDER_MAX 24U
 #define MOSAIC_CAPABILITY_SUBSCRIBER_MAX 24U
@@ -36,19 +42,32 @@ struct mosaic_capability_subscription_t {
 static mosaic_capability_slot_t s_providers[MOSAIC_CAPABILITY_PROVIDER_MAX];
 static struct mosaic_capability_subscription_t
     s_subscriptions[MOSAIC_CAPABILITY_SUBSCRIBER_MAX];
-static atomic_flag s_registry_lock = ATOMIC_FLAG_INIT;
+
+#if defined(ESP_PLATFORM)
+static portMUX_TYPE s_registry_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void registry_lock(void)
 {
-    while (atomic_flag_test_and_set_explicit(
-            &s_registry_lock, memory_order_acquire)) {
-    }
+    portENTER_CRITICAL(&s_registry_lock);
 }
 
 static void registry_unlock(void)
 {
-    atomic_flag_clear_explicit(&s_registry_lock, memory_order_release);
+    portEXIT_CRITICAL(&s_registry_lock);
 }
+#else
+static pthread_mutex_t s_registry_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void registry_lock(void)
+{
+    (void)pthread_mutex_lock(&s_registry_lock);
+}
+
+static void registry_unlock(void)
+{
+    (void)pthread_mutex_unlock(&s_registry_lock);
+}
+#endif
 
 /* ---------------- slot helpers (call with the lock held) ---------------- */
 

@@ -21,20 +21,6 @@ static const mosaic_capability_contract_t s_orientation_contract =
     MOSAIC_CAP_CONTRACT("sensor.orientation/v1", mosaic_cap_orientation_t,
         s_orientation_fields);
 
-/* ---------------- system.battery ---------------- */
-
-static const mosaic_capability_field_t s_battery_fields[] = {
-    MOSAIC_CAP_FIELD(mosaic_cap_battery_t, available, MOSAIC_CAP_FIELD_BOOL),
-    MOSAIC_CAP_FIELD(mosaic_cap_battery_t, charging, MOSAIC_CAP_FIELD_BOOL),
-    MOSAIC_CAP_FIELD(mosaic_cap_battery_t, percent, MOSAIC_CAP_FIELD_U32),
-    MOSAIC_CAP_FIELD(mosaic_cap_battery_t, voltage_mv, MOSAIC_CAP_FIELD_U32),
-    MOSAIC_CAP_FIELD(mosaic_cap_battery_t, current_ma, MOSAIC_CAP_FIELD_I32),
-};
-
-static const mosaic_capability_contract_t s_battery_contract =
-    MOSAIC_CAP_CONTRACT("system.battery/v1", mosaic_cap_battery_t,
-        s_battery_fields);
-
 /* ---------------- system.time ---------------- */
 
 static const mosaic_capability_field_t s_time_fields[] = {
@@ -45,23 +31,6 @@ static const mosaic_capability_field_t s_time_fields[] = {
 
 static const mosaic_capability_contract_t s_time_contract =
     MOSAIC_CAP_CONTRACT("system.time/v1", mosaic_cap_time_t, s_time_fields);
-
-/* ---------------- system.status ---------------- */
-
-static const mosaic_capability_field_t s_status_fields[] = {
-    MOSAIC_CAP_FIELD(
-        mosaic_cap_status_t, battery_available, MOSAIC_CAP_FIELD_BOOL),
-    MOSAIC_CAP_FIELD(mosaic_cap_status_t, charging, MOSAIC_CAP_FIELD_BOOL),
-    MOSAIC_CAP_FIELD(
-        mosaic_cap_status_t, network_enabled, MOSAIC_CAP_FIELD_BOOL),
-    MOSAIC_CAP_FIELD(
-        mosaic_cap_status_t, network_connected, MOSAIC_CAP_FIELD_BOOL),
-    MOSAIC_CAP_FIELD(mosaic_cap_status_t, network_rssi, MOSAIC_CAP_FIELD_I32),
-};
-
-static const mosaic_capability_contract_t s_status_contract =
-    MOSAIC_CAP_CONTRACT("system.status/v1", mosaic_cap_status_t,
-        s_status_fields);
 
 /* ---------------- system.display ---------------- */
 
@@ -465,6 +434,11 @@ static const mosaic_capability_command_t s_bluetooth_commands[] = {
         .permission = MOSAIC_CAP_MEDIA_BLUETOOTH_CONTROL,
         .args = &s_bluetooth_volume_contract,
     },
+    {
+        .name = "shutdown",
+        .command = MOSAIC_CAP_BT_CMD_SHUTDOWN,
+        .permission = MOSAIC_CAP_MEDIA_BLUETOOTH_CONTROL,
+    },
 };
 
 /* ---------------- media.player ---------------- */
@@ -559,6 +533,11 @@ static const mosaic_capability_command_t s_player_commands[] = {
         .permission = MOSAIC_CAP_MEDIA_PLAYER_CONTROL,
         .args = &s_player_time_contract,
     },
+    {
+        .name = "close",
+        .command = MOSAIC_CAP_PLAYER_CMD_CLOSE,
+        .permission = MOSAIC_CAP_MEDIA_PLAYER_CONTROL,
+    },
 };
 
 /* ---------------- net.weather ---------------- */
@@ -630,21 +609,9 @@ static const mosaic_capability_declaration_t s_declarations[] = {
         .read_contract = &s_orientation_contract,
     },
     {
-        .name = "system.battery",
-        .read_permission = MOSAIC_CAP_SYSTEM_BATTERY_READ,
-        .read_contract = &s_battery_contract,
-        .publishes = true,
-    },
-    {
         .name = "system.time",
         .read_permission = MOSAIC_CAP_SYSTEM_TIME_READ,
         .read_contract = &s_time_contract,
-    },
-    {
-        .name = "system.status",
-        .read_permission = MOSAIC_CAP_SYSTEM_STATUS_READ,
-        .read_contract = &s_status_contract,
-        .publishes = true,
     },
     {
         .name = "system.display",
@@ -730,9 +697,7 @@ static const mosaic_capability_declaration_t s_declarations[] = {
 
 static const mosaic_capability_permission_def_t s_permissions[] = {
     { "sensor.imu.read", MOSAIC_CAP_SENSOR_IMU_READ },
-    { "system.battery.read", MOSAIC_CAP_SYSTEM_BATTERY_READ },
     { "system.time.read", MOSAIC_CAP_SYSTEM_TIME_READ },
-    { "system.status.read", MOSAIC_CAP_SYSTEM_STATUS_READ },
     { "system.display.read", MOSAIC_CAP_SYSTEM_DISPLAY_READ },
     { "system.display.control", MOSAIC_CAP_SYSTEM_DISPLAY_CONTROL },
     { "system.audio.read", MOSAIC_CAP_SYSTEM_AUDIO_READ },

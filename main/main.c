@@ -6,7 +6,6 @@
 #include "app_claw.h"
 #include "app_capabilities.h"
 #include "app_settings_service.h"
-#include "display_service.h"
 #include "app_fs.h"
 #include "app_factory_reset.h"
 #include "claw_version.h"
@@ -18,24 +17,17 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "wifi_manager.h"
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 #include "cap_im_ai_create.h"
 #include "claw_event_router.h"
-#include "claw_hw_registry.h"
 #include "mosaic_setup.h"
 #include "mosaic_ui.h"
 #include "mosaic_capability.h"
-#include "mosaic_capabilities_platform.h"
 #include "mosaic_button_platform.h"
 #include "weather_service.h"
 #include "update_check_service.h"
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
-#include "mosaic_imu_platform.h"
-#endif
 #include "network_provisioning_service.h"
 #include "wechat_binding_service.h"
 #include "audio_hub.h"
-#endif
 #include "time.h"
 #include "nvs_flash.h"
 #include "http_server.h"
@@ -51,17 +43,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#if CONFIG_APP_CLAW_CAP_IM_WECHAT
-#include "cap_im_wechat.h"
-#endif
 #include "app_config.h"
 #include "trial_auth.h"
 #include "cap_system_platform.h"
 #include "mosaic_net_weather.h"
-#include "mosaic_settings_platform.h"
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
+#include "mosaic_device_ops.h"
 #include "mosaico_board_variant.h"
-#endif
 #ifdef ESP_MOSAICO_REMOTE_DEBUG
 #include "esp_remote_mosaic_adapter.h"
 #endif
@@ -77,7 +64,6 @@ static const char *TAG = "app";
 static EXT_RAM_BSS_ATTR app_config_t *s_config;
 static EXT_RAM_BSS_ATTR app_claw_config_t *s_claw_config;
 static EXT_RAM_BSS_ATTR app_settings_service_handle_t s_app_settings;
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 static EXT_RAM_BSS_ATTR network_provisioning_service_handle_t s_network_provisioning;
 static EXT_RAM_BSS_ATTR wechat_binding_service_handle_t s_wechat_binding;
 static EXT_RAM_BSS_ATTR asr_service_handle_t s_asr_service;
@@ -212,8 +198,6 @@ static esp_err_t main_apply_asr_config(const app_config_t *config)
     return err;
 }
 
-#endif
-
 static esp_err_t app_allocate_runtime_state(void)
 {
     if (!s_config) {
@@ -261,7 +245,6 @@ static bool main_network_ready(void *user_ctx)
     return status.sta_connected;
 }
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 static void on_network_provisioning_changed(
     network_provisioning_service_handle_t service,
     const network_provisioning_status_t *status,
@@ -277,7 +260,7 @@ static void on_network_provisioning_changed(
     //          status->sta_connected ? "sta+ap" : "ap",
     //          status->ap_ssid[0] ? status->ap_ssid : "(none)");
 
-    mosaic_settings_platform_notify_network_changed();
+    mosaic_device_ops_notify_network_changed();
 }
 
 static void on_device_setup_wechat(
@@ -319,34 +302,11 @@ static esp_err_t device_setup_cancel_wechat(void *user_ctx)
     return wechat_binding_service_cancel(s_wechat_binding);
 }
 
-#else
-static void on_wifi_state_changed(bool connected, void *user_ctx)
-{
-    (void)user_ctx;
-
-    wifi_manager_status_t status = {0};
-    wifi_manager_get_status(&status);
-    const char *ap_ssid = status.ap_active ? status.ap_ssid : NULL;
-
-    ESP_LOGI(TAG, "Wi-Fi state: sta_connected=%d ap_active=%d mode=%s ap_ssid=%s",
-             connected,
-             status.ap_active,
-             status.mode ? status.mode : "off",
-             ap_ssid ? ap_ssid : "(none)");
-
-    esp_err_t err = app_claw_set_network_status(connected, ap_ssid);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to update network UI: %s", esp_err_to_name(err));
-    }
-}
-#endif
-
 static esp_err_t main_load_config(app_config_t *config)
 {
     return app_config_load(config);
 }
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 static bool main_wifi_config_changed(
     const app_config_t *before,
     const app_config_t *after)
@@ -358,22 +318,18 @@ static bool main_wifi_config_changed(
            strcmp(before->ap_password, after->ap_password) != 0 ||
            strcmp(before->ap_behavior, after->ap_behavior) != 0;
 }
-#endif
 
 static esp_err_t main_save_config(const app_config_t *config)
 {
     esp_err_t err;
     app_claw_config_t *claw_config = NULL;
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     app_config_t *previous_config = NULL;
     bool wifi_changed = true;
     bool asr_changed = true;
-#endif
 
     ESP_RETURN_ON_FALSE(config, ESP_ERR_INVALID_ARG, TAG, "config is NULL");
     ESP_RETURN_ON_ERROR(app_config_validate_wifi(config, NULL), TAG, "Invalid Wi-Fi config");
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     previous_config = calloc(1, sizeof(*previous_config));
     if (previous_config != NULL &&
             app_config_load(previous_config) == ESP_OK) {
@@ -383,7 +339,6 @@ static esp_err_t main_save_config(const app_config_t *config)
                           previous_config, config);
     }
     free(previous_config);
-#endif
 
     err = app_config_save(config);
     if (err != ESP_OK) {
@@ -401,7 +356,6 @@ static esp_err_t main_save_config(const app_config_t *config)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "Failed to update running Claw config: %s", esp_err_to_name(err));
     }
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     audio_capture_handle_t capture = NULL;
     if (asr_changed && audio_hub_get_capture(&capture) == ESP_OK && capture != NULL) {
         err = main_apply_asr_config(config);
@@ -420,7 +374,6 @@ static esp_err_t main_save_config(const app_config_t *config)
             return err;
         }
     }
-#endif
     return ESP_OK;
 }
 
@@ -498,7 +451,6 @@ static esp_err_t main_restart_device(void)
 }
 
 #if CONFIG_APP_CLAW_CAP_IM_WECHAT
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 static esp_err_t main_wechat_binding_persist(
     const wechat_binding_credentials_t *credentials,
     void *user_ctx)
@@ -589,54 +541,6 @@ static esp_err_t main_wechat_login_cancel(void)
                         "WeChat binding service is not ready");
     return wechat_binding_service_cancel(s_wechat_binding);
 }
-#else
-static esp_err_t main_wechat_login_start(const char *account_id, bool force)
-{
-    return cap_im_wechat_qr_login_start(account_id, force);
-}
-
-static esp_err_t main_wechat_login_get_status(http_server_wechat_login_status_t *status)
-{
-    esp_err_t ret = ESP_OK;
-    cap_im_wechat_qr_login_status_t *raw = NULL;
-
-    ESP_RETURN_ON_FALSE(status, ESP_ERR_INVALID_ARG, TAG, "status is NULL");
-
-    raw = calloc(1, sizeof(*raw));
-    ESP_RETURN_ON_FALSE(raw, ESP_ERR_NO_MEM, TAG, "Failed to allocate login status");
-
-    ESP_GOTO_ON_ERROR(cap_im_wechat_qr_login_get_status(raw), cleanup, TAG,
-                      "Failed to query WeChat login status");
-
-    memset(status, 0, sizeof(*status));
-    status->active = raw->active;
-    status->configured = raw->configured;
-    status->completed = raw->completed;
-    status->persisted = raw->persisted;
-    strlcpy(status->session_key, raw->session_key, sizeof(status->session_key));
-    strlcpy(status->status, raw->status, sizeof(status->status));
-    strlcpy(status->message, raw->message, sizeof(status->message));
-    strlcpy(status->qr_data_url, raw->qr_data_url, sizeof(status->qr_data_url));
-    strlcpy(status->account_id, raw->account_id, sizeof(status->account_id));
-    strlcpy(status->user_id, raw->user_id, sizeof(status->user_id));
-    strlcpy(status->token, raw->token, sizeof(status->token));
-    strlcpy(status->base_url, raw->base_url, sizeof(status->base_url));
-
-cleanup:
-    free(raw);
-    return ret;
-}
-
-static esp_err_t main_wechat_login_cancel(void)
-{
-    return cap_im_wechat_qr_login_cancel();
-}
-
-static esp_err_t main_wechat_login_mark_persisted(void)
-{
-    return cap_im_wechat_qr_login_mark_persisted();
-}
-#endif
 #endif
 
 static esp_err_t init_nvs(void)
@@ -791,18 +695,6 @@ static void main_restore_display_rotation(void)
     }
 }
 
-#if !CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE || !CONFIG_ESP_BOARD_ESP_MOSAICO
-static void main_restore_display_brightness(void)
-{
-    esp_err_t err = app_settings_service_restore_brightness(s_app_settings);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Saved display brightness was not restored: %s",
-                 esp_err_to_name(err));
-    }
-}
-#endif
-
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE && CONFIG_ESP_BOARD_ESP_MOSAICO
 #define MOSAICO_BOOT_SPLASH_BRIGHTNESS_PERCENT 40U
 #define MOSAICO_BOOT_BRIGHTNESS_FADE_MS        240U
 
@@ -816,7 +708,6 @@ static void main_prepare_display_brightness_fade(void)
                  esp_err_to_name(err));
     }
 }
-#endif
 
 void app_main(void)
 {
@@ -843,10 +734,8 @@ void app_main(void)
     ESP_ERROR_CHECK(app_config_load(s_config));
     app_config_to_claw(s_config, s_claw_config);
     init_timezone(app_config_get_timezone(s_config)); // no need to check error
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
     ESP_ERROR_CHECK(mosaico_board_variant_prepare());
     ESP_ERROR_CHECK(trial_auth_validate_hmac_efuse_key());
-#endif
     ESP_ERROR_CHECK(trial_auth_init());
     ESP_ERROR_CHECK(esp_board_manager_init());
     /* Audio mixer/capture acquire their board devices through the hardware
@@ -879,7 +768,6 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(app_settings_service_create(&s_app_settings));
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     ESP_ERROR_CHECK(weather_service_init(&(weather_service_config_t) {
         .user_agent = APP_WEATHER_USER_AGENT,
         .refresh_interval_ms = 60U * 60U * 1000U,
@@ -925,42 +813,26 @@ void app_main(void)
             s_wechat_binding, &setup_wechat));
         on_device_setup_wechat(s_wechat_binding, &setup_wechat, NULL);
     }
-    ESP_ERROR_CHECK(mosaic_settings_platform_init(
-        &(mosaic_settings_platform_config_t) {
+    ESP_ERROR_CHECK(mosaic_device_ops_init(
+        &(mosaic_device_ops_config_t) {
             .settings = s_app_settings,
             .network_provisioning = s_network_provisioning,
             .save_config = main_save_config,
         }));
-    ESP_ERROR_CHECK(mosaic_capabilities_platform_init());
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
-    ESP_ERROR_CHECK(mosaic_imu_platform_init());
-#endif
-#endif
 
-#if !CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-    ESP_ERROR_CHECK(app_claw_ui_start());
-    main_restore_display_rotation();
-    main_restore_display_brightness();
-#else
     /* Cache display settings before presenter/GSP startup. The presenter
      * applies the target brightness once, before rendering can use the LCD
      * SPI bus. */
     main_restore_display_rotation();
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
     main_prepare_display_brightness_fade();
-#else
-    main_restore_display_brightness();
-#endif
-#endif
 
     if (!APP_ENABLE_CLAW_TASKS) {
         ESP_LOGW(TAG,
                  "Claw background services disabled: Wi-Fi, network, HTTP, "
                  "bindings, audio/ASR, capabilities, and agent not started");
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
         ESP_ERROR_CHECK(mosaic_ui_start());
         esp_err_t battery_monitor_err =
-            mosaic_settings_platform_start_battery_monitor();
+            mosaic_device_ops_start_battery_monitor();
         if (battery_monitor_err != ESP_OK) {
             ESP_LOGW(TAG, "battery monitor unavailable: %s",
                      esp_err_to_name(battery_monitor_err));
@@ -970,7 +842,6 @@ void app_main(void)
             ESP_LOGW(TAG, "Mosaic buttons unavailable: %s",
                      esp_err_to_name(button_err));
         }
-#endif
         app_free_runtime_state();
         return;
     }
@@ -986,15 +857,9 @@ void app_main(void)
             .wechat_login_start = main_wechat_login_start,
             .wechat_login_get_status = main_wechat_login_get_status,
             .wechat_login_cancel = main_wechat_login_cancel,
-#if !CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-            .wechat_login_mark_persisted = main_wechat_login_mark_persisted,
-#endif
 #endif
         },
     }));
-#if !CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-    ESP_ERROR_CHECK(wifi_manager_register_state_callback(on_wifi_state_changed, NULL));
-#endif
 
     log_wifi_startup_config(s_config);
 
@@ -1018,39 +883,14 @@ void app_main(void)
     if (wifi_err != ESP_OK) {
         ESP_LOGE(TAG, "Wi-Fi start failed: %s", esp_err_to_name(wifi_err));
     } else {
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
         ESP_ERROR_CHECK(network_provisioning_service_start(
             s_network_provisioning));
-#else
-        ESP_ERROR_CHECK(http_server_start());
-#endif
         if (captive_dns_start(&(captive_dns_config_t) {
                 .ap_netif = wifi_manager_get_ap_netif(),
                 .configure_dhcp_dns = true,
             }) != ESP_OK) {
             ESP_LOGW(TAG, "Captive DNS could not start, portal pop-up disabled");
         }
-
-#if !CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-        if (s_config->wifi_ssid[0] != '\0') {
-            esp_err_t wait_err = wifi_manager_wait_connected(30000);
-            if (wait_err == ESP_OK) {
-                wifi_manager_status_t status = {0};
-                wifi_manager_get_status(&status);
-                ESP_LOGI(TAG, "Wi-Fi STA ready: %s", status.sta_ip);
-            } else if (wait_err == ESP_ERR_TIMEOUT) {
-                wifi_manager_status_t status = {0};
-                wifi_manager_get_status(&status);
-                ESP_LOGW(TAG,
-                         "Wi-Fi STA not connected within wait window; retrying in background: mode=%s ap_active=%d ap_ip=%s",
-                         status.mode ? status.mode : "off",
-                         status.ap_active,
-                         status.ap_ip ? status.ap_ip : "0.0.0.0");
-            } else {
-                ESP_LOGW(TAG, "Wi-Fi STA wait returned error: %s", esp_err_to_name(wait_err));
-            }
-        }
-#endif
 
         wifi_manager_status_t status = {0};
         wifi_manager_get_status(&status);
@@ -1065,7 +905,6 @@ void app_main(void)
         }
     }
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     ESP_ERROR_CHECK(app_capabilities_register_external_group(
         &(app_capability_external_group_t) {
             .group_id = "cap_im_ai_create",
@@ -1073,33 +912,27 @@ void app_main(void)
             .llm_visible_by_default = false,
             .reg = main_register_ai_create_capability,
         }));
-#endif
     ESP_ERROR_CHECK(app_cap_system_platform_init(s_app_settings));
     ESP_ERROR_CHECK(app_claw_set_save_config_callback(main_save_claw_config, NULL));
     ESP_ERROR_CHECK(app_claw_set_network_ready_callback(main_network_ready, NULL));
     ESP_ERROR_CHECK(app_claw_start(s_claw_config));
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     ESP_ERROR_CHECK(weather_service_start());
-#endif
     ESP_ERROR_CHECK(main_apply_asr_config(s_config));
     esp_err_t restore_err = app_settings_service_restore_audio(s_app_settings);
     if (restore_err != ESP_OK) {
         ESP_LOGW(TAG, "Saved audio volume was not restored: %s",
                  esp_err_to_name(restore_err));
     }
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     if (wifi_err == ESP_OK) {
         ESP_ERROR_CHECK(http_server_start());
     }
-#endif
 #if CONFIG_APP_CLAW_CAP_IM_LOCAL
     ESP_ERROR_CHECK(http_server_webim_bind_im());
 #endif
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     ESP_ERROR_CHECK(mosaic_ui_start());
     esp_err_t battery_monitor_err =
-        mosaic_settings_platform_start_battery_monitor();
+        mosaic_device_ops_start_battery_monitor();
     if (battery_monitor_err != ESP_OK) {
         ESP_LOGW(TAG, "battery monitor unavailable: %s",
                  esp_err_to_name(battery_monitor_err));
@@ -1107,11 +940,9 @@ void app_main(void)
     esp_err_t button_err = mosaic_button_platform_init();
     if (button_err != ESP_OK) {
         ESP_LOGW(TAG, "Mosaic buttons unavailable: %s",
-                 esp_err_to_name(button_err));
+                     esp_err_to_name(button_err));
     }
-#endif
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     if (wifi_err == ESP_OK && s_config->wifi_ssid[0] != '\0') {
         esp_err_t wait_err = wifi_manager_wait_connected(30000);
         if (wait_err == ESP_OK) {
@@ -1125,7 +956,6 @@ void app_main(void)
                      esp_err_to_name(wait_err));
         }
     }
-#endif
 
     register_wifi_command();
 

@@ -14,6 +14,7 @@
 
 #include "mosaic_media_player.h"
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -23,6 +24,7 @@
 
 static const char *TAG = "mosaic_player_cap";
 
+static bool s_registered;
 static music_controller_handle_t s_controller;
 
 static void copy_text(char *out, size_t capacity, const char *value)
@@ -32,6 +34,28 @@ static void copy_text(char *out, size_t capacity, const char *value)
         return;
     }
     strlcpy(out, value, capacity);
+}
+
+static esp_err_t player_ensure(void)
+{
+    if (s_controller != NULL) {
+        return ESP_OK;
+    }
+    const esp_err_t err = music_controller_create(&s_controller);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "create track controller failed: %s",
+                 esp_err_to_name(err));
+    }
+    return err;
+}
+
+static void player_close(void)
+{
+    if (s_controller == NULL) {
+        return;
+    }
+    music_controller_delete(s_controller);
+    s_controller = NULL;
 }
 
 static esp_err_t player_read(void *user_ctx, void *out, size_t size)
@@ -44,9 +68,9 @@ static esp_err_t player_read(void *user_ctx, void *out, size_t size)
         return ESP_ERR_INVALID_STATE;
     }
     music_snapshot_t snapshot = {0};
-    const esp_err_t err = music_controller_snapshot(s_controller, &snapshot);
-    if (err != ESP_OK) {
-        return err;
+    const esp_err_t snap_err = music_controller_snapshot(s_controller, &snapshot);
+    if (snap_err != ESP_OK) {
+        return snap_err;
     }
     mosaic_cap_player_t *player = out;
     memset(player, 0, sizeof(*player));
@@ -77,8 +101,13 @@ static esp_err_t player_invoke(void *user_ctx, uint16_t command,
     (void)user_ctx;
     (void)out_result;
     (void)result_size;
-    if (s_controller == NULL) {
-        return ESP_ERR_INVALID_STATE;
+    if (command == MOSAIC_CAP_PLAYER_CMD_CLOSE) {
+        player_close();
+        return ESP_OK;
+    }
+    const esp_err_t err = player_ensure();
+    if (err != ESP_OK) {
+        return err;
     }
     switch (command) {
     case MOSAIC_CAP_PLAYER_CMD_TOGGLE:
@@ -127,34 +156,27 @@ static const mosaic_capability_ops_t s_player_ops = {
     .invoke = player_invoke,
 };
 
-esp_err_t mosaic_media_player_start(void)
+esp_err_t mosaic_media_player_init(void)
 {
-    if (s_controller != NULL) {
+    if (s_registered) {
         return ESP_OK;
     }
-    esp_err_t err = music_controller_create(&s_controller);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "create track controller failed: %s",
-                 esp_err_to_name(err));
-        return err;
-    }
-    err = mosaic_capability_register(&(mosaic_capability_provider_t) {
+    const esp_err_t err = mosaic_capability_register(&(mosaic_capability_provider_t) {
         .name = "media.player",
         .ops = &s_player_ops,
     });
-    if (err != ESP_OK) {
-        music_controller_delete(s_controller);
-        s_controller = NULL;
+    if (err == ESP_OK) {
+        s_registered = true;
     }
     return err;
 }
 
-void mosaic_media_player_stop(void)
+void mosaic_media_player_deinit(void)
 {
-    if (s_controller == NULL) {
+    player_close();
+    if (!s_registered) {
         return;
     }
     (void)mosaic_capability_unregister("media.player", NULL);
-    music_controller_delete(s_controller);
-    s_controller = NULL;
+    s_registered = false;
 }

@@ -14,7 +14,6 @@
 #include "mosaic_ui.h"
 #include "mosaic_capability.h"
 #include "mosaic_capability_contracts.h"
-#include "mosaic_device_capabilities.h"
 #include "esp_log.h"
 
 #include <stdio.h>
@@ -98,8 +97,6 @@ static int32_t s_quick_level;
 static bool s_quick_wlan = true;
 static bool s_quick_vibration = true;
 static bool s_agent_configured;
-static mosaic_ui_haptic_cb_t s_haptic_callback;
-static void *s_haptic_user_ctx;
 static mosaic_cap_power_t s_battery_info;
 static bool s_battery_pending;
 static mosaic_capability_subscription_handle_t s_battery_subscription;
@@ -356,30 +353,14 @@ static bool mosaic_hub_take_insert_request(
     return pending;
 }
 
-static esp_err_t hub_capability_haptic_pulse(
-    void *user_ctx, uint32_t duration_ms)
-{
-    (void)user_ctx;
-    return mosaic_ui_haptic_feedback(duration_ms);
-}
-
-void mosaic_ui_set_haptic_callback(
-    mosaic_ui_haptic_cb_t callback, void *user_ctx)
-{
-    s_haptic_callback = callback;
-    s_haptic_user_ctx = user_ctx;
-    /* system.haptic pulses go through the same quick-setting gate as the
-     * shell's own feedback, so the two can never disagree. */
-    mosaic_device_capabilities_set_haptic(
-        callback != NULL ? hub_capability_haptic_pulse : NULL, NULL);
-}
-
 esp_err_t mosaic_ui_haptic_feedback(uint32_t duration_ms)
 {
-    if (!s_quick_vibration || s_haptic_callback == NULL) {
+    (void)duration_ms;
+    if (!s_quick_vibration) {
         return ESP_OK;
     }
-    return s_haptic_callback(s_haptic_user_ctx, duration_ms);
+    return mosaic_capability_invoke("system.haptic",
+        MOSAIC_HUB_CAPABILITIES, "pulse", NULL, 0, NULL, 0);
 }
 
 static void mosaic_hub_quick_toggle_render(

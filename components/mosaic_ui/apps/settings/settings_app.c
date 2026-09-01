@@ -601,12 +601,12 @@ static gsp_err_t settings_detail_bind_item(
         const mosaic_cap_power_t *battery = &s_state.device.power;
         switch (item_index) {
         case 0:
-            snprintf(value_text, sizeof(value_text), "%u%%",
+            snprintf(value_text, sizeof(value_text), "%" PRIu32 "%%",
                      battery->percent);
             value = value_text;
             break;
         case 1:
-            snprintf(value_text, sizeof(value_text), "%u mV",
+            snprintf(value_text, sizeof(value_text), "%" PRIu32 " mV",
                      battery->voltage_mv);
             value = value_text;
             break;
@@ -761,7 +761,7 @@ static gsp_err_t settings_root_list_bind_item(
         break;
     case 6:
         if (s_state.device.power.available) {
-            (void)snprintf(value, sizeof(value), "%u%%",
+            (void)snprintf(value, sizeof(value), "%" PRIu32 "%%",
                            s_state.device.power.percent);
         } else {
             value_text = "--";

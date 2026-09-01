@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "mosaic_capability_contracts.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,20 +22,30 @@ extern "C" {
 typedef esp_err_t (*mosaic_haptic_pulse_fn)(
     void *user_ctx, uint32_t duration_ms);
 
+/** Board IMU sample hook. Unset leaves sensor.imu unbound. */
+typedef esp_err_t (*mosaic_imu_read_fn)(
+    void *user_ctx, mosaic_cap_orientation_t *out);
+
 /** Publish the device-facing capability domains.
  *
- * Registers system.display / audio / haptic / power / update / lifecycle,
- * net.wifi / net.wifi.scan / net.provisioning and config.agent on top of
- * the configured device model, and bridges the model's battery and Wi-Fi
- * notifications onto the capability publish stream.
- *
- * Call after mosaic_settings_configure().
+ * Registers system.time / display / audio / haptic / power / update /
+ * lifecycle, sensor.imu when an IMU hook is bound, net.wifi /
+ * net.wifi.scan / net.provisioning, config.agent, media.player and
+ * media.bluetooth. Call after mosaic_settings_configure(). Bind IMU with
+ * mosaic_device_capabilities_set_imu() first when the board has a sensor.
  */
 esp_err_t mosaic_device_capabilities_init(void);
+
+/** Unregister providers and drop model subscriptions. Safe to call twice. */
+void mosaic_device_capabilities_deinit(void);
 
 /** Hand the haptics implementation to the system.haptic pulse command. */
 void mosaic_device_capabilities_set_haptic(
     mosaic_haptic_pulse_fn pulse, void *user_ctx);
+
+/** Hand the IMU implementation to sensor.imu. */
+void mosaic_device_capabilities_set_imu(
+    mosaic_imu_read_fn read, void *user_ctx);
 
 #ifdef __cplusplus
 }

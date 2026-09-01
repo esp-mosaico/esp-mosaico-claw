@@ -33,6 +33,11 @@
 #define MOSAIC_AOD_UNLOCK_X_MIN      120
 #define MOSAIC_AOD_UNLOCK_X_MAX      360
 #define MOSAIC_AOD_UNLOCK_Y_MIN      384
+#define MOSAIC_HOME_TEMP_X_MIN        34
+#define MOSAIC_HOME_TEMP_X_MAX       239
+#define MOSAIC_HOME_TEMP_Y_MIN        43
+#define MOSAIC_HOME_TEMP_Y_MAX       141
+#define MOSAIC_HOME_TEMP_TAP_SLOP     16
 #define MOSAIC_CHARGE_LEVELS         10U
 #define MOSAIC_BATTERY_APPLY_MS      200U
 #define MOSAIC_WIFI_POLL_TICKS       5U   /* 5 * 200 ms ≈ 1 s RSSI refresh */
@@ -56,7 +61,6 @@
 #define MOSAIC_INSERT_NAME_MAX        48U
 #define MOSAIC_INSERT_CAPABILITY_MAX  96U
 #define MOSAIC_INSERT_APP_NAME_MAX    32U
-#define MOSAIC_QUICK_TAP_SLOP          12
 #define MOSAIC_QUICK_FEEDBACK_MS      2000U
 
 static const char *TAG = "mosaic_hub";
@@ -90,9 +94,10 @@ static bool s_aod_hint_dim;
 static bool s_pointer_down;
 static bool s_quick_brightness_drag;
 static bool s_quick_volume_drag;
-static uint16_t s_quick_tap_action = UINT16_MAX;
-static int32_t s_quick_tap_x0;
-static int32_t s_quick_tap_y0;
+static bool s_home_temp_tracking;
+static bool s_home_temp_tap_valid;
+static int32_t s_home_temp_x0;
+static int32_t s_home_temp_y0;
 static int32_t s_quick_level;
 static bool s_quick_wlan = true;
 static bool s_quick_vibration = true;
@@ -1088,34 +1093,69 @@ bool mosaic_hub_handle_action(uint16_t action_id)
     return false;
 }
 
-static uint16_t mosaic_hub_quick_action_at(int32_t x, int32_t y)
+static bool mosaic_hub_home_surface_visible(esp_gsp_handle_t ui)
 {
-    static const struct {
-        int16_t x;
-        int16_t y;
-        uint16_t action;
-    } buttons[] = {
-        { 34,  62, GSP_ACT_ID_QUICK_WLAN_TOGGLE },
-        { 138, 62, GSP_ACT_ID_QUICK_JOIN_TOGGLE },
-        { 34, 154, GSP_ACT_ID_QUICK_BLUETOOTH_TOGGLE },
-        { 138, 154, GSP_ACT_ID_QUICK_LOW_POWER_TOGGLE },
-        { 34, 246, GSP_ACT_ID_QUICK_RINGTONE_TOGGLE },
-        { 138, 246, GSP_ACT_ID_QUICK_VIBRATION_TOGGLE },
-    };
-    for (size_t index = 0; index < sizeof(buttons) / sizeof(buttons[0]);
-         ++index) {
-        if (x >= buttons[index].x && x < buttons[index].x + 72 &&
-            y >= buttons[index].y && y < buttons[index].y + 72) {
-            return buttons[index].action;
-        }
-    }
-    return UINT16_MAX;
+    uint16_t stack_page = UINT16_MAX;
+    uint16_t launcher_page = UINT16_MAX;
+    return !mosaic_hub_quick_drawer_open(ui) &&
+        esp_gsp_stack_view_get_top(
+            ui, GSP_OBJ_KEY_HUB_STACK, &stack_page) == ESP_GSP_OK &&
+        stack_page == 0 &&
+        esp_gsp_page_flow_get_page(
+            ui, GSP_OBJ_KEY_LAUNCHER_FLOW, &launcher_page) == ESP_GSP_OK &&
+        launcher_page == 0;
 }
 
 static bool mosaic_hub_intercept_pointer(
     esp_gsp_handle_t ui, int32_t x, int32_t y, bool pressed, void *user_ctx)
 {
     (void)user_ctx;
+
+    /* The Home weather shortcut deliberately owns only the temperature
+     * number.  Handling it before scene hit-testing avoids the generic
+     * pressed scrim, so neither the card nor the temperature flashes black. */
+    if (!mosaic_hub_lock_visible()) {
+        if (pressed && !s_pointer_down &&
+                mosaic_hub_home_surface_visible(ui) &&
+                x >= MOSAIC_HOME_TEMP_X_MIN &&
+                x < MOSAIC_HOME_TEMP_X_MAX &&
+                y >= MOSAIC_HOME_TEMP_Y_MIN &&
+                y < MOSAIC_HOME_TEMP_Y_MAX) {
+            s_home_temp_tracking = true;
+            s_home_temp_tap_valid = true;
+            s_home_temp_x0 = x;
+            s_home_temp_y0 = y;
+        }
+        if (s_home_temp_tracking) {
+            const int32_t dx = x - s_home_temp_x0;
+            const int32_t dy = y - s_home_temp_y0;
+            if (dx < -MOSAIC_HOME_TEMP_TAP_SLOP ||
+                    dx > MOSAIC_HOME_TEMP_TAP_SLOP ||
+                    dy < -MOSAIC_HOME_TEMP_TAP_SLOP ||
+                    dy > MOSAIC_HOME_TEMP_TAP_SLOP) {
+                s_home_temp_tap_valid = false;
+            }
+            s_pointer_down = pressed;
+            if (!pressed) {
+                const bool open_weather = s_home_temp_tap_valid;
+                s_home_temp_tracking = false;
+                s_home_temp_tap_valid = false;
+                if (open_weather) {
+                    const mosaic_app_descriptor_t *weather =
+                        mosaic_app_descriptor_for_action(
+                            GSP_ACT_ID_APP_WEATHER);
+                    if (weather != NULL) {
+                        (void)mosaic_loader_request(weather);
+                    }
+                }
+            }
+            return true;
+        }
+    } else {
+        s_home_temp_tracking = false;
+        s_home_temp_tap_valid = false;
+    }
+
     bool drawer_open = false;
     if (pressed && !s_pointer_down) {
         if (esp_gsp_drawer_is_open(ui, GSP_OBJ_KEY_QUICK_DRAWER,
@@ -1126,38 +1166,6 @@ static bool mosaic_hub_intercept_pointer(
             s_quick_volume_drag = x >= 270 && x < 342;
             s_quick_brightness_drag = x >= 374 && x < 446;
         }
-        if (drawer_open && !s_quick_volume_drag &&
-            !s_quick_brightness_drag) {
-            s_quick_tap_action = mosaic_hub_quick_action_at(x, y);
-            if (s_quick_tap_action != UINT16_MAX) {
-                s_quick_tap_x0 = x;
-                s_quick_tap_y0 = y;
-            }
-        }
-    }
-
-    if (s_quick_tap_action != UINT16_MAX) {
-        const int32_t dx = x - s_quick_tap_x0;
-        const int32_t dy = y - s_quick_tap_y0;
-        if (dx < -MOSAIC_QUICK_TAP_SLOP || dx > MOSAIC_QUICK_TAP_SLOP ||
-            dy < -MOSAIC_QUICK_TAP_SLOP || dy > MOSAIC_QUICK_TAP_SLOP) {
-            s_quick_tap_action = UINT16_MAX;
-            s_pointer_down = pressed;
-            return true;
-        }
-        if (!pressed) {
-            const uint16_t action = s_quick_tap_action;
-            s_quick_tap_action = UINT16_MAX;
-            s_pointer_down = false;
-            if (action != GSP_ACT_ID_QUICK_VIBRATION_TOGGLE ||
-                    s_quick_vibration) {
-                (void)mosaic_ui_haptic_feedback(25U);
-            }
-            (void)mosaic_hub_handle_action(action);
-            return true;
-        }
-        s_pointer_down = true;
-        return true;
     }
 
     /* Mirror the invisible C1 slider hit targets into their flat liquid
@@ -1211,7 +1219,8 @@ static bool mosaic_hub_intercept_pointer(
     s_pointer_down = false;
     s_quick_brightness_drag = false;
     s_quick_volume_drag = false;
-    s_quick_tap_action = UINT16_MAX;
+    s_home_temp_tracking = false;
+    s_home_temp_tap_valid = false;
 
     const int32_t dy = s_aod_y0 - y; /* up = positive */
     const int32_t dx = (x > s_aod_x0) ? (x - s_aod_x0) : (s_aod_x0 - x);
@@ -1426,7 +1435,6 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
     s_pointer_down = false;
     s_quick_brightness_drag = false;
     s_quick_volume_drag = false;
-    s_quick_tap_action = UINT16_MAX;
     s_lock_mode = MOSAIC_LOCK_HIDDEN;
     s_lock_charge_known = false;
     s_lock_was_charging = false;
@@ -1500,7 +1508,10 @@ static bool mosaic_hub_root_back(esp_gsp_handle_t ui)
             ui, GSP_OBJ_KEY_LAUNCHER_FLOW, 0, true);
         return true;
     }
-    mosaic_hub_show_lock_screen(false);
+    /* Select AOD or CHRG from the current power capability.  Passing false
+     * here used to force AOD even when the battery update already reported
+     * charging, which made Back disagree with the idle-lock path. */
+    mosaic_hub_enter_lock(ui);
     return true;
 }
 

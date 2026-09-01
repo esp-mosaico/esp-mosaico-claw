@@ -272,7 +272,7 @@ def build_clock_face(objs, parent):
     card_w = 454
     objs.append(container(
         parent, card_x, card_y, card_w, 209, bg='#242425', radius=40,
-        name='clock_card', callback='app_weather',
+        name='clock_card',
     ))
 
     # Match the runtime's unavailable state on the very first frame. Live
@@ -504,7 +504,7 @@ def build_quick_content(objs, parent):
                       40, 13, 139, 139))
     objs.append(image(right_group, f'{ASSETS}/control_center/prev.png',
                       34, 152, 48, 48))
-    objs.append(image(right_group, f'{ASSETS}/control_center/pause.png',
+    objs.append(image(right_group, f'{ASSETS}/control_center/play.png',
                       86, 152, 48, 48, name='quick_play'))
     objs.append(image(right_group, f'{ASSETS}/control_center/next.png',
                       138, 152, 48, 48))

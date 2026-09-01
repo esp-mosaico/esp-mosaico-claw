@@ -236,6 +236,10 @@ static esp_gsp_list_t s_wlan_list = ESP_GSP_LIST_NONE;
 static esp_gsp_list_t s_root_list = ESP_GSP_LIST_NONE;
 static esp_gsp_list_t s_detail_list = ESP_GSP_LIST_NONE;
 static esp_gsp_list_t s_update_notes_list = ESP_GSP_LIST_NONE;
+static mosaic_capability_subscription_handle_t s_battery_subscription;
+static mosaic_cap_power_t s_battery_published;
+static atomic_flag s_battery_publish_lock = ATOMIC_FLAG_INIT;
+static atomic_bool s_battery_publish_pending;
 
 typedef struct {
     char text[SETTINGS_UPDATE_NOTE_LINE_LEN];
@@ -277,6 +281,40 @@ static void keep_first_error(esp_err_t *result, esp_err_t candidate)
     if (*result == ESP_OK && candidate != ESP_OK) {
         *result = candidate;
     }
+}
+
+static void settings_battery_event_cb(void *user_ctx, const char *name,
+    const void *payload, size_t payload_size)
+{
+    (void)user_ctx;
+    (void)name;
+    if (payload == NULL || payload_size != sizeof(mosaic_cap_power_t)) {
+        return;
+    }
+    /* Never wait in the sampler's publish callback. If the render task is
+     * copying the previous sample, the next periodic publish will retry. */
+    if (atomic_flag_test_and_set_explicit(
+            &s_battery_publish_lock, memory_order_acquire)) {
+        return;
+    }
+    s_battery_published = *(const mosaic_cap_power_t *)payload;
+    atomic_flag_clear_explicit(&s_battery_publish_lock, memory_order_release);
+    atomic_store_explicit(
+        &s_battery_publish_pending, true, memory_order_release);
+}
+
+static bool settings_take_published_battery(mosaic_cap_power_t *out_battery)
+{
+    if (!atomic_exchange_explicit(
+            &s_battery_publish_pending, false, memory_order_acq_rel)) {
+        return false;
+    }
+    while (atomic_flag_test_and_set_explicit(
+            &s_battery_publish_lock, memory_order_acquire)) {
+    }
+    *out_battery = s_battery_published;
+    atomic_flag_clear_explicit(&s_battery_publish_lock, memory_order_release);
+    return true;
 }
 
 /* Boards without a Wi-Fi radio leave net.wifi unregistered, which is what
@@ -2229,18 +2267,38 @@ static void settings_refresh_battery_detail(esp_gsp_handle_t ui)
         return;
     }
     mosaic_cap_power_t battery = {0};
-    esp_err_t err = mosaic_capability_read("system.power",
-        SETTINGS_CAPABILITIES, &battery, sizeof(battery));
+    const bool published = settings_take_published_battery(&battery);
+    esp_err_t err = published ? ESP_OK :
+        mosaic_capability_read("system.power", SETTINGS_CAPABILITIES,
+            &battery, sizeof(battery));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "refresh Battery detail failed: %s",
                  esp_err_to_name(err));
         return;
     }
+    if (memcmp(&s_state.device.power, &battery, sizeof(battery)) == 0) {
+        return;
+    }
     s_state.device.power = battery;
-    esp_gsp_err_t gsp_err = esp_gsp_list_refresh(
-        ui, s_detail_list);
+    ESP_LOGD(TAG,
+             "Battery detail apply SoC=%" PRIu32 "%% V=%" PRIu32
+             "mV I=%d mA source=%s",
+             battery.percent, battery.voltage_mv, (int)battery.current_ma,
+             published ? "publish" : "read");
+
+    /* esp-gsp 1.0 can retain already-painted row instances across REFRESH.
+     * This list has only three fixed visible rows, so force a lifecycle
+     * transition to make the render task invoke the binder again. Row tokens
+     * are callback-scoped and therefore must not be cached for direct writes. */
+    const uint32_t battery_row_count =
+        sizeof(s_battery_rows) / sizeof(s_battery_rows[0]);
+    esp_gsp_err_t gsp_err = esp_gsp_list_set_total(ui, s_detail_list, 0);
+    if (gsp_err == ESP_GSP_OK) {
+        gsp_err = esp_gsp_list_set_total(
+            ui, s_detail_list, battery_row_count);
+    }
     if (gsp_err != ESP_GSP_OK) {
-        ESP_LOGW(TAG, "queue Battery list refresh failed: 0x%x",
+        ESP_LOGW(TAG, "queue Battery row rebuild failed: 0x%x",
                  (unsigned)gsp_err);
     }
 }
@@ -3108,6 +3166,17 @@ static void settings_event(
         s_state.ui = ui;
         atomic_store_explicit(
             &s_state.display_render_pending, false, memory_order_release);
+        atomic_store_explicit(
+            &s_battery_publish_pending, false, memory_order_release);
+        if (s_battery_subscription == NULL) {
+            esp_err_t subscribe_err = mosaic_capability_subscribe(
+                "system.power", SETTINGS_CAPABILITIES,
+                settings_battery_event_cb, NULL, &s_battery_subscription);
+            if (subscribe_err != ESP_OK) {
+                ESP_LOGW(TAG, "subscribe Battery updates failed: %s",
+                         esp_err_to_name(subscribe_err));
+            }
+        }
         s_state.display_render_timer = esp_gsp_timer_create(
             ui, SETTINGS_DISPLAY_RENDER_PERIOD_MS,
             settings_display_render_timer_cb, NULL);
@@ -3317,6 +3386,11 @@ static void settings_event(
         (void)settings_wlan_reconcile_navigation(ui);
         break;
     case MOSAIC_EVENT_STOP:
+        if (s_battery_subscription != NULL &&
+                mosaic_capability_unsubscribe(
+                    s_battery_subscription) == ESP_OK) {
+            s_battery_subscription = NULL;
+        }
         if (s_state.display_render_timer != NULL) {
             (void)esp_gsp_timer_delete(
                 ui, s_state.display_render_timer);

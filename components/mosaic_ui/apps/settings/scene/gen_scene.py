@@ -972,7 +972,9 @@ def _build_detail(objs, page):
         "item_height": 100, "item_count": 6,
         "name": "settings_detail_list",
         "row_template": "settings_detail_row",
-        "scroll_snapshot": True,
+        # Battery values update while this page is visible. A scroll snapshot
+        # would keep presenting the old row pixels until the page is reopened.
+        "scroll_snapshot": False,
         "bg_color": BG, "fg_color": FG,
     })
     row = len(objs)

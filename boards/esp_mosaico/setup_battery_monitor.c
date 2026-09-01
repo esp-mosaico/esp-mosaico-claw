@@ -57,7 +57,10 @@ static int battery_monitor_init(void *config, int cfg_size, void **device_handle
 
     static const gauging_config_t default_config = {
         .CCT = 1,
-        .CSYNC = 0,
+        /* A valid charge termination must synchronize RemainingCapacity to
+         * FullChargeCapacity. Without this the gauge can keep reporting an
+         * old partial SoC even after the cell has reached full voltage. */
+        .CSYNC = 1,
         .EDV_CMP = 0,
         .SC = 1,
         .FIXED_EDV0 = 0,

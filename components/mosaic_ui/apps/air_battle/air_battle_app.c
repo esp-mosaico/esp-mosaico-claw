@@ -15,6 +15,9 @@
 #include "air_battle_actions.h"
 #include "air_battle_binds.h"
 #include "air_battle_objects.h"
+#include "esp_gsp_debug.h"
+#include "esp_log.h"
+#include "esp_timer.h"
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
 #include "mosaic_runtime.h"
@@ -70,14 +73,34 @@
 #define SCORE_POP_MAX 6
 #define SCORE_POP_MS 420
 #define STAR_MAX 25
-#define STAR_STEP_MS 16
+/* Background starfield contributes many small scattered dirty rects,
+ * one per moving star, which forces the GSP dirty-region planner to
+ * merge them with the play-field objects into a large bounding box and
+ * push close to a full screen worth of pixels over SPI every frame.
+ * Doubling the step period halves star position submissions per second
+ * (~375 -> ~187) with only a mild visual change to the slowest, most
+ * sparse background layer. The star array size is fixed by the scene,
+ * so tuning happens through this cadence knob rather than the count. */
+#define STAR_STEP_MS 32
 #define STAR_RENDER_GROUPS 4
 #define POSITION_UPDATE_MAX (3 + BULLET_MAX + ENEMY_BULLET_MAX + \
     ENEMY_MAX * 2 + BOOM_MAX + SCORE_POP_MAX + 1)
-#define STAR_MIN_SPEED 18.0f
-#define STAR_MAX_SPEED 72.0f
+/* Half the original speed. Since STAR_STEP_MS was doubled (16 -> 32) to
+ * halve position-submission traffic, each star only redraws at ~8 Hz;
+ * at the previous max speed of 72 px/s this produced a visible 9 px
+ * strobe per redraw. Halving the physical speed brings each per-redraw
+ * jump back down to ~4.6 px, restoring smooth motion at the reduced
+ * update cadence, and the slower overall drift actually reads as
+ * more coherent "deep space" motion rather than a fast scroll. */
+#define STAR_MIN_SPEED 3.0f
+#define STAR_MAX_SPEED 15.0f
 #define RAIL_DASH_MAX 7
-#define RAIL_ANIMATION_MS 550
+/* Longer cadence keeps rails visibly animating (~1.5 Hz) while cutting
+ * how often the whole rail band is re-submitted to GSP. Each re-submit
+ * dirties a wide horizontal band on both sides of the screen, and the
+ * resulting SPI push dominates the display frame budget; keeping this
+ * cadence low is the single biggest lever on effective display fps. */
+#define RAIL_ANIMATION_MS 2000
 #define RAIL_GRAY4_RGB UINT32_C(0x909295)
 #define RAIL_GRAY5_RGB UINT32_C(0x3B3C3D)
 #define RAIL_GRAY6_RGB UINT32_C(0x181819)
@@ -259,6 +282,23 @@ static render_cache_t s_render;
 static music_audio_handle_t s_audio;
 static int s_audio_poll_ms;
 static int s_rail_render_key = -1;
+
+/* Per-slot cache for telemetry rails. When a render_key transition fires
+ * the whole rail band re-computes its target colors and node positions,
+ * but usually only a handful of slots actually change value. This cache
+ * lets rail_set_module_colors / rail_set_middle_dashed / the middle
+ * position update skip GSP submissions for slots that would receive the
+ * same value they already have — collapsing 30+ set_color/set_visible
+ * calls per animation step down to just the delta. */
+typedef struct {
+    bool valid;
+    uint32_t line_color[2][3][3];
+    uint32_t node_color[2][3];
+    bool dash_visible[2];
+    int16_t middle_y;
+} rail_cache_t;
+
+static rail_cache_t s_rail_cache;
 
 static const uint16_t s_bullet_bind[BULLET_MAX] = {
     GSP_BIND_BULLET_0_VISIBLE, GSP_BIND_BULLET_1_VISIBLE,
@@ -519,6 +559,7 @@ static void invalidate_render_cache(void)
 {
     s_render.valid = false;
     s_rail_render_key = -1;
+    s_rail_cache.valid = false;
 }
 
 static void render_visible_if_changed(
@@ -580,6 +621,47 @@ static void render_position_batch(
             }
         }
         offset += item_count;
+    }
+}
+
+/* Atomic visibility+position update for slot-recycling sprites.
+ *
+ * The naive pattern (render_visible_if_changed followed by
+ * queue_position_if_changed) has a subtle race: set_visible enters the
+ * GSP command queue immediately, but position updates only reach GSP
+ * when the local batch is flushed at the end of render_gameplay. If a
+ * sprite transitions from hidden to visible in a slot recently used
+ * for a different logical entity (a new boom in a slot last occupied
+ * by another explosion; a new bullet in a slot just vacated by a
+ * bullet that exited the play field; a new enemy spawn in a slot
+ * whose previous occupant died elsewhere on screen), GSP can render
+ * one frame at the previous occupant's last position before the
+ * batched position update lands. That produces a brief "wrong place"
+ * ghost of the sprite -- most visible on large opaque assets like the
+ * 48x48 boom art. TE-off makes it worse because the GSP render loop no
+ * longer waits for a vsync window that used to absorb the ordering
+ * window.
+ *
+ * The fix is to submit the position synchronously (into the same GSP
+ * FIFO command queue) before flipping visibility, but only when
+ * transitioning from hidden to visible with a stale cached position.
+ * Ongoing-visible frames keep the batched path since the sprite is
+ * already sitting at the right place. */
+static void render_sprite_slot(
+    esp_gsp_handle_t ui, position_batch_t *batch,
+    uint16_t visibility_bind, uint32_t component,
+    bool visible, int x, int y, render_item_t *cached)
+{
+    if (visible && !cached->visible &&
+            (!s_render.valid || cached->x != x || cached->y != y)) {
+        if (esp_gsp_component_set_position(ui, component, x, y) == ESP_OK) {
+            cached->x = x;
+            cached->y = y;
+        }
+    }
+    render_visible_if_changed(ui, visibility_bind, visible, &cached->visible);
+    if (visible) {
+        queue_position_if_changed(batch, component, x, y, cached);
     }
 }
 
@@ -1483,25 +1565,35 @@ static void render_gameplay(esp_gsp_handle_t ui)
         ui, GSP_BIND_PLAYER_VISIBLE, player_visible,
         &s_render.player.visible);
 
+    /* Layered exhaust animation. EXHAUST_0 (short flame) stays visible
+     * whenever the player is visible; EXHAUST_1 (long flame) is authored
+     * above it in z-order and toggles on/off every 80 ms. Because
+     * EXHAUST_1 opaquely covers ~98% of EXHAUST_0's pixels, the visual
+     * matches the original 2-frame alternation (frame 1 covers frame 0,
+     * frame 1 hides -> frame 0 shows) while halving the visibility
+     * traffic (12.5 Hz on frame 1 only vs 25 Hz across both frames).
+     * A handful of pixels in the upper-right corner of frame 0 do leak
+     * through when frame 1 is on, but that region sits directly under
+     * the player sprite and is barely visible in play. */
     const int exhaust_x = px + PLAYER_W / 2 - 8;
     const int exhaust_y = py + PLAYER_H - 4;
-    const int exhaust_frame = (s_game.exhaust_ms / 80) & 1;
-    static const uint32_t exhaust_obj[2] = {
-        GSP_OBJ_KEY_EXHAUST_0, GSP_OBJ_KEY_EXHAUST_1,
-    };
-    static const uint16_t exhaust_bind[2] = {
-        GSP_BIND_EXHAUST_0_VISIBLE, GSP_BIND_EXHAUST_1_VISIBLE,
-    };
-    for (int frame = 0; frame < 2; ++frame) {
-        const bool visible = player_visible && exhaust_frame == frame;
-        render_visible_if_changed(
-            ui, exhaust_bind[frame], visible,
-            &s_render.exhaust[frame].visible);
-        if (visible) {
-            queue_position_if_changed(
-                &positions, exhaust_obj[frame], exhaust_x, exhaust_y,
-                &s_render.exhaust[frame]);
-        }
+    render_visible_if_changed(
+        ui, GSP_BIND_EXHAUST_0_VISIBLE, player_visible,
+        &s_render.exhaust[0].visible);
+    if (player_visible) {
+        queue_position_if_changed(
+            &positions, GSP_OBJ_KEY_EXHAUST_0, exhaust_x, exhaust_y,
+            &s_render.exhaust[0]);
+    }
+    const bool long_flame_visible =
+        player_visible && ((s_game.exhaust_ms / 80) & 1) != 0;
+    render_visible_if_changed(
+        ui, GSP_BIND_EXHAUST_1_VISIBLE, long_flame_visible,
+        &s_render.exhaust[1].visible);
+    if (long_flame_visible) {
+        queue_position_if_changed(
+            &positions, GSP_OBJ_KEY_EXHAUST_1, exhaust_x, exhaust_y,
+            &s_render.exhaust[1]);
     }
 
     if (s_game.stars_dirty && render_star_positions(ui)) {
@@ -1510,70 +1602,55 @@ static void render_gameplay(esp_gsp_handle_t ui)
 
     for (int index = 0; index < BULLET_MAX; ++index) {
         const bullet_t *bullet = &s_game.bullets[index];
-        render_visible_if_changed(
-            ui, s_bullet_bind[index], bullet->alive,
-            &s_render.bullets[index].visible);
-        if (bullet->alive) {
-            queue_position_if_changed(
-                &positions, s_bullet_obj[index],
-                (int)lroundf(bullet->x), (int)lroundf(bullet->y),
-                &s_render.bullets[index]);
-        }
+        render_sprite_slot(
+            ui, &positions,
+            s_bullet_bind[index], s_bullet_obj[index],
+            bullet->alive,
+            (int)lroundf(bullet->x), (int)lroundf(bullet->y),
+            &s_render.bullets[index]);
     }
     for (int index = 0; index < ENEMY_BULLET_MAX; ++index) {
         const enemy_bullet_t *bullet = &s_game.enemy_bullets[index];
-        render_visible_if_changed(
-            ui, s_enemy_bullet_bind[index], bullet->alive,
-            &s_render.enemy_bullets[index].visible);
-        if (bullet->alive) {
-            queue_position_if_changed(
-                &positions, s_enemy_bullet_obj[index],
-                (int)lroundf(bullet->x) - 2,
-                (int)lroundf(bullet->y) - 3,
-                &s_render.enemy_bullets[index]);
-        }
+        render_sprite_slot(
+            ui, &positions,
+            s_enemy_bullet_bind[index], s_enemy_bullet_obj[index],
+            bullet->alive,
+            (int)lroundf(bullet->x) - 2,
+            (int)lroundf(bullet->y) - 3,
+            &s_render.enemy_bullets[index]);
     }
     for (int index = 0; index < ENEMY_MAX; ++index) {
         const enemy_t *enemy = &s_game.enemies[index];
+        const int enemy_x = (int)lroundf(enemy->x);
+        const int enemy_y = (int)lroundf(enemy->y);
         for (int kind = 0; kind < ENEMY_KINDS; ++kind) {
             const bool visible = enemy->alive && enemy->kind == kind;
-            render_visible_if_changed(
-                ui, s_enemy_bind[index][kind], visible,
-                &s_render.enemies[index][kind].visible);
-            if (visible) {
-                queue_position_if_changed(
-                    &positions, s_enemy_obj[index][kind],
-                    (int)lroundf(enemy->x), (int)lroundf(enemy->y),
-                    &s_render.enemies[index][kind]);
-            }
+            render_sprite_slot(
+                ui, &positions,
+                s_enemy_bind[index][kind], s_enemy_obj[index][kind],
+                visible, enemy_x, enemy_y,
+                &s_render.enemies[index][kind]);
         }
-        const bool warning = enemy->alive && enemy->warning;
-        render_visible_if_changed(
-            ui, s_warning_bind[index], warning,
-            &s_render.warnings[index].visible);
-        if (warning) {
-            queue_position_if_changed(
-                &positions, s_warning_obj[index],
-                (int)lroundf(enemy->x) + 13,
-                (int)lroundf(enemy->y) + ENEMY_H,
-                &s_render.warnings[index]);
-        }
+        render_sprite_slot(
+            ui, &positions,
+            s_warning_bind[index], s_warning_obj[index],
+            enemy->alive && enemy->warning,
+            enemy_x + 13, enemy_y + ENEMY_H,
+            &s_render.warnings[index]);
     }
     for (int index = 0; index < BOOM_MAX; ++index) {
         const boom_t *boom = &s_game.booms[index];
         int active_frame = boom->alive ? boom->age_ms / BOOM_FRAME_MS : 0;
         if (active_frame > 2) active_frame = 2;
+        const int boom_x = (int)lroundf(boom->x);
+        const int boom_y = (int)lroundf(boom->y);
         for (int frame = 0; frame < 3; ++frame) {
             const bool visible = boom->alive && frame == active_frame;
-            render_visible_if_changed(
-                ui, s_boom_bind[index][frame], visible,
-                &s_render.booms[index][frame].visible);
-            if (visible) {
-                queue_position_if_changed(
-                    &positions, s_boom_obj[index][frame],
-                    (int)lroundf(boom->x), (int)lroundf(boom->y),
-                    &s_render.booms[index][frame]);
-            }
+            render_sprite_slot(
+                ui, &positions,
+                s_boom_bind[index][frame], s_boom_obj[index][frame],
+                visible, boom_x, boom_y,
+                &s_render.booms[index][frame]);
         }
     }
     for (int index = 0; index < SCORE_POP_MAX; ++index) {
@@ -1629,25 +1706,41 @@ static void rail_set_module_colors(
 {
     for (int side = 0; side < 2; ++side) {
         for (int line = 0; line < 3; ++line) {
-            (void)esp_gsp_set_color(
-                ui, s_rail_line_bind[side][module][line], line_color);
+            uint32_t *cached = &s_rail_cache.line_color[side][module][line];
+            if (!s_rail_cache.valid || *cached != line_color) {
+                (void)esp_gsp_set_color(
+                    ui, s_rail_line_bind[side][module][line], line_color);
+                *cached = line_color;
+            }
         }
-        (void)esp_gsp_set_color(
-            ui, s_rail_node_bind[side][module], node_color);
+        uint32_t *node_cached = &s_rail_cache.node_color[side][module];
+        if (!s_rail_cache.valid || *node_cached != node_color) {
+            (void)esp_gsp_set_color(
+                ui, s_rail_node_bind[side][module], node_color);
+            *node_cached = node_color;
+        }
     }
 }
 
 static void rail_set_middle_dashed(esp_gsp_handle_t ui, bool dashed)
 {
     for (int side = 0; side < 2; ++side) {
+        if (s_rail_cache.valid && s_rail_cache.dash_visible[side] == dashed) {
+            continue;
+        }
         if (dashed) {
             (void)esp_gsp_set_color(
                 ui, s_rail_line_bind[side][1][0], 0);
+            /* Keep the color cache coherent: rail_set_module_colors will
+             * later see this slot as "already black" and only push a new
+             * color when we truly exit the dashed state. */
+            s_rail_cache.line_color[side][1][0] = 0;
         }
         for (int segment = 0; segment < RAIL_DASH_MAX; ++segment) {
             (void)esp_gsp_set_visible(
                 ui, s_rail_mid_dash_bind[side][segment], dashed);
         }
+        s_rail_cache.dash_visible[side] = dashed;
     }
 }
 
@@ -1732,10 +1825,14 @@ static void render_telemetry_rails(esp_gsp_handle_t ui)
     rail_set_middle_dashed(ui, dashed);
     static const int phase_y[3] = {8, 3, -3};
     const int middle_y = 234 + (active ? phase_y[phase] : 0);
-    (void)esp_gsp_component_set_position(
-        ui, s_rail_mid_obj[0], 17, middle_y);
-    (void)esp_gsp_component_set_position(
-        ui, s_rail_mid_obj[1], 453, middle_y);
+    if (!s_rail_cache.valid || s_rail_cache.middle_y != middle_y) {
+        (void)esp_gsp_component_set_position(
+            ui, s_rail_mid_obj[0], 17, middle_y);
+        (void)esp_gsp_component_set_position(
+            ui, s_rail_mid_obj[1], 453, middle_y);
+        s_rail_cache.middle_y = (int16_t)middle_y;
+    }
+    s_rail_cache.valid = true;
 }
 
 static void render_hud(esp_gsp_handle_t ui)
@@ -1902,11 +1999,140 @@ static void render_overlay(esp_gsp_handle_t ui)
     s_render.overlay_state = s_game.state;
 }
 
+#ifndef AIR_BATTLE_PROFILE
+#define AIR_BATTLE_PROFILE 1
+#endif
+
+#if AIR_BATTLE_PROFILE
+
+/*
+ * Lightweight per-tick profiler. Enabled by default; disable with
+ * `-DAIR_BATTLE_PROFILE=0` at compile time. Only samples timer-driven
+ * frames (steady state) to keep numbers meaningful; flushes an ESP_LOGI
+ * line roughly once per second with avg / max microseconds per phase.
+ */
+
+static const char *AIR_BATTLE_TAG = "air_battle";
+
+typedef struct {
+    uint32_t frames;
+    int64_t last_report_us;
+    int64_t sum_tick_us,     max_tick_us;
+    int64_t sum_sim_us,      max_sim_us;
+    int64_t sum_render_us,   max_render_us;
+    int64_t sum_gameplay_us, max_gameplay_us;
+    int64_t sum_hud_us,      max_hud_us;
+    int64_t sum_overlay_us,  max_overlay_us;
+    /* Baseline snapshots of GSP-side cumulative counters. Deltas across
+     * a report window reveal the real display frame rate (which can be
+     * much lower than the CPU-side submission rate), plus how much of
+     * each second the render task was actually busy rasterizing and
+     * pushing pixels over SPI. */
+    uint32_t base_gpu_frames;
+    uint64_t base_gpu_busy_us;
+    uint64_t base_gpu_render_us;
+    uint64_t base_gpu_submit_us;
+} air_battle_prof_t;
+
+static air_battle_prof_t s_prof;
+/* Set only around the timer-driven render() call so pointer/UI-driven
+ * renders don't skew the render sub-part statistics. */
+static bool s_prof_collect;
+
+static inline void prof_accum(int64_t *sum, int64_t *max, int64_t v)
+{
+    *sum += v;
+    if (v > *max) {
+        *max = v;
+    }
+}
+
+static void prof_snapshot_gpu(esp_gsp_handle_t ui)
+{
+    uint32_t frames = 0;
+    uint64_t busy_us = 0;
+    uint64_t render_us = 0;
+    uint64_t submit_us = 0;
+    esp_gsp_render_stats(ui, &frames, &busy_us);
+    esp_gsp_render_phases(ui, &render_us, &submit_us);
+    s_prof.base_gpu_frames = frames;
+    s_prof.base_gpu_busy_us = busy_us;
+    s_prof.base_gpu_render_us = render_us;
+    s_prof.base_gpu_submit_us = submit_us;
+}
+
+static void prof_reset(esp_gsp_handle_t ui)
+{
+    memset(&s_prof, 0, sizeof(s_prof));
+    s_prof.last_report_us = esp_timer_get_time();
+    prof_snapshot_gpu(ui);
+}
+
+static void prof_flush_if_due(esp_gsp_handle_t ui, int64_t now_us)
+{
+    if (s_prof.frames == 0) return;
+    const int64_t elapsed_us = now_us - s_prof.last_report_us;
+    if (elapsed_us < 1000000) return;
+
+    uint32_t gpu_frames_now = 0;
+    uint64_t gpu_busy_us_now = 0;
+    uint64_t gpu_render_us_now = 0;
+    uint64_t gpu_submit_us_now = 0;
+    esp_gsp_render_stats(ui, &gpu_frames_now, &gpu_busy_us_now);
+    esp_gsp_render_phases(ui, &gpu_render_us_now, &gpu_submit_us_now);
+    const uint32_t d_frames = gpu_frames_now - s_prof.base_gpu_frames;
+    const uint64_t d_busy   = gpu_busy_us_now - s_prof.base_gpu_busy_us;
+    const uint64_t d_render = gpu_render_us_now - s_prof.base_gpu_render_us;
+    const uint64_t d_submit = gpu_submit_us_now - s_prof.base_gpu_submit_us;
+    /* Normalise busy/render/submit to "ms of activity per second of
+     * wall time" so a value of 1000 means the render task was fully
+     * saturated during the last window. */
+    const int64_t disp_fps    = (int64_t)d_frames * 1000000 / elapsed_us;
+    const int64_t busy_ms_s   = (int64_t)(d_busy   / 1000) * 1000000 / elapsed_us;
+    const int64_t render_ms_s = (int64_t)(d_render / 1000) * 1000000 / elapsed_us;
+    const int64_t submit_ms_s = (int64_t)(d_submit / 1000) * 1000000 / elapsed_us;
+
+    const uint32_t n = s_prof.frames;
+    ESP_LOGI(AIR_BATTLE_TAG,
+        "prof tick=%uHz disp=%lldfps busy=%lldms/s (raster=%lld spi=%lld) "
+        "| tick avg=%lldus max=%lldus | sim avg=%lldus max=%lldus "
+        "| render avg=%lldus max=%lldus "
+        "(gp %lld/%lld hud %lld/%lld ov %lld/%lld)",
+        (unsigned)n, (long long)disp_fps,
+        (long long)busy_ms_s, (long long)render_ms_s, (long long)submit_ms_s,
+        (long long)(s_prof.sum_tick_us / n),     (long long)s_prof.max_tick_us,
+        (long long)(s_prof.sum_sim_us / n),      (long long)s_prof.max_sim_us,
+        (long long)(s_prof.sum_render_us / n),   (long long)s_prof.max_render_us,
+        (long long)(s_prof.sum_gameplay_us / n), (long long)s_prof.max_gameplay_us,
+        (long long)(s_prof.sum_hud_us / n),      (long long)s_prof.max_hud_us,
+        (long long)(s_prof.sum_overlay_us / n),  (long long)s_prof.max_overlay_us);
+    prof_reset(ui);
+}
+
+#endif  /* AIR_BATTLE_PROFILE */
+
 static void render(esp_gsp_handle_t ui)
 {
+#if AIR_BATTLE_PROFILE
+    const bool sample = s_prof_collect;
+    const int64_t t0 = sample ? esp_timer_get_time() : 0;
+    render_gameplay(ui);
+    const int64_t t1 = sample ? esp_timer_get_time() : 0;
+    render_hud(ui);
+    const int64_t t2 = sample ? esp_timer_get_time() : 0;
+    render_overlay(ui);
+    const int64_t t3 = sample ? esp_timer_get_time() : 0;
+    if (sample) {
+        prof_accum(&s_prof.sum_gameplay_us, &s_prof.max_gameplay_us, t1 - t0);
+        prof_accum(&s_prof.sum_hud_us,      &s_prof.max_hud_us,      t2 - t1);
+        prof_accum(&s_prof.sum_overlay_us,  &s_prof.max_overlay_us,  t3 - t2);
+        prof_accum(&s_prof.sum_render_us,   &s_prof.max_render_us,   t3 - t0);
+    }
+#else
     render_gameplay(ui);
     render_hud(ui);
     render_overlay(ui);
+#endif
     s_render.valid = true;
 }
 
@@ -1965,6 +2191,9 @@ static void air_battle_started(esp_gsp_handle_t ui)
     load_preferences();
     reset_idle();
     battle_audio_stop();
+#if AIR_BATTLE_PROFILE
+    prof_reset(ui);
+#endif
 }
 
 static void air_battle_stopping(esp_gsp_handle_t ui)
@@ -1989,10 +2218,26 @@ static void air_battle_event(
         invalidate_render_cache();
         render(ui);
         break;
-    case MOSAIC_EVENT_TIMER:
+    case MOSAIC_EVENT_TIMER: {
+#if AIR_BATTLE_PROFILE
+        const int64_t t_start = esp_timer_get_time();
+#endif
         sim_step(16);
+#if AIR_BATTLE_PROFILE
+        const int64_t t_after_sim = esp_timer_get_time();
+        s_prof_collect = true;
+#endif
         render(ui);
+#if AIR_BATTLE_PROFILE
+        s_prof_collect = false;
+        const int64_t t_end = esp_timer_get_time();
+        prof_accum(&s_prof.sum_sim_us,  &s_prof.max_sim_us,  t_after_sim - t_start);
+        prof_accum(&s_prof.sum_tick_us, &s_prof.max_tick_us, t_end - t_start);
+        s_prof.frames++;
+        prof_flush_if_due(ui, t_end);
+#endif
         break;
+    }
     case MOSAIC_EVENT_POINTER:
         on_pointer(ui, event);
         break;

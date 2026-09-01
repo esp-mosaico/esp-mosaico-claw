@@ -16,6 +16,8 @@ set(MOSAIC_APP_SCENE_SOURCES
     assets/boom_0.png
     assets/boom_1.png
     assets/boom_2.png)
-set(MOSAIC_APP_EXTRA_INCLUDE_DIRS ../music)
+set(MOSAIC_APP_EXTRA_SOURCES
+    chiptune.c
+    chiptune_bgm.c)
 set(MOSAIC_APP_LOGIC NATIVE)
 set(MOSAIC_APP_TICK_MS 16)

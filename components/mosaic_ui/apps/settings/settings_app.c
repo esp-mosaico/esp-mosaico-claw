@@ -64,6 +64,7 @@
 #define SETTINGS_SECURITY_PAGE 12
 #define SETTINGS_UPDATE_PAGE 13
 #define SETTINGS_DETAIL_PAGE 7
+#define SETTINGS_BATTERY_DETAIL_PAGE 14
 #define SETTINGS_FACTORY_PAGE 8
 #define SETTINGS_FACTORY_HOLD_US INT64_C(3000000)
 #define SETTINGS_FACTORY_HOLD_X_MIN 64
@@ -235,6 +236,7 @@ static size_t s_wlan_network_count;
 static esp_gsp_list_t s_wlan_list = ESP_GSP_LIST_NONE;
 static esp_gsp_list_t s_root_list = ESP_GSP_LIST_NONE;
 static esp_gsp_list_t s_detail_list = ESP_GSP_LIST_NONE;
+static esp_gsp_list_t s_battery_detail_list = ESP_GSP_LIST_NONE;
 static esp_gsp_list_t s_update_notes_list = ESP_GSP_LIST_NONE;
 static mosaic_capability_subscription_handle_t s_battery_subscription;
 static mosaic_cap_power_t s_battery_published;
@@ -695,6 +697,15 @@ static void settings_detail_list_attach(esp_gsp_handle_t ui)
     }
 }
 
+static void settings_battery_detail_list_attach(esp_gsp_handle_t ui)
+{
+    if (s_battery_detail_list == ESP_GSP_LIST_NONE) {
+        s_battery_detail_list = esp_gsp_list_bind_component(
+            ui, GSP_OBJ_KEY_SETTINGS_BATTERY_DETAIL_LIST,
+            settings_detail_bind_item, NULL);
+    }
+}
+
 static void settings_open_detail(esp_gsp_handle_t ui,
                                  settings_detail_kind_t kind)
 {
@@ -702,13 +713,22 @@ static void settings_open_detail(esp_gsp_handle_t ui,
     s_detail_kind = kind;
     size_t count = 0;
     (void)settings_detail_rows(&count);
-    settings_detail_list_attach(ui);
-    (void)gsp_settings_nav_settings_detail_title_set_text(ui, titles[kind]);
-    (void)esp_gsp_list_set_total(ui, s_detail_list, count);
-    (void)esp_gsp_list_refresh(ui, s_detail_list);
-    (void)esp_gsp_list_scroll_to(ui, s_detail_list, 0);
+    esp_gsp_list_t list = ESP_GSP_LIST_NONE;
+    uint16_t page = SETTINGS_DETAIL_PAGE;
+    if (kind == SETTINGS_DETAIL_BATTERY) {
+        settings_battery_detail_list_attach(ui);
+        list = s_battery_detail_list;
+        page = SETTINGS_BATTERY_DETAIL_PAGE;
+    } else {
+        settings_detail_list_attach(ui);
+        list = s_detail_list;
+        (void)gsp_settings_nav_settings_detail_title_set_text(ui, titles[kind]);
+    }
+    (void)esp_gsp_list_set_total(ui, list, count);
+    (void)esp_gsp_list_refresh(ui, list);
+    (void)esp_gsp_list_scroll_to(ui, list, 0);
     if (esp_gsp_stack_view_push(ui, GSP_OBJ_KEY_SETTINGS_STACK,
-                               SETTINGS_DETAIL_PAGE, true) == ESP_GSP_OK) {
+                               page, true) == ESP_GSP_OK) {
         mosaic_app_shell_set_root_visible(ui, false);
     }
 }
@@ -2263,7 +2283,7 @@ static void settings_show_update_result(esp_gsp_handle_t ui)
 
 static void settings_refresh_battery_detail(esp_gsp_handle_t ui)
 {
-    if (s_detail_list == ESP_GSP_LIST_NONE) {
+    if (s_battery_detail_list == ESP_GSP_LIST_NONE) {
         return;
     }
     mosaic_cap_power_t battery = {0};
@@ -2292,10 +2312,11 @@ static void settings_refresh_battery_detail(esp_gsp_handle_t ui)
      * are callback-scoped and therefore must not be cached for direct writes. */
     const uint32_t battery_row_count =
         sizeof(s_battery_rows) / sizeof(s_battery_rows[0]);
-    esp_gsp_err_t gsp_err = esp_gsp_list_set_total(ui, s_detail_list, 0);
+    esp_gsp_err_t gsp_err = esp_gsp_list_set_total(
+        ui, s_battery_detail_list, 0);
     if (gsp_err == ESP_GSP_OK) {
         gsp_err = esp_gsp_list_set_total(
-            ui, s_detail_list, battery_row_count);
+            ui, s_battery_detail_list, battery_row_count);
     }
     if (gsp_err != ESP_GSP_OK) {
         ESP_LOGW(TAG, "queue Battery row rebuild failed: 0x%x",
@@ -3213,6 +3234,7 @@ static void settings_event(
         s_root_list = ESP_GSP_LIST_NONE;
         s_wlan_list = ESP_GSP_LIST_NONE;
         s_detail_list = ESP_GSP_LIST_NONE;
+        s_battery_detail_list = ESP_GSP_LIST_NONE;
         s_update_notes_list = ESP_GSP_LIST_NONE;
         s_update_note_count = 0U;
         s_rendered_update_title[0] = '\0';
@@ -3269,7 +3291,7 @@ static void settings_event(
                 esp_gsp_stack_view_get_top(
                     ui, GSP_OBJ_KEY_SETTINGS_STACK,
                     &model_top) == ESP_GSP_OK &&
-                model_top == SETTINGS_DETAIL_PAGE) {
+                model_top == SETTINGS_BATTERY_DETAIL_PAGE) {
             settings_refresh_battery_detail(ui);
         }
         if (settings_wlan_reconcile_navigation(ui)) {
@@ -3364,7 +3386,7 @@ static void settings_event(
                 esp_gsp_stack_view_get_top(
                     ui, GSP_OBJ_KEY_SETTINGS_STACK,
                     &settings_top) == ESP_GSP_OK &&
-                settings_top == SETTINGS_DETAIL_PAGE) {
+                settings_top == SETTINGS_BATTERY_DETAIL_PAGE) {
             settings_refresh_battery_detail(ui);
         }
         if (s_state.wlan_page_active && !s_state.wlan_leave_pending &&
@@ -3406,6 +3428,7 @@ static void settings_event(
         s_root_list = ESP_GSP_LIST_NONE;
         s_wlan_list = ESP_GSP_LIST_NONE;
         s_detail_list = ESP_GSP_LIST_NONE;
+        s_battery_detail_list = ESP_GSP_LIST_NONE;
         s_update_notes_list = ESP_GSP_LIST_NONE;
         s_state.wlan_scan_compact_valid = false;
         s_state.wlan_notice_pending = false;

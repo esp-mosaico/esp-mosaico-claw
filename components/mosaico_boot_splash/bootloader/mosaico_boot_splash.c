@@ -27,9 +27,11 @@
 #define LCD_LOGO_X             ((LCD_WIDTH - MOSAIC_BOOT_LOGO_WIDTH) / 2U)
 #define LCD_LOGO_Y             ((LCD_HEIGHT - MOSAIC_BOOT_LOGO_HEIGHT) / 2U)
 #define LCD_POWER_GPIO         60
-#define LCD_RESET_GPIO         42
+#define LCD_RESET_GPIO_V1_0         42
+#define LCD_CLK_GPIO_V1_0           44
+#define LCD_RESET_GPIO_V1_2         44
+#define LCD_CLK_GPIO_V1_2           42
 #define LCD_CS_GPIO            50
-#define LCD_CLK_GPIO           44
 #define LCD_DATA0_GPIO         36
 #define LCD_DATA1_GPIO         51
 #define LCD_DATA2_GPIO         35
@@ -40,6 +42,7 @@
 #define LCD_CMD_WRITE          0x02U
 #define LCD_COLOR_WRITE        0x32U
 #define LCD_BOOT_BRIGHTNESS    0x66U /* 40% of the 8-bit brightness range. */
+
 #define MOSAICO_HW_VERSION(major, minor) ((uint16_t)(((uint16_t)(major) << 8) | ((uint16_t)(minor) & 0xFFU)))
 #define MOSAICO_HW_VERSION_MAJOR(version) ((uint8_t)((version) >> 8))
 #define MOSAICO_HW_VERSION_MINOR(version) ((uint8_t)((version) & 0xFFU))
@@ -47,6 +50,7 @@
 static const char *TAG = "boot_splash";
 static spi_hal_context_t s_spi;
 static spi_hal_dev_config_t s_spi_device;
+static uint16_t s_hw_version = 0;
 
 static bool hardware_version_supported(void)
 {
@@ -56,11 +60,14 @@ static bool hardware_version_supported(void)
         ESP_LOGE(TAG, "hardware version read failed");
         return false;
     }
-    if (version != MOSAICO_HW_VERSION(1, 0)) {
+    if (version != MOSAICO_HW_VERSION(1, 0) &&
+        version != MOSAICO_HW_VERSION(1, 1) &&
+        version != MOSAICO_HW_VERSION(1, 2)) {
         ESP_LOGE(TAG, "unsupported hardware version: v%u.%u (raw=0x%04X)", MOSAICO_HW_VERSION_MAJOR(version), MOSAICO_HW_VERSION_MINOR(version), version);
         return false;
     }
     ESP_LOGW(TAG, "hardware version: v%u.%u", MOSAICO_HW_VERSION_MAJOR(version), MOSAICO_HW_VERSION_MINOR(version));
+    s_hw_version = version;
     return true;
 }
 
@@ -192,6 +199,7 @@ static void spi_init(void)
     spi_ll_set_clk_source(&GPSPI2, SPI_CLK_SRC_XTAL);
     spi_ll_clk_source_pre_div(&GPSPI2, 1, 1);
 
+    int LCD_CLK_GPIO = s_hw_version == MOSAICO_HW_VERSION(1, 0) ? LCD_CLK_GPIO_V1_0 : LCD_CLK_GPIO_V1_2;
     route_spi_output(LCD_CLK_GPIO, SPI2_CK_PAD_OUT_IDX);
     route_spi_output(LCD_DATA0_GPIO, SPI2_D_PAD_OUT_IDX);
     route_spi_output(LCD_DATA1_GPIO, SPI2_Q_PAD_OUT_IDX);
@@ -241,6 +249,7 @@ static void panel_init(void)
         {0x36, {0x00}, 1},
     };
 
+    int LCD_RESET_GPIO = s_hw_version == MOSAICO_HW_VERSION(1, 0) ? LCD_RESET_GPIO_V1_0 : LCD_RESET_GPIO_V1_2;
     gpio_output(LCD_POWER_GPIO, 0);
     gpio_output(LCD_RESET_GPIO, 0);
     esp_rom_delay_us(10000);

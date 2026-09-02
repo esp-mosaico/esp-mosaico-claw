@@ -8,13 +8,12 @@
 
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "esp_board_manager_includes.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "subboard_support/subboard.h"
 
-#define SUBBOARD_I2C_PORT          I2C_NUM_0
-#define SUBBOARD_I2C_SDA           GPIO_NUM_0
-#define SUBBOARD_I2C_SCL           GPIO_NUM_1
+#define SUBBOARD_I2C_NAME          "i2c_subboard"
 #define SUBBOARD_VCC_ENABLE_GPIO   GPIO_NUM_60
 #define SUBBOARD_VCC_ON_LEVEL      0
 
@@ -28,24 +27,10 @@ esp_err_t subboard_platform_i2c_init(void)
         return ESP_OK;
     }
 
-    if (i2c_master_get_bus_handle(SUBBOARD_I2C_PORT, &s_i2c_bus) == ESP_OK &&
-            s_i2c_bus != NULL) {
-        ESP_LOGI(TAG, "Reusing board-manager I2C bus on port %d",
-                 SUBBOARD_I2C_PORT);
-        return ESP_OK;
-    }
-
-    const i2c_master_bus_config_t config = {
-        .i2c_port = SUBBOARD_I2C_PORT,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .sda_io_num = SUBBOARD_I2C_SDA,
-        .scl_io_num = SUBBOARD_I2C_SCL,
-        .flags.enable_internal_pullup = true,
-    };
-    ESP_RETURN_ON_ERROR(i2c_new_master_bus(&config, &s_i2c_bus), TAG,
-                        "create subboard I2C bus failed");
-    ESP_LOGI(TAG, "Created subboard I2C bus on port %d",
-             SUBBOARD_I2C_PORT);
+    ESP_RETURN_ON_ERROR(esp_board_periph_get_handle(SUBBOARD_I2C_NAME, (void **)&s_i2c_bus), TAG,
+                        "get Board Manager subboard I2C failed");
+    ESP_RETURN_ON_FALSE(s_i2c_bus != NULL, ESP_ERR_INVALID_STATE, TAG, "Board Manager subboard I2C handle is NULL");
+    ESP_LOGI(TAG, "Using Board Manager peripheral '%s'", SUBBOARD_I2C_NAME);
     return ESP_OK;
 }
 

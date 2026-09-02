@@ -19,9 +19,10 @@ extern "C" {
 /**
  * Left/right expansion discrimination:
  *
- * Both slots share I2C0 (SDA=GPIO0, SCL=GPIO1). The mainboard drives each
- * slot's AT24C02 A0 pin to a fixed level so the two EEPROMs appear at
- * different 7-bit addresses:
+ * Both slots share the Board Manager `i2c_subboard` peripheral on GPIO0/GPIO1.
+ * It aliases I2C0 on v1.0 and uses I2C1 on v1.1. The mainboard drives each
+ * slot's AT24C02 A0 pin to a fixed level so the two EEPROMs appear at different
+ * 7-bit addresses:
  *
  *   left  : GPIO14 = 0 -> AT24C02 @ 0x50
  *   right : GPIO39 = 1 -> AT24C02 @ 0x51

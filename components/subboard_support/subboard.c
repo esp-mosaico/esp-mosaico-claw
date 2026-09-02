@@ -118,19 +118,10 @@ esp_err_t bsp_subboard_init(void)
         return ESP_OK;
     }
 
-    i2c_master_bus_handle_t existing_bus = NULL;
-    const bool board_manager_ready =
-        i2c_master_get_bus_handle(I2C_NUM_0, &existing_bus) == ESP_OK &&
-        existing_bus != NULL;
-    if (!board_manager_ready) {
-        ESP_RETURN_ON_ERROR(subboard_platform_set_power(true), TAG,
-                            "enable subboard VCC rail failed");
-    } else {
-        ESP_LOGI(TAG,
-                 "Reusing board-manager I2C and existing VCC_3V3 state");
-    }
+    ESP_RETURN_ON_ERROR(subboard_platform_set_power(true), TAG,
+                        "enable subboard VCC rail failed");
     ESP_RETURN_ON_ERROR(subboard_platform_i2c_init(), TAG,
-                        "initialize shared I2C failed");
+                        "initialize subboard I2C failed");
 
     for (size_t i = 0; i < BSP_SUBBOARD_SLOT_COUNT; ++i) {
         bool skip = false;

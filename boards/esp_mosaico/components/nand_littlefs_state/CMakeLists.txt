@@ -1,5 +1,0 @@
-idf_component_register(
-    SRCS "nand_littlefs_state.c"
-    INCLUDE_DIRS "include"
-    REQUIRES nvs_flash
-)

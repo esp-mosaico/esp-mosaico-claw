@@ -14,7 +14,7 @@ extern "C" {
 
 typedef enum {
     MOSAICO_BOARD_VARIANT_V1_0 = 0,
-    MOSAICO_BOARD_VARIANT_V1_1,
+    MOSAICO_BOARD_VARIANT_V1_2,
 } mosaico_board_variant_t;
 
 esp_err_t mosaico_board_variant_prepare(void);

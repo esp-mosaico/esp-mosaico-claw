@@ -28,6 +28,8 @@ extern "C" {
 
 typedef struct mosaico_camera_t *mosaico_camera_handle_t;
 
+typedef void (*mosaico_camera_availability_callback_t)(char slot, bool available, void *user_ctx);
+
 typedef enum {
     MOSAICO_CAMERA_PIXEL_FORMAT_UYVY = 0,
     MOSAICO_CAMERA_PIXEL_FORMAT_RGB565,
@@ -73,9 +75,22 @@ typedef struct {
 } mosaico_camera_pipeline_stats_t;
 
 /**
+ * @brief Start CameraBoard discovery and publish the default camera when found
+ */
+esp_err_t mosaico_camera_init(void);
+
+esp_err_t mosaico_camera_deinit(void);
+
+esp_err_t mosaico_camera_get_default(mosaico_camera_handle_t *out_camera);
+
+bool mosaico_camera_is_available(void);
+
+void mosaico_camera_set_availability_callback(mosaico_camera_availability_callback_t callback, void *user_ctx);
+
+/**
  * @brief Claim subboard resources and register the Mosaico OV3640 video device
  *
- * Discovery and hot-plug ownership belong to hot_plug_register. Pass NULL for
+ * Discovery and slot ownership belong to mosaico_module_mgr. Pass NULL for
  * automatic defaults; the current camera hardware supports the left slot only.
  * This makes the V4L2 device path available without opening it or allocating
  * capture buffers.
@@ -175,8 +190,7 @@ esp_err_t mosaico_camera_restart(mosaico_camera_handle_t camera);
 /**
  * @brief Verify that the active OV3640 still responds
  *
- * This is used for removal detection after GPIO14 has been repurposed from
- * EEPROM A0 to camera D4.
+ * This diagnostic API is not used for hot-plug detection.
  */
 esp_err_t mosaico_camera_probe(mosaico_camera_handle_t camera);
 

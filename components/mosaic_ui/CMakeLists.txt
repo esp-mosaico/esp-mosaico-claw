@@ -66,7 +66,6 @@ idf_component_register(
         espressif__esp_audio_codec
         espressif__esp_asrc
         espressif__esp_bt_audio
-        hot_plug_register
         mosaico_camera
         weather_service
         esp_board_manager

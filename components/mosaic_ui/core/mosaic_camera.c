@@ -24,7 +24,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "hot_plug_register.h"
 #include "linux/videodev2.h"
 #include "mosaico_camera.h"
 #endif
@@ -96,10 +95,7 @@ static bool camera_is_stopping(void)
 
 static bool camera_board_present(void)
 {
-    bool present = false;
-    return hot_plug_register_is_present(
-               HOT_PLUG_SUBBOARD_CAMERA_NAME, &present) == ESP_OK &&
-           present;
+    return mosaico_camera_is_available();
 }
 
 static void camera_set_missing_hint(esp_gsp_handle_t ui, bool visible)
@@ -321,8 +317,11 @@ static bool camera_flash_enabled(void)
 
 static void camera_stop_registered_stream(void)
 {
-    const esp_err_t err =
-        hot_plug_register_release_device(HOT_PLUG_SUBBOARD_CAMERA_NAME);
+    mosaico_camera_handle_t camera = NULL;
+    esp_err_t err = mosaico_camera_get_default(&camera);
+    if (err == ESP_OK) {
+        err = mosaico_camera_close(camera);
+    }
     if (err != ESP_OK && err != ESP_ERR_NOT_FOUND &&
             err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "failed to close camera: %s",
@@ -424,9 +423,8 @@ static void camera_capture_task(void *ctx)
     }
 
     while (!camera_is_stopping()) {
-        void *borrowed = NULL;
-        err = hot_plug_register_get_handle(
-                  HOT_PLUG_SUBBOARD_CAMERA_NAME, &borrowed);
+        mosaico_camera_handle_t camera = NULL;
+        err = mosaico_camera_get_default(&camera);
         if (err != ESP_OK) {
             if (!waiting_logged && !camera_is_stopping()) {
                 ESP_LOGI(TAG, "Waiting for CameraBoard insertion");
@@ -443,15 +441,11 @@ static void camera_capture_task(void *ctx)
             waiting_logged = false;
         }
 
-        mosaico_camera_handle_t camera =
-            (mosaico_camera_handle_t)borrowed;
         if (camera != last_camera) {
             err = mosaico_camera_open(camera);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "failed to open camera device: %s",
                          esp_err_to_name(err));
-                (void)hot_plug_register_put_handle(
-                    HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
                 last_camera = NULL;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
@@ -460,8 +454,6 @@ static void camera_capture_task(void *ctx)
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "failed to allocate preview buffers: %s",
                          esp_err_to_name(err));
-                (void)hot_plug_register_put_handle(
-                    HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
                 last_camera = NULL;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
@@ -470,8 +462,6 @@ static void camera_capture_task(void *ctx)
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "failed to start camera stream: %s",
                          esp_err_to_name(err));
-                (void)hot_plug_register_put_handle(
-                    HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
                 last_camera = NULL;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
@@ -497,8 +487,6 @@ static void camera_capture_task(void *ctx)
             mosaico_camera_frame_t frame = {0};
             err = mosaico_camera_get_frame(camera, &frame);
             if (err != ESP_OK) {
-                (void)hot_plug_register_put_handle(
-                    HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
                 if (err != ESP_ERR_TIMEOUT && !camera_is_stopping()) {
                     ESP_LOGE(TAG, "camera warm-up failed: %s",
                              esp_err_to_name(err));
@@ -508,8 +496,6 @@ static void camera_capture_task(void *ctx)
             }
             const esp_err_t release_err =
                 mosaico_camera_return_frame(camera, &frame);
-            (void)hot_plug_register_put_handle(
-                HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
             if (release_err != ESP_OK) {
                 ESP_LOGE(TAG, "camera warm-up frame release failed: %s",
                          esp_err_to_name(release_err));
@@ -522,8 +508,6 @@ static void camera_capture_task(void *ctx)
 
         const int slot = frame_acquire_for_write();
         if (slot < 0) {
-            (void)hot_plug_register_put_handle(
-                HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
             vTaskDelay(pdMS_TO_TICKS(3));
             continue;
         }
@@ -548,8 +532,6 @@ static void camera_capture_task(void *ctx)
                          esp_err_to_name(err));
                 camera_restore_after_flash(camera, &flash_state);
                 frame_finish_write((size_t)slot, false);
-                (void)hot_plug_register_put_handle(
-                    HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
                 continue;
             }
         }
@@ -562,8 +544,6 @@ static void camera_capture_task(void *ctx)
                 camera_restore_after_flash(camera, &flash_state);
             }
             frame_finish_write((size_t)slot, false);
-            (void)hot_plug_register_put_handle(
-                HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
             if (err != ESP_ERR_TIMEOUT && !camera_is_stopping()) {
                 ESP_LOGE(TAG, "camera capture failed: %s",
                          esp_err_to_name(err));
@@ -589,8 +569,6 @@ static void camera_capture_task(void *ctx)
             (void)mosaico_camera_flash_stop(camera);
             camera_restore_after_flash(camera, &flash_state);
         }
-        (void)hot_plug_register_put_handle(
-            HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
         frame_finish_write((size_t)slot, err == ESP_OK);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "camera frame conversion failed: %s",
@@ -709,15 +687,12 @@ esp_err_t mosaic_camera_set_flash_enabled(bool enabled)
     s_camera.flash_enabled = enabled;
     portEXIT_CRITICAL(&s_camera.lock);
 
-    void *borrowed = NULL;
-    esp_err_t ret = hot_plug_register_get_handle(HOT_PLUG_SUBBOARD_CAMERA_NAME, &borrowed);
+    mosaico_camera_handle_t camera = NULL;
+    esp_err_t ret = mosaico_camera_get_default(&camera);
     if (ret != ESP_OK) {
         return ret;
     }
-    mosaico_camera_handle_t camera = (mosaico_camera_handle_t)borrowed;
-    ret = enabled ? mosaico_camera_flash_trigger(camera) : mosaico_camera_flash_stop(camera);
-    const esp_err_t put_err = hot_plug_register_put_handle(HOT_PLUG_SUBBOARD_CAMERA_NAME, borrowed);
-    return ret == ESP_OK ? put_err : ret;
+    return enabled ? mosaico_camera_flash_trigger(camera) : mosaico_camera_flash_stop(camera);
 }
 
 esp_err_t mosaic_camera_toggle_flip(bool *out_enabled)

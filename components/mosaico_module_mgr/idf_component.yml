@@ -1,0 +1,10 @@
+version: "0.1.0"
+description: EEPROM-backed Mosaico module discovery and claim manager
+
+targets:
+  - esp32s31
+
+dependencies:
+  idf: ">=5.5"
+  subboard_support:
+    path: ../subboard_support

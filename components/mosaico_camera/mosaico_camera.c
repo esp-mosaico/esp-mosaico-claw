@@ -17,6 +17,7 @@
 
 #include "subboard_support/subboard.h"
 #include "driver/gpio.h"
+#include "esp_board_manager.h"
 #include "esp_cam_ctlr.h"
 #include "esp_cam_sensor_types.h"
 #include "esp_check.h"
@@ -29,6 +30,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "linux/videodev2.h"
+#include "mosaico_module_mgr.h"
 
 static const char *TAG = "mosaico_camera";
 
@@ -80,6 +82,106 @@ struct mosaico_camera_t {
     size_t buffer_lengths[CAMERA_MAX_BUFFER_COUNT];
     bool outstanding[CAMERA_MAX_BUFFER_COUNT];
 };
+
+typedef struct {
+    bool initialized;
+    bool module_claimed;
+    bool board_published;
+    SemaphoreHandle_t lock;
+    mosaico_camera_handle_t camera;
+    mosaico_camera_availability_callback_t callback;
+    void *callback_ctx;
+    bool pending_notice;
+    bool pending_available;
+    char pending_slot;
+} mosaico_camera_default_state_t;
+
+static mosaico_camera_default_state_t s_default;
+
+static void default_camera_notify(char slot, bool available)
+{
+    mosaico_camera_availability_callback_t callback;
+    void *callback_ctx;
+
+    xSemaphoreTake(s_default.lock, portMAX_DELAY);
+    callback = s_default.callback;
+    callback_ctx = s_default.callback_ctx;
+    if (callback == NULL) {
+        s_default.pending_notice = true;
+        s_default.pending_available = available;
+        s_default.pending_slot = slot;
+    }
+    xSemaphoreGive(s_default.lock);
+    if (callback != NULL) {
+        callback(slot, available, callback_ctx);
+    }
+}
+
+static esp_err_t default_camera_activate(const mosaico_module_mgr_info_t *info)
+{
+    ESP_RETURN_ON_FALSE(info != NULL, ESP_ERR_INVALID_ARG, TAG, "module info is null");
+    if (info->slot != MOSAICO_MODULE_MGR_SLOT_LEFT) {
+        ESP_LOGW(TAG, "CameraBoard in unsupported slot=%s", mosaico_module_mgr_slot_to_name(info->slot));
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    xSemaphoreTake(s_default.lock, portMAX_DELAY);
+    const bool already_active = s_default.camera != NULL;
+    xSemaphoreGive(s_default.lock);
+    if (already_active) {
+        return ESP_OK;
+    }
+
+    esp_err_t ret = mosaico_module_mgr_claim(info->slot, MOSAICO_BOARD_TYPE_CAMERA);
+    mosaico_camera_handle_t camera = NULL;
+    bool module_claimed = ret == ESP_OK;
+    bool board_published = false;
+    if (ret == ESP_OK) {
+        mosaico_camera_config_t config = MOSAICO_CAMERA_DEFAULT_CONFIG();
+        config.slot = (bsp_subboard_slot_t)info->slot;
+        ret = mosaico_camera_new(&config, &camera);
+    }
+    if (ret == ESP_OK) {
+        ret = esp_board_manager_init_device_by_name("camera");
+        board_published = ret == ESP_OK;
+    }
+    if (ret != ESP_OK) {
+        if (board_published) {
+            board_published = esp_board_manager_deinit_device_by_name("camera") != ESP_OK;
+        }
+        if (camera != NULL && mosaico_camera_del(camera) == ESP_OK) {
+            camera = NULL;
+        }
+        if (camera == NULL && !board_published && module_claimed) {
+            module_claimed = mosaico_module_mgr_release(info->slot) != ESP_OK;
+        }
+        ESP_LOGE(TAG, "Activate CameraBoard failed: %s", esp_err_to_name(ret));
+    }
+
+    xSemaphoreTake(s_default.lock, portMAX_DELAY);
+    s_default.camera = camera;
+    s_default.module_claimed = module_claimed;
+    s_default.board_published = board_published;
+    xSemaphoreGive(s_default.lock);
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "CameraBoard ready: slot=left path=/dev/video2");
+        default_camera_notify('L', true);
+    }
+    return ret;
+}
+
+static void default_camera_module_event(mosaico_module_mgr_event_t event, const mosaico_module_mgr_info_t *info, void *user_data)
+{
+    (void)user_data;
+    if (info == NULL || info->eeprom.board_type != MOSAICO_BOARD_TYPE_CAMERA) {
+        return;
+    }
+    if (event == MOSAICO_MODULE_MGR_EVENT_INSERTED) {
+        (void)default_camera_activate(info);
+    } else if (event == MOSAICO_MODULE_MGR_EVENT_REMOVED) {
+        default_camera_notify(info->slot == MOSAICO_MODULE_MGR_SLOT_RIGHT ? 'R' : 'L', false);
+    }
+}
 
 static uint32_t pixel_format_to_v4l2(mosaico_camera_pixel_format_t format)
 {
@@ -367,23 +469,25 @@ static esp_err_t close_video_device(mosaico_camera_handle_t camera)
     return result;
 }
 
-static void release_resources(mosaico_camera_handle_t camera)
+static esp_err_t release_resources(mosaico_camera_handle_t camera)
 {
     if (!camera) {
-        return;
+        return ESP_OK;
     }
 
     esp_err_t ret = close_video_device(camera);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Close video device during cleanup failed: %s",
                  esp_err_to_name(ret));
+        return ret;
     }
 
     if (camera->video_initialized) {
         ret = esp_video_deinit_with_flags(ESP_VIDEO_INIT_FLAGS_DVP);
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Deinitialize DVP video failed: %s",
+            ESP_LOGE(TAG, "Deinitialize DVP video failed; camera retained: %s",
                      esp_err_to_name(ret));
+            return ret;
         }
         camera->video_initialized = false;
     }
@@ -391,12 +495,13 @@ static void release_resources(mosaico_camera_handle_t camera)
     if (camera->bsp_resource_claimed) {
         ret = bsp_subboard_camera_release(BSP_SUBBOARD_SLOT_LEFT);
         if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "Release BSP camera resource failed: %s",
+            ESP_LOGE(TAG, "Release BSP camera resource failed; camera retained: %s",
                      esp_err_to_name(ret));
+            return ret;
         }
         camera->bsp_resource_claimed = false;
     }
-
+    return ESP_OK;
 }
 
 static esp_err_t initialize_video_device(mosaico_camera_handle_t camera)
@@ -551,6 +656,119 @@ static esp_err_t open_video_device(mosaico_camera_handle_t camera)
     return ESP_OK;
 }
 
+esp_err_t mosaico_camera_init(void)
+{
+    if (s_default.initialized) {
+        return ESP_OK;
+    }
+    s_default.lock = xSemaphoreCreateMutex();
+    if (s_default.lock == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    s_default.initialized = true;
+    const mosaico_module_mgr_config_t config = {
+        .scan_period_ms = 200,
+        .debounce_count = 3,
+        .event_callback = default_camera_module_event,
+    };
+    const esp_err_t ret = mosaico_module_mgr_init(&config);
+    if (ret != ESP_OK) {
+        vSemaphoreDelete(s_default.lock);
+        memset(&s_default, 0, sizeof(s_default));
+        ESP_LOGE(TAG, "Initialize module manager failed: %s", esp_err_to_name(ret));
+    }
+    return ret;
+}
+
+esp_err_t mosaico_camera_deinit(void)
+{
+    if (!s_default.initialized) {
+        return ESP_OK;
+    }
+
+    xSemaphoreTake(s_default.lock, portMAX_DELAY);
+    mosaico_camera_handle_t camera = s_default.camera;
+    const bool board_published = s_default.board_published;
+    const bool module_claimed = s_default.module_claimed;
+    xSemaphoreGive(s_default.lock);
+
+    esp_err_t ret = ESP_OK;
+    if (camera != NULL) {
+        ret = mosaico_camera_del(camera);
+        if (ret == ESP_OK) {
+            xSemaphoreTake(s_default.lock, portMAX_DELAY);
+            s_default.camera = NULL;
+            xSemaphoreGive(s_default.lock);
+        }
+    }
+    if (ret == ESP_OK && board_published) {
+        ret = esp_board_manager_deinit_device_by_name("camera");
+        if (ret == ESP_OK) {
+            xSemaphoreTake(s_default.lock, portMAX_DELAY);
+            s_default.board_published = false;
+            xSemaphoreGive(s_default.lock);
+        }
+    }
+    if (ret == ESP_OK && module_claimed) {
+        ret = mosaico_module_mgr_release(MOSAICO_MODULE_MGR_SLOT_LEFT);
+        if (ret == ESP_OK) {
+            xSemaphoreTake(s_default.lock, portMAX_DELAY);
+            s_default.module_claimed = false;
+            xSemaphoreGive(s_default.lock);
+        }
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Deinitialize CameraBoard failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    ESP_RETURN_ON_ERROR(mosaico_module_mgr_deinit(), TAG, "deinitialize module manager failed");
+    vSemaphoreDelete(s_default.lock);
+    memset(&s_default, 0, sizeof(s_default));
+    return ESP_OK;
+}
+
+esp_err_t mosaico_camera_get_default(mosaico_camera_handle_t *out_camera)
+{
+    ESP_RETURN_ON_FALSE(out_camera != NULL, ESP_ERR_INVALID_ARG, TAG, "camera output is null");
+    *out_camera = NULL;
+    ESP_RETURN_ON_FALSE(s_default.initialized, ESP_ERR_INVALID_STATE, TAG, "camera is not initialized");
+    xSemaphoreTake(s_default.lock, portMAX_DELAY);
+    if (s_default.camera != NULL && s_default.board_published) {
+        *out_camera = s_default.camera;
+    }
+    xSemaphoreGive(s_default.lock);
+    return *out_camera != NULL ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+bool mosaico_camera_is_available(void)
+{
+    mosaico_camera_handle_t camera = NULL;
+    return mosaico_camera_get_default(&camera) == ESP_OK;
+}
+
+void mosaico_camera_set_availability_callback(mosaico_camera_availability_callback_t callback, void *user_ctx)
+{
+    if (!s_default.initialized) {
+        return;
+    }
+    bool notify = false;
+    bool available = false;
+    char slot = 'L';
+    xSemaphoreTake(s_default.lock, portMAX_DELAY);
+    s_default.callback = callback;
+    s_default.callback_ctx = user_ctx;
+    if (callback != NULL && s_default.pending_notice) {
+        notify = true;
+        available = s_default.pending_available;
+        slot = s_default.pending_slot;
+        s_default.pending_notice = false;
+    }
+    xSemaphoreGive(s_default.lock);
+    if (notify) {
+        callback(slot, available, user_ctx);
+    }
+}
+
 esp_err_t mosaico_camera_new(const mosaico_camera_config_t *config,
                              mosaico_camera_handle_t *out_camera)
 {
@@ -618,9 +836,13 @@ esp_err_t mosaico_camera_new(const mosaico_camera_config_t *config,
     return ESP_OK;
 
 fail:
-    release_resources(camera);
-    vSemaphoreDelete(camera->lock);
-    heap_caps_free(camera);
+    const esp_err_t cleanup_ret = release_resources(camera);
+    if (cleanup_ret == ESP_OK) {
+        vSemaphoreDelete(camera->lock);
+        heap_caps_free(camera);
+    } else {
+        ESP_LOGE(TAG, "Camera initialization cleanup incomplete; context retained: %s", esp_err_to_name(cleanup_ret));
+    }
     return ret;
 }
 
@@ -1287,8 +1509,12 @@ esp_err_t mosaico_camera_del(mosaico_camera_handle_t camera)
         return ESP_OK;
     }
     xSemaphoreTake(camera->lock, portMAX_DELAY);
-    release_resources(camera);
+    const esp_err_t ret = release_resources(camera);
     xSemaphoreGive(camera->lock);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Camera delete deferred because resources are busy: %s", esp_err_to_name(ret));
+        return ret;
+    }
     vSemaphoreDelete(camera->lock);
     heap_caps_free(camera);
     ESP_LOGI(TAG, "Camera deleted and resources released");

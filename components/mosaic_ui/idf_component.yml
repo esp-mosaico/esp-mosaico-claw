@@ -11,8 +11,6 @@ dependencies:
     path: ../asr_service
   cap_im_ai_create:
     path: ../cap_im_ai_create
-  hot_plug_register:
-    path: ../hot_plug_register
   mosaico_camera:
     path: ../mosaico_camera
   weather_service:

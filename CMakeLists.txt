@@ -27,6 +27,11 @@ idf_build_set_property(
     "${CMAKE_CURRENT_LIST_DIR}/components/mosaico_boot_splash"
     APPEND
 )
+idf_build_set_property(
+    BOOTLOADER_EXTRA_COMPONENT_DIRS
+    "${CMAKE_CURRENT_LIST_DIR}/bootloader_components"
+    APPEND
+)
 project(edge_agent VERSION 0.2.1)
 
 if(COMMAND esp_mosaico_build_profile_finalize)
@@ -100,3 +105,7 @@ add_dependencies(skill_builder_sync_skills edge_agent_prepare_system_fs_image)
 add_dependencies(lua_module_builder_sync_builtin_scripts edge_agent_prepare_system_fs_image)
 add_dependencies(lua_module_builder_sync_docs edge_agent_prepare_system_fs_image)
 add_dependencies(littlefs_system_bin edge_agent_prepare_system_fs_image)
+
+# Define the destructive provisioning target only after both external data
+# partition images have registered their build targets.
+include("${CMAKE_CURRENT_LIST_DIR}/tools/cmake/factory_recovery.cmake")

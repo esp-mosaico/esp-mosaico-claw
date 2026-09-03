@@ -1,3 +1,6 @@
 [submodule "third-party/esp-claw"]
 	path = third-party/esp-claw
 	url = https://github.com/espressif/esp-claw.git
+[submodule "third-party/esp-iris"]
+	path = third-party/esp-iris
+	url = https://github.com/lisir233/ESP-Iris.git

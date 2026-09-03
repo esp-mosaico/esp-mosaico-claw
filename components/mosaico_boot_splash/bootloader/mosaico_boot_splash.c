@@ -10,7 +10,6 @@
 
 #include "esp_efuse.h"
 #include "esp_efuse_table.h"
-#include "esp_log.h"
 #include "esp_rom_gpio.h"
 #include "esp_rom_sys.h"
 #include "hal/gpio_ll.h"
@@ -47,7 +46,6 @@
 #define MOSAICO_HW_VERSION_MAJOR(version) ((uint8_t)((version) >> 8))
 #define MOSAICO_HW_VERSION_MINOR(version) ((uint8_t)((version) & 0xFFU))
 
-static const char *TAG = "boot_splash";
 static spi_hal_context_t s_spi;
 static spi_hal_dev_config_t s_spi_device;
 static uint16_t s_hw_version = 0;
@@ -57,16 +55,13 @@ static bool hardware_version_supported(void)
     uint16_t version = 0;
     const esp_err_t err = esp_efuse_read_field_blob(ESP_EFUSE_USER_DATA, &version, sizeof(version) * 8U);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "hardware version read failed");
         return false;
     }
     if (version != MOSAICO_HW_VERSION(1, 0) &&
         version != MOSAICO_HW_VERSION(1, 1) &&
         version != MOSAICO_HW_VERSION(1, 2)) {
-        ESP_LOGE(TAG, "unsupported hardware version: v%u.%u (raw=0x%04X)", MOSAICO_HW_VERSION_MAJOR(version), MOSAICO_HW_VERSION_MINOR(version), version);
         return false;
     }
-    ESP_LOGW(TAG, "hardware version: v%u.%u", MOSAICO_HW_VERSION_MAJOR(version), MOSAICO_HW_VERSION_MINOR(version));
     s_hw_version = version;
     return true;
 }
@@ -168,25 +163,35 @@ static void lcd_write_solid(uint16_t color, size_t pixels, bool keep_cs)
     }
 }
 
-static void lcd_write_logo_row(size_t row, bool keep_cs)
+static void lcd_write_logo(bool keep_cs)
 {
-    uint8_t fifo[LCD_FIFO_BYTES];
-    size_t used = 0;
-    const size_t first_pixel = row * MOSAIC_BOOT_LOGO_WIDTH;
-    const size_t end_pixel = first_pixel + MOSAIC_BOOT_LOGO_WIDTH;
-    for (size_t pixel = first_pixel; pixel < end_pixel; ++pixel) {
-        const uint8_t mask = 0x80U >> (pixel & 7U);
-        const uint16_t color = (s_mosaic_boot_logo_bitmap[pixel >> 3] & mask) ?
-                               MOSAIC_BOOT_LOGO_COLOR : 0;
-        fifo[used++] = (uint8_t)(color >> 8);
-        fifo[used++] = (uint8_t)color;
-        if (used == sizeof(fifo)) {
-            spi_tx(fifo, used, 4, keep_cs || pixel + 1U < end_pixel);
-            used = 0;
+    size_t run_index = 0;
+    size_t run_left = s_mosaic_boot_logo_bit_runs[0];
+    bool foreground = MOSAIC_BOOT_LOGO_BIT_RUN_FIRST_FOREGROUND != 0;
+
+    for (size_t row = 0; row < MOSAIC_BOOT_LOGO_HEIGHT; ++row) {
+        lcd_write_solid(0, LCD_LOGO_X, true);
+        size_t row_left = MOSAIC_BOOT_LOGO_WIDTH;
+        while (row_left > 0 && run_index < MOSAIC_BOOT_LOGO_BIT_RUN_COUNT) {
+            const size_t chunk = run_left < row_left ? run_left : row_left;
+            if (chunk > 0) {
+                lcd_write_solid(foreground ? MOSAIC_BOOT_LOGO_COLOR : 0,
+                                chunk, true);
+                row_left -= chunk;
+                run_left -= chunk;
+            }
+            if (run_left == 0) {
+                const uint8_t completed = s_mosaic_boot_logo_bit_runs[run_index++];
+                if (completed < UINT8_MAX) {
+                    foreground = !foreground;
+                }
+                if (run_index < MOSAIC_BOOT_LOGO_BIT_RUN_COUNT) {
+                    run_left = s_mosaic_boot_logo_bit_runs[run_index];
+                }
+            }
         }
-    }
-    if (used > 0) {
-        spi_tx(fifo, used, 4, keep_cs);
+        lcd_write_solid(0, LCD_WIDTH - LCD_LOGO_X - MOSAIC_BOOT_LOGO_WIDTH,
+                        keep_cs || row + 1U < MOSAIC_BOOT_LOGO_HEIGHT);
     }
 }
 
@@ -269,13 +274,7 @@ static void draw_splash(void)
     lcd_set_window(0, 0, LCD_WIDTH, LCD_HEIGHT);
     lcd_begin_pixels();
     lcd_write_solid(0x0000, LCD_LOGO_Y * LCD_WIDTH, true);
-    for (size_t row = 0; row < MOSAIC_BOOT_LOGO_HEIGHT; ++row) {
-        lcd_write_solid(0x0000, LCD_LOGO_X, true);
-        lcd_write_logo_row(row, true);
-        lcd_write_solid(0x0000,
-                        LCD_WIDTH - LCD_LOGO_X - MOSAIC_BOOT_LOGO_WIDTH,
-                        true);
-    }
+    lcd_write_logo(true);
     const size_t bottom_lines =
         LCD_HEIGHT - LCD_LOGO_Y - MOSAIC_BOOT_LOGO_HEIGHT;
     lcd_write_solid(0x0000, bottom_lines * LCD_WIDTH, false);
@@ -290,15 +289,9 @@ void bootloader_after_init(void)
 {
     mosaico_boot_handoff_clear();
     if (!hardware_version_supported()) {
-        ESP_LOGW(TAG, "LCD boot splash skipped");
         return;
     }
-    ESP_LOGW(TAG, "LCD splash start");
     panel_init();
-    ESP_LOGW(TAG, "LCD panel ready");
     draw_splash();
     mosaico_boot_handoff_publish();
-    /* Bootloader log level is WARN in the product configuration.  Keep this
-     * completion marker visible without enabling all bootloader INFO logs. */
-    ESP_LOGW(TAG, "LCD boot splash visible");
 }

@@ -1,0 +1,19 @@
+menu "Mosaico factory recovery boot"
+
+    config FACTORY_RECOVERY_BOOT_GPIO
+        int "GPIO used to request factory recovery"
+        range 0 61 if IDF_TARGET_ESP32S31
+        default 7
+        help
+            Holding the active-low AI button during reset selects the retained
+            factory Recovery image for this boot without changing OTA data.
+
+    config FACTORY_RECOVERY_BOOT_DEBOUNCE_MS
+        int "Low-level debounce time (milliseconds)"
+        range 0 1000
+        default 50
+        help
+            The input must remain low for this duration before Recovery is
+            selected. A released button adds no delay to normal startup.
+
+endmenu

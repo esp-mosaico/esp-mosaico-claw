@@ -1,7 +1,10 @@
-# Name,    Type, SubType, Offset,   Size
-nvs,       data, nvs,     0xA000,   0x6000
-otadata,   data, ota,     0x10000,  0x2000
-phy_init,  data, phy,     0x12000,  0x1000
-factory,   app,  factory,         ,   6656K
-ui_apps,   data, 0x41,            ,   3200K
-system,    data, littlefs,        ,   3000K
+# Name,    Type, SubType, Offset,    Size,      Flags
+otadata,   data, ota,     0x9000,    0x2000,
+phy_init,  data, phy,     0xB000,    0x1000,
+sysmeta,   data, nvs,     0xC000,    0x14000,
+factory,   app,  factory, 0x20000,   0x200000,
+coredump,  data, coredump,0x220000,  0xD0000,
+nvs,       data, nvs,     0x2F0000,  0x10000,
+ota_0,     app,  ota_0,   0x300000,  6656K,
+ui_apps,   data, 0x41,    0x980000,  3200K,
+system,    data, littlefs,0xCA0000,  3000K,

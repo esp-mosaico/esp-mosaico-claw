@@ -29,6 +29,7 @@ managed_components/
 # Cache / Compiled
 .cache
 *.pyc
+prebuilt/recovery/*_flashed.bin
 
 # MCP / Memov
 .mcp.json

@@ -28,6 +28,8 @@ jobs:
         run: |
           source "$IDF_PATH/export.sh"
           python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check \
+            -r third-party/esp-iris/components/esp_iris/tools/requirements.lock
 
       - name: Configure board and build project
         shell: bash
@@ -39,5 +41,13 @@ jobs:
           fi
           if ! idf.py -B build-ci build; then
               echo "::error title=ESP-IDF build failed::Failed to build esp_mosaico"
+              exit 1
+          fi
+          if ! idf.py -B build-ci factory-bundle-validate; then
+              echo "::error title=Factory bundle validation failed::Recovery bundle or provisioning layout is invalid"
+              exit 1
+          fi
+          if ! idf.py -B build-ci system-update-bundle; then
+              echo "::error title=System update bundle failed::Could not package ota_0, ui_apps and system"
               exit 1
           fi

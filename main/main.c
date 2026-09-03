@@ -38,6 +38,7 @@
 #include "nvs_flash.h"
 #include "http_server.h"
 #include "hot_plug_register.h"
+#include "mosaico_iris.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -829,6 +830,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Edge Agent version: %s", edge_agent_get_version());
     ESP_ERROR_CHECK(app_allocate_runtime_state());
     ESP_ERROR_CHECK(init_nvs());
+    ESP_ERROR_CHECK(mosaico_iris_start());
     ESP_ERROR_CHECK(app_config_init());
     bool factory_reset_pending = false;
     ESP_ERROR_CHECK(app_factory_reset_is_pending(&factory_reset_pending));
@@ -966,6 +968,7 @@ void app_main(void)
                      esp_err_to_name(button_err));
         }
 #endif
+        ESP_ERROR_CHECK(mosaico_iris_mark_healthy());
         app_free_runtime_state();
         return;
     }
@@ -1128,5 +1131,6 @@ void app_main(void)
     xTaskCreate(memory_monitor_task, "mem_mon", 4096, NULL, 1, NULL);
 #endif
 
+    ESP_ERROR_CHECK(mosaico_iris_mark_healthy());
     app_free_runtime_state();
 }

@@ -1,0 +1,66 @@
+{
+  "bootloader": {
+    "factory_recovery_gpio": 7,
+    "factory_recovery_gpio_active_low": true,
+    "idf_version": "v6.2-dev-2221-g7b9cc1ac79f-dirt",
+    "mosaico_boot_splash": true,
+    "source": "esp-mosaico-claw"
+  },
+  "esp_iris_revision": "9d1d2119e9626f9b53d8b18fc02b91a04d47ad3e",
+  "idf_version": "v6.2-dev-2221-g7b9cc1ac79f-dirt",
+  "images": {
+    "bootloader": {
+      "file": "bootloader.bin",
+      "offset": "0x2000",
+      "sha256": "06a7eb5ea3b6e78c6a291c1ce39249cf2d154684b2ee52d8f52dc15d746cf7f2",
+      "size": 19152
+    },
+    "ota_data": {
+      "file": "ota_data_initial.bin",
+      "offset": "0x9000",
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
+      "size": 8192
+    },
+    "partition_table": {
+      "file": "partition-table.bin",
+      "offset": "0x8000",
+      "sha256": "b49e03e3df11654d97d3c41a1e0be14a3e6f096875ba2a8372c93b20e556cf8e",
+      "size": 3072
+    },
+    "recovery": {
+      "file": "factory.bin",
+      "offset": "0x20000",
+      "sha256": "70241b1cecd4fbd78b4fd4d9bffe6f3172b6b82dcfc0bf0e798bfd04a8cc526f",
+      "size": 1980384
+    }
+  },
+  "initial_boot": {
+    "expected_mode": "recovery",
+    "ota_data_image": "ota_data_initial.bin",
+    "partition": "factory"
+  },
+  "layout": {
+    "application_partition": {
+      "name": "ota_0",
+      "offset": "0x300000"
+    },
+    "recovery_partition": {
+      "name": "factory",
+      "offset": "0x20000",
+      "size": "0x200000"
+    }
+  },
+  "profile": "recovery",
+  "project": "factory",
+  "schema_version": 2,
+  "security": {
+    "flash_encryption": false,
+    "secure_boot": false
+  },
+  "source": {
+    "commit": "7637ce39dfd61b09ef9ad1a61181f4d45cdb8fed",
+    "dirty": false
+  },
+  "target": "esp32s31",
+  "version": "2.3.0-recovery"
+}

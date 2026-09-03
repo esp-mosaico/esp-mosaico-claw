@@ -25,6 +25,9 @@ dependencies:
     path: ../../third-party/esp-claw/components/claw_modules/claw_skill
   cap_lua:
     path: ../../third-party/esp-claw/components/claw_capabilities/cap_lua
+  lua_module_vision:
+    path: ../../third-party/esp-claw/components/lua_modules/lua_module_vision
+  tda-2030/esp_vision_core: "^0.1.0"
   espressif/esp-gsp:
     version: "1.0.0"
     require: public

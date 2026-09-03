@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "camera_binds.h"
+#include "camera_vision.h"
 #if defined(ESP_PLATFORM)
 #include "driver/jpeg_encode.h"
 #include "driver/ppa.h"
@@ -35,6 +36,7 @@
 #define MOSAIC_CAMERA_BUFFERS 2U
 #define MOSAIC_CAMERA_PPA_SCALE_STEPS 16U
 #define MOSAIC_CAMERA_OUTPUT_W 450U
+#define MOSAIC_CAMERA_OUTPUT_X ((MOSAIC_CAMERA_W - MOSAIC_CAMERA_OUTPUT_W) / 2U)
 
 #if defined(ESP_PLATFORM)
 
@@ -49,6 +51,8 @@
 #define MOSAIC_CAMERA_JPEG_TIMEOUT_MS 1000
 #define MOSAIC_CAMERA_FLASH_WAIT_FRAMES 10U
 #define MOSAIC_CAMERA_CAPTURE_FREEZE_MS 300
+#define MOSAIC_CAMERA_QR_INTERVAL_US 100000
+#define MOSAIC_CAMERA_COLOR_INTERVAL_US 50000
 
 static const char *TAG = "mosaic_camera";
 
@@ -93,6 +97,7 @@ typedef struct {
     bool capture_use_flash;
     bool flash_enabled;
     bool mirror_x;
+    camera_vision_mode_t recognition_mode;
 } mosaic_camera_state_t;
 
 static mosaic_camera_state_t s_camera = {
@@ -132,6 +137,21 @@ static uint8_t *camera_alloc_preview_pixels(void)
             MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
     }
     return pixels;
+}
+
+static void camera_clear_preview_borders(uint8_t *pixels)
+{
+    if (pixels == NULL) {
+        return;
+    }
+    const size_t left_bytes = MOSAIC_CAMERA_OUTPUT_X * sizeof(uint16_t);
+    const size_t right_offset = (MOSAIC_CAMERA_OUTPUT_X + MOSAIC_CAMERA_OUTPUT_W) * sizeof(uint16_t);
+    const size_t right_bytes = MOSAIC_CAMERA_STRIDE - right_offset;
+    for (uint32_t y = 0; y < MOSAIC_CAMERA_H; ++y) {
+        uint8_t *row = pixels + (size_t)y * MOSAIC_CAMERA_STRIDE;
+        memset(row, 0, left_bytes);
+        memset(row + right_offset, 0, right_bytes);
+    }
 }
 
 static esp_err_t camera_ensure_preview_buffers(size_t count)
@@ -265,7 +285,6 @@ static esp_err_t camera_convert_frame(
     /* Keep both profiles on the same 450x480 preview area after rotation. */
     const uint32_t source_x = ((frame->width - profile->crop_width) / 2U) & ~1U;
     const uint32_t source_y = (frame->height - profile->crop_height) / 2U;
-    const uint32_t output_x = (MOSAIC_CAMERA_W - MOSAIC_CAMERA_OUTPUT_W) / 2U;
     const float scale = (float)profile->scale / MOSAIC_CAMERA_PPA_SCALE_STEPS;
 
     const ppa_srm_oper_config_t operation = {
@@ -286,7 +305,7 @@ static esp_err_t camera_convert_frame(
             .buffer_size = MOSAIC_CAMERA_FRAME_BYTES,
             .pic_w = MOSAIC_CAMERA_W,
             .pic_h = MOSAIC_CAMERA_H,
-            .block_offset_x = output_x,
+            .block_offset_x = MOSAIC_CAMERA_OUTPUT_X,
             .block_offset_y = 0,
             .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
         },
@@ -336,6 +355,33 @@ static bool camera_flash_enabled(void)
     enabled = s_camera.flash_enabled;
     portEXIT_CRITICAL(&s_camera.lock);
     return enabled;
+}
+
+static camera_vision_mode_t camera_recognition_mode(void)
+{
+    camera_vision_mode_t mode;
+    portENTER_CRITICAL(&s_camera.lock);
+    mode = s_camera.recognition_mode;
+    portEXIT_CRITICAL(&s_camera.lock);
+    return mode;
+}
+
+static void camera_update_recognition_result(esp_gsp_handle_t ui, const camera_vision_result_t *result)
+{
+    if (ui == NULL || result == NULL) {
+        return;
+    }
+    const bool detected = result->count > 0;
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_VISIBLE, detected);
+    if (!detected) {
+        return;
+    }
+    if (result->mode == CAMERA_VISION_MODE_QRCODE) {
+        (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_TEXT,
+                               result->qrcodes[0].payload[0] != '\0' ? result->qrcodes[0].payload : "QR code detected");
+    } else {
+        (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_TEXT, "Green color detected");
+    }
 }
 
 static void camera_stop_registered_stream(void)
@@ -434,6 +480,10 @@ static void camera_capture_task(void *ctx)
     mosaico_camera_handle_t last_camera = NULL;
     uint32_t skip_frames = 0;
     bool waiting_logged = false;
+    bool detection_error_logged = false;
+    camera_vision_mode_t previous_mode = CAMERA_VISION_MODE_OFF;
+    camera_vision_result_t recognition = {0};
+    int64_t last_detection_us = 0;
 
     const ppa_client_config_t ppa_config = {
         .oper_type = PPA_OPERATION_SRM,
@@ -475,8 +525,7 @@ static void camera_capture_task(void *ctx)
             }
             err = camera_ensure_preview_buffers(MOSAIC_CAMERA_BUFFERS);
             if (err != ESP_OK) {
-                ESP_LOGE(TAG, "failed to allocate preview buffers: %s",
-                         esp_err_to_name(err));
+                ESP_LOGE(TAG, "failed to allocate preview buffers: %s", esp_err_to_name(err));
                 last_camera = NULL;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
@@ -537,8 +586,7 @@ static void camera_capture_task(void *ctx)
 
         char capture_path[MOSAIC_CAMERA_CAPTURE_PATH_MAX] = {0};
         bool use_flash = false;
-        const bool capture_requested = camera_take_capture_request(
-            capture_path, sizeof(capture_path), &use_flash);
+        const bool capture_requested = camera_take_capture_request(capture_path, sizeof(capture_path), &use_flash);
         mosaico_camera_flash_state_t flash_state = {0};
         if (capture_requested && use_flash) {
             err = mosaico_camera_prepare_flash_capture(
@@ -578,6 +626,9 @@ static void camera_capture_task(void *ctx)
         err = camera_convert_frame(
             ppa, &frame, s_camera.frames[slot].pixels,
             camera_mirror_x_enabled());
+        if (err == ESP_OK) {
+            camera_clear_preview_borders(s_camera.frames[slot].pixels);
+        }
         const esp_err_t release_err =
             mosaico_camera_return_frame(camera, &frame);
         if (release_err != ESP_OK) {
@@ -591,6 +642,31 @@ static void camera_capture_task(void *ctx)
         if (capture_requested && use_flash) {
             (void)mosaico_camera_flash_stop(camera);
             camera_restore_after_flash(camera, &flash_state);
+        }
+        const camera_vision_mode_t mode = camera_recognition_mode();
+        if (mode != previous_mode) {
+            memset(&recognition, 0, sizeof(recognition));
+            recognition.mode = mode;
+            previous_mode = mode;
+            last_detection_us = 0;
+            detection_error_logged = false;
+        }
+        const int64_t now_us = esp_timer_get_time();
+        const int64_t interval_us = mode == CAMERA_VISION_MODE_QRCODE ? MOSAIC_CAMERA_QR_INTERVAL_US : MOSAIC_CAMERA_COLOR_INTERVAL_US;
+        if (err == ESP_OK && mode != CAMERA_VISION_MODE_OFF && (last_detection_us == 0 || now_us - last_detection_us >= interval_us)) {
+            last_detection_us = now_us;
+            const esp_err_t detect_err = camera_vision_detect(mode, s_camera.frames[slot].pixels, MOSAIC_CAMERA_W, MOSAIC_CAMERA_H,
+                                                              &recognition);
+            if (detect_err == ESP_OK && camera_recognition_mode() == mode) {
+                detection_error_logged = false;
+                camera_update_recognition_result(ui, &recognition);
+            } else if (detect_err != ESP_OK && !detection_error_logged) {
+                ESP_LOGE(TAG, "recognition failed: %s", esp_err_to_name(detect_err));
+                detection_error_logged = true;
+            }
+        }
+        if (err == ESP_OK && mode != CAMERA_VISION_MODE_OFF && camera_recognition_mode() == mode) {
+            camera_vision_draw_result(s_camera.frames[slot].pixels, MOSAIC_CAMERA_W, MOSAIC_CAMERA_H, &recognition);
         }
         frame_finish_write((size_t)slot, err == ESP_OK);
         if (err != ESP_OK) {
@@ -633,6 +709,7 @@ esp_err_t mosaic_camera_start(esp_gsp_handle_t ui)
     s_camera.flash_enabled = false;
     s_camera.capture_path[0] = '\0';
     s_camera.mirror_x = false;
+    s_camera.recognition_mode = CAMERA_VISION_MODE_OFF;
     portEXIT_CRITICAL(&s_camera.lock);
 
     camera_set_missing_hint(ui, !camera_board_present());
@@ -732,6 +809,27 @@ esp_err_t mosaic_camera_toggle_flip(bool *out_enabled)
     }
     portEXIT_CRITICAL(&s_camera.lock);
     return ret;
+}
+
+esp_err_t mosaic_camera_set_recognition_mode(camera_vision_mode_t mode)
+{
+    if (mode != CAMERA_VISION_MODE_OFF && mode != CAMERA_VISION_MODE_QRCODE && mode != CAMERA_VISION_MODE_COLOR) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (mode != CAMERA_VISION_MODE_OFF) {
+        const esp_err_t err = camera_vision_init();
+        if (err != ESP_OK) {
+            return err;
+        }
+    }
+    portENTER_CRITICAL(&s_camera.lock);
+    if (!s_camera.started || s_camera.stopping) {
+        portEXIT_CRITICAL(&s_camera.lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_camera.recognition_mode = mode;
+    portEXIT_CRITICAL(&s_camera.lock);
+    return ESP_OK;
 }
 
 void mosaic_camera_tick(esp_gsp_handle_t ui)
@@ -851,7 +949,9 @@ void mosaic_camera_stop(esp_gsp_handle_t ui)
     s_camera.flash_enabled = false;
     s_camera.capture_path[0] = '\0';
     s_camera.mirror_x = false;
+    s_camera.recognition_mode = CAMERA_VISION_MODE_OFF;
     portEXIT_CRITICAL(&s_camera.lock);
+    camera_vision_deinit();
 }
 
 #else
@@ -991,6 +1091,12 @@ esp_err_t mosaic_camera_toggle_flip(bool *out_enabled)
     if (out_enabled != NULL) {
         *out_enabled = false;
     }
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t mosaic_camera_set_recognition_mode(camera_vision_mode_t mode)
+{
+    (void)mode;
     return ESP_ERR_NOT_SUPPORTED;
 }
 

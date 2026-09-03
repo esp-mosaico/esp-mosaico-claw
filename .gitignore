@@ -5,6 +5,7 @@ build-*/
 build-host/
 tmp/
 releases/
+firmware_output/
 
 # ESP-IDF
 sdkconfig

@@ -142,7 +142,7 @@ local function http_get_json(url, service_name, max_body_bytes)
         method = "GET",
         headers = {
             Accept = "application/json",
-            ["User-Agent"] = "esp-clawgent-lua-capability",
+            ["User-Agent"] = "esp-claw-lua-capability",
         },
         timeout_ms = request_timeout(),
         max_body_bytes = max_body_bytes,

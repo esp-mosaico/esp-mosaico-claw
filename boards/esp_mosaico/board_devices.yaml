@@ -42,7 +42,10 @@ devices:
         dc_gpio_num: -1
         spi_mode: 0
         pclk_hz: 40000000
-        trans_queue_depth: 2
+        # A 480x480 RGB565 frame is split by the S31 SPI hardware limit into
+        # 15 transactions. Keep the whole frame queueable so tx_color returns
+        # immediately while DMA drains it in the background.
+        trans_queue_depth: 16
         lcd_cmd_bits: 32
         flags:
           quad_mode: true

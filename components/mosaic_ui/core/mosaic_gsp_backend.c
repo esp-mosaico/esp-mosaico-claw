@@ -31,6 +31,20 @@
 #define MOSAIC_DYNAMIC_FONT_GLYPH_MAX_PX 40U
 #define MOSAIC_FREETYPE_RENDER_TASK_STACK_SIZE 32768U
 
+/* A 30 FPS display presents one frame every ~33 ms. Keep released PageFlow
+ * motion in a phone-like 4-9 frame window, while retaining enough recent
+ * input to carry the finger's release velocity into the Hermite settle. */
+static const esp_gsp_config_override_entry_t s_page_flow_motion_overrides[] = {
+    {.field_id = ESP_GSP_FIELD_SWIPE_VELOCITY_WINDOW_MS, .value = 67U},
+    {.field_id = ESP_GSP_FIELD_SWIPE_RELEASE_GRACE_MS, .value = 133U},
+    {.field_id = ESP_GSP_FIELD_SWIPE_SETTLE_MIN_MS, .value = 133U},
+    {.field_id = ESP_GSP_FIELD_SWIPE_SETTLE_BASE_MS, .value = 200U},
+    {.field_id = ESP_GSP_FIELD_SWIPE_SETTLE_DISTANCE_MS, .value = 100U},
+    {.field_id = ESP_GSP_FIELD_SWIPE_SETTLE_MAX_MS, .value = 300U},
+    {.field_id = ESP_GSP_FIELD_SWIPE_SETTLE_SPEED_REDUCTION_MS, .value = 50U},
+    {.field_id = ESP_GSP_FIELD_SWIPE_SETTLE_MAX_SPEED_REDUCTION_MS, .value = 100U},
+};
+
 typedef struct {
     struct mosaic_gsp_backend_t* backend;
     const mosaic_app_package_t* package;
@@ -282,6 +296,15 @@ static esp_err_t app_config_for(
                 (unsigned)overrides[i].field_id, (int)result);
         }
     }
+    result = esp_gsp_config_override_bind_external(
+        &config.overrides, s_page_flow_motion_overrides,
+        sizeof(s_page_flow_motion_overrides) /
+            sizeof(s_page_flow_motion_overrides[0]));
+    if (result != ESP_GSP_CONFIG_SET_OK) {
+        printf("mosaic_gsp_backend: PageFlow motion overrides failed: %d\n",
+            (int)result);
+        return ESP_ERR_INVALID_ARG;
+    }
     *out_config = config;
     return ESP_OK;
 }
@@ -396,6 +419,7 @@ static esp_err_t start_ui(mosaic_gsp_backend_handle_t backend,
              * of issuing an I2C transaction on every UI tick. */
             .touch_input_mode = ESP_GSP_TOUCH_INPUT_INTERRUPT,
             .touch_wake_from_isr = mosaic_ui_screen_wake_from_isr,
+            .perf_log = true,
         };
         esp_err_t err = esp_gsp_esp_lcd_start(
             &app_config, &esp_config, &backend->hub_ui);

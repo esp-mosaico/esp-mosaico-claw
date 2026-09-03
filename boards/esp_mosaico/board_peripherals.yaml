@@ -23,8 +23,10 @@ peripherals:
         data1_io_num: 51
         data2_io_num: 35
         data3_io_num: 9
-        # SPI transport chunk: 480 px * 10 lines * RGB565.
-        max_transfer_sz: 9600
+        # One full 480x480 RGB565 frame. S31 QSPI DMA reads the surface
+        # directly from PSRAM, so one transaction preserves asynchronous
+        # GSP/GRAM overlap.
+        max_transfer_sz: 460800
 
   # LCD panel power enable. Schematic net: LCD_EN=GPIO45 (active high).
   - name: gpio_lcd_en

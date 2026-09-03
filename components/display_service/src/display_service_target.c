@@ -146,6 +146,9 @@ esp_err_t display_service_target_build(
         staging = "fb-partition";
     } else if (te_enabled) {
         staging = "gram-te";
+        out_target->drawbuf.te_compose_buffers = 2;
+        // out_target->drawbuf.te_compose_buffers = 1;
+        staging_buffers = out_target->drawbuf.te_compose_buffers;
     } else {
         staging = "gram";
         staging_buffers = DISPLAY_SERVICE_TARGET_BUFFER_COUNT;

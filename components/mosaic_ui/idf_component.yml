@@ -11,8 +11,6 @@ dependencies:
     path: ../asr_service
   cap_im_ai_create:
     path: ../cap_im_ai_create
-  hot_plug_register:
-    path: ../hot_plug_register
   mosaico_camera:
     path: ../mosaico_camera
   weather_service:
@@ -27,6 +25,9 @@ dependencies:
     path: ../../third-party/esp-claw/components/claw_modules/claw_skill
   cap_lua:
     path: ../../third-party/esp-claw/components/claw_capabilities/cap_lua
+  lua_module_vision:
+    path: ../../third-party/esp-claw/components/lua_modules/lua_module_vision
+  tda-2030/esp_vision_core: "^0.1.0"
   espressif/esp-gsp:
     version: "1.0.0"
     require: public

@@ -82,8 +82,8 @@ dependencies:
   http_server:
     path: ../components/http_server
 
-  hot_plug_register:
-    path: ../components/hot_plug_register
+  mosaico_camera:
+    path: ../components/mosaico_camera
 
   settings:
     path: ../third-party/esp-claw/components/common/settings

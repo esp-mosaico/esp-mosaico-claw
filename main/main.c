@@ -37,7 +37,7 @@
 #include "time.h"
 #include "nvs_flash.h"
 #include "http_server.h"
-#include "hot_plug_register.h"
+#include "mosaico_camera.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -849,7 +849,7 @@ void app_main(void)
     /* Audio mixer/capture acquire their board devices through the hardware
      * registry. Initialize it before either service attempts a claim. */
     ESP_ERROR_CHECK(claw_hw_registry_init());
-    ESP_ERROR_CHECK(hot_plug_register_init());
+    ESP_ERROR_CHECK(mosaico_camera_init());
     ESP_ERROR_CHECK(app_fs_init());
 
     if (factory_reset_pending) {

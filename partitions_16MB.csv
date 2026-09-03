@@ -2,6 +2,6 @@
 nvs,       data, nvs,     0xA000,   0x6000
 otadata,   data, ota,     0x10000,  0x2000
 phy_init,  data, phy,     0x12000,  0x1000
-factory,   app,  factory,         ,   6656K
+factory,   app,  factory,         ,   8000K
 ui_apps,   data, 0x41,            ,   3200K
 system,    data, littlefs,        ,   3000K

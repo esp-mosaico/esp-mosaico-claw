@@ -10,5 +10,10 @@ dependencies:
   subboard_support:
     path: ../subboard_support
 
+  mosaico_module_mgr:
+    path: ../mosaico_module_mgr
+
+  espressif/esp_board_manager: "^0.6"
+
   esp_video:
     path: ../../third-party/esp-claw/components/common/esp_video

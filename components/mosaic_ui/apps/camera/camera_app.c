@@ -40,6 +40,8 @@ typedef enum {
 } camera_flash_mode_t;
 
 static camera_flash_mode_t s_flash_mode;
+static camera_vision_mode_t s_recognition_mode;
+static bool s_recognition_menu_open;
 
 static void camera_load_flash_mode(void)
 {
@@ -98,6 +100,37 @@ static void camera_render_flash_mode(esp_gsp_handle_t ui)
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_FLASH_ON_VISIBLE, s_flash_mode == CAMERA_FLASH_ON);
 }
 
+static void camera_render_recognition(esp_gsp_handle_t ui)
+{
+    if (ui == NULL) {
+        return;
+    }
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_MENU_VISIBLE, s_recognition_menu_open);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_ACTIVE_VISIBLE, s_recognition_mode != CAMERA_VISION_MODE_OFF);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_QRCODE_SELECTED_VISIBLE, s_recognition_mode == CAMERA_VISION_MODE_QRCODE);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_COLOR_SELECTED_VISIBLE, s_recognition_mode == CAMERA_VISION_MODE_COLOR);
+    (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_STATUS,
+                           s_recognition_mode == CAMERA_VISION_MODE_QRCODE ? "QR scanning" :
+                           s_recognition_mode == CAMERA_VISION_MODE_COLOR ? "Color scanning" : "");
+    if (s_recognition_mode == CAMERA_VISION_MODE_OFF) {
+        (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_VISIBLE, false);
+    }
+}
+
+static void camera_select_recognition_mode(esp_gsp_handle_t ui, camera_vision_mode_t selected)
+{
+    const camera_vision_mode_t next = s_recognition_mode == selected ? CAMERA_VISION_MODE_OFF : selected;
+    const esp_err_t err = mosaic_camera_set_recognition_mode(next);
+    if (err != ESP_OK) {
+        printf("mosaic_camera: switch recognition mode failed err=%d\n", (int)err);
+        return;
+    }
+    s_recognition_mode = next;
+    s_recognition_menu_open = false;
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_VISIBLE, false);
+    camera_render_recognition(ui);
+}
+
 #if defined(ESP_PLATFORM)
 static void camera_start_deferred(void *user_ctx)
 {
@@ -127,7 +160,10 @@ static void camera_start_deferred(void *user_ctx)
 static void camera_started(esp_gsp_handle_t ui)
 {
     camera_load_flash_mode();
+    s_recognition_mode = CAMERA_VISION_MODE_OFF;
+    s_recognition_menu_open = false;
     camera_render_flash_mode(ui);
+    camera_render_recognition(ui);
     const esp_err_t err = mosaic_loader_defer(camera_start_deferred, NULL);
     if (err != ESP_OK) {
         printf("mosaic_camera: defer start failed err=%d\n", (int)err);
@@ -143,7 +179,10 @@ static void camera_tick(esp_gsp_handle_t ui, void *user_ctx)
 static void camera_started(esp_gsp_handle_t ui)
 {
     camera_load_flash_mode();
+    s_recognition_mode = CAMERA_VISION_MODE_OFF;
+    s_recognition_menu_open = false;
     camera_render_flash_mode(ui);
+    camera_render_recognition(ui);
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_MISSING_VISIBLE, false);
     mosaic_camera_tick(ui);
     (void)esp_gsp_timer_create(ui, 40, camera_tick, NULL);
@@ -158,6 +197,8 @@ static void camera_stopping(esp_gsp_handle_t ui)
             printf("mosaic_camera: disable continuous flash failed err=%d\n", (int)err);
         }
     }
+    s_recognition_mode = CAMERA_VISION_MODE_OFF;
+    s_recognition_menu_open = false;
     mosaic_camera_stop(ui);
 }
 
@@ -248,6 +289,16 @@ static void camera_event(
         }
         break;
     }
+    case GSP_ACT_ID_CAMERA_RECOGNITION_MENU:
+        s_recognition_menu_open = !s_recognition_menu_open;
+        camera_render_recognition(ui);
+        break;
+    case GSP_ACT_ID_CAMERA_QRCODE_MODE:
+        camera_select_recognition_mode(ui, CAMERA_VISION_MODE_QRCODE);
+        break;
+    case GSP_ACT_ID_CAMERA_COLOR_MODE:
+        camera_select_recognition_mode(ui, CAMERA_VISION_MODE_COLOR);
+        break;
     default:
         break;
     }

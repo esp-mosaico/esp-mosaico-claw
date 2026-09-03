@@ -36,10 +36,9 @@ static const char *TAG = "mosaico_camera";
 
 #define CAMERA_MAX_BUFFER_COUNT        8U
 #define CAMERA_PWDN_WAKE_DELAY_MS      20U
-#define OV3640_REG_CHIP_ID_HIGH        0x300AU
-#define OV3640_REG_CHIP_ID_LOW         0x300BU
-#define OV3640_CHIP_ID_HIGH            0x36U
-#define OV3640_CHIP_ID_LOW             0x4CU
+#define OV3640_PID_1                   0x364CU
+#define OV3640_PID_2                   0x3641U
+#define SC101IOT_PID                   0xDA4AU
 #define OV3640_REG_AWB_CTRL            0x332BU
 #define OV3640_AWB_CTRL_MANUAL_BIT     0x08U
 #define OV3640_REG_AEC_AGC_CTRL        0x3013U
@@ -78,6 +77,7 @@ struct mosaico_camera_t {
     bool buffers_queued;
     bool streaming;
     bool power_down;
+    esp_cam_sensor_id_t sensor_id;
     void *buffers[CAMERA_MAX_BUFFER_COUNT];
     size_t buffer_lengths[CAMERA_MAX_BUFFER_COUNT];
     bool outstanding[CAMERA_MAX_BUFFER_COUNT];
@@ -238,8 +238,40 @@ static void log_pipeline_state(mosaico_camera_handle_t camera,
         camera->info.buffer_count);
 }
 
-static esp_err_t sensor_register_access(int fd, uint32_t control_id,
-                                        esp_cam_sensor_reg_val_t *reg_value)
+static const char *camera_sensor_name(uint16_t pid)
+{
+    if (pid == OV3640_PID_1 || pid == OV3640_PID_2) {
+        return "OV3640";
+    }
+    if (pid == SC101IOT_PID) {
+        return "SC101IOT";
+    }
+    return "unknown";
+}
+
+static bool camera_is_ov3640(const mosaico_camera_handle_t camera)
+{
+    return camera != NULL && (camera->sensor_id.pid == OV3640_PID_1 || camera->sensor_id.pid == OV3640_PID_2);
+}
+
+static esp_err_t camera_get_sensor_id(int fd, esp_cam_sensor_id_t *sensor_id)
+{
+    ESP_RETURN_ON_FALSE(sensor_id, ESP_ERR_INVALID_ARG, TAG, "sensor ID output is null");
+    struct v4l2_ext_control control = {
+        .id = ESP_CAM_SENSOR_IOC_G_CHIP_ID,
+        .size = sizeof(*sensor_id),
+        .p_u8 = (uint8_t *)sensor_id,
+    };
+    struct v4l2_ext_controls controls = {
+        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL,
+        .count = 1,
+        .controls = &control,
+    };
+    return camera_ioctl(fd, VIDIOC_G_EXT_CTRLS, &controls, "get camera sensor ID");
+}
+
+/* OV3640-only register controls. */
+static esp_err_t ov3640_register_access(int fd, uint32_t control_id, esp_cam_sensor_reg_val_t *reg_value)
 {
     struct v4l2_ext_control control = {
         .id = control_id,
@@ -257,16 +289,16 @@ static esp_err_t sensor_register_access(int fd, uint32_t control_id,
     return camera_ioctl(fd, request, &controls, "OV3640 register access");
 }
 
-static esp_err_t sensor_write_reg(int fd, uint16_t reg, uint8_t value)
+static esp_err_t ov3640_write_reg(int fd, uint16_t reg, uint8_t value)
 {
     esp_cam_sensor_reg_val_t reg_value = {
         .regaddr = reg,
         .value = value,
     };
-    return sensor_register_access(fd, ESP_CAM_SENSOR_IOC_S_REG, &reg_value);
+    return ov3640_register_access(fd, ESP_CAM_SENSOR_IOC_S_REG, &reg_value);
 }
 
-static esp_err_t sensor_read_reg(int fd, uint16_t reg, uint8_t *value)
+static esp_err_t ov3640_read_reg(int fd, uint16_t reg, uint8_t *value)
 {
     ESP_RETURN_ON_FALSE(value, ESP_ERR_INVALID_ARG, TAG,
                         "sensor register output is null");
@@ -274,31 +306,28 @@ static esp_err_t sensor_read_reg(int fd, uint16_t reg, uint8_t *value)
         .regaddr = reg,
     };
     ESP_RETURN_ON_ERROR(
-        sensor_register_access(fd, ESP_CAM_SENSOR_IOC_G_REG, &reg_value), TAG,
+        ov3640_register_access(fd, ESP_CAM_SENSOR_IOC_G_REG, &reg_value), TAG,
         "read OV3640 register 0x%04X failed", reg);
     *value = reg_value.value;
     return ESP_OK;
 }
 
-static esp_err_t apply_module_tuning(int fd)
+static esp_err_t ov3640_apply_module_tuning(int fd)
 {
     for (size_t i = 0;
          i < sizeof(s_ov3640_advanced_awb) / sizeof(s_ov3640_advanced_awb[0]);
          ++i) {
         ESP_RETURN_ON_ERROR(
-            sensor_write_reg(fd, s_ov3640_advanced_awb[i].reg,
-                             s_ov3640_advanced_awb[i].value),
+            ov3640_write_reg(fd, s_ov3640_advanced_awb[i].reg, s_ov3640_advanced_awb[i].value),
             TAG, "write OV3640 tuning register 0x%04X failed",
             s_ov3640_advanced_awb[i].reg);
     }
 
     uint8_t awb_control = 0;
-    ESP_RETURN_ON_ERROR(sensor_read_reg(fd, OV3640_REG_AWB_CTRL, &awb_control),
+    ESP_RETURN_ON_ERROR(ov3640_read_reg(fd, OV3640_REG_AWB_CTRL, &awb_control),
                         TAG, "read OV3640 AWB control failed");
     ESP_RETURN_ON_ERROR(
-        sensor_write_reg(fd, OV3640_REG_AWB_CTRL,
-                         (uint8_t)(awb_control &
-                                   ~OV3640_AWB_CTRL_MANUAL_BIT)),
+        ov3640_write_reg(fd, OV3640_REG_AWB_CTRL, (uint8_t)(awb_control & ~OV3640_AWB_CTRL_MANUAL_BIT)),
         TAG, "enable OV3640 automatic white balance failed");
     ESP_LOGI(TAG, "OV3640 module tuning applied; advanced AWB enabled");
     return ESP_OK;
@@ -465,6 +494,7 @@ static esp_err_t close_video_device(mosaico_camera_handle_t camera)
     camera->buffers_queued = false;
     camera->streaming = false;
     camera->power_down = false;
+    memset(&camera->sensor_id, 0, sizeof(camera->sensor_id));
     memset(camera->outstanding, 0, sizeof(camera->outstanding));
     return result;
 }
@@ -536,7 +566,7 @@ static esp_err_t initialize_video_device(mosaico_camera_handle_t camera)
 
     ESP_RETURN_ON_ERROR(
         esp_video_init_with_flags(&video_config, ESP_VIDEO_INIT_FLAGS_DVP),
-        TAG, "initialize OV3640 DVP video device failed");
+        TAG, "initialize DVP video device failed");
     camera->video_initialized = true;
 
     ESP_RETURN_ON_ERROR(configure_flash_idle(camera), TAG,
@@ -561,6 +591,8 @@ static esp_err_t open_video_device(mosaico_camera_handle_t camera)
     ESP_RETURN_ON_ERROR(configure_flash_idle(camera), TAG,
                         "configure flash GPIO idle failed");
 
+    ESP_RETURN_ON_ERROR(camera_get_sensor_id(camera->fd, &camera->sensor_id), TAG, "query camera sensor failed");
+
     struct v4l2_format format = {
         .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
         .fmt.pix = {
@@ -570,9 +602,28 @@ static esp_err_t open_video_device(mosaico_camera_handle_t camera)
                 pixel_format_to_v4l2(camera->config.pixel_format),
         },
     };
-    ESP_RETURN_ON_ERROR(
-        camera_ioctl(camera->fd, VIDIOC_S_FMT, &format, "VIDIOC_S_FMT"), TAG,
-        "set camera format failed");
+    if (ioctl(camera->fd, VIDIOC_S_FMT, &format) != 0) {
+        const int preferred_errno = errno;
+        const bool can_fallback = camera->config.width == 1280 && camera->config.height == 720;
+        if (!can_fallback) {
+            ESP_LOGE(TAG, "Set camera format %" PRIu32 "x%" PRIu32 " failed: errno=%d (%s)", camera->config.width,
+                     camera->config.height, preferred_errno, strerror(preferred_errno));
+            return ESP_FAIL;
+        }
+        format = (struct v4l2_format) {
+            .type = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+            .fmt.pix = {
+                .width = 640,
+                .height = 480,
+                .pixelformat = pixel_format_to_v4l2(camera->config.pixel_format),
+            },
+        };
+        if (ioctl(camera->fd, VIDIOC_S_FMT, &format) != 0) {
+            ESP_LOGE(TAG, "Set camera format 1280x720 and fallback 640x480 failed: errno=%d (%s)", errno, strerror(errno));
+            return ESP_FAIL;
+        }
+        ESP_LOGW(TAG, "Camera format 1280x720 unavailable (errno=%d); using 640x480", preferred_errno);
+    }
     ESP_RETURN_ON_ERROR(configure_flash_idle(camera), TAG,
                         "configure flash GPIO after format failed");
 
@@ -645,14 +696,14 @@ static esp_err_t open_video_device(mosaico_camera_handle_t camera)
     }
     camera->buffers_queued = true;
 
-    if (camera->config.apply_module_tuning) {
-        ESP_RETURN_ON_ERROR(apply_module_tuning(camera->fd), TAG,
-                            "apply OV3640 module tuning failed");
+    if (camera_is_ov3640(camera)) {
+        ESP_RETURN_ON_ERROR(ov3640_apply_module_tuning(camera->fd), TAG, "apply OV3640 module tuning failed");
     }
     ESP_RETURN_ON_ERROR(configure_flash_idle(camera), TAG,
                         "configure flash GPIO idle failed");
     ESP_LOGI(TAG, "Flash idle on GPIO%d (active-low)", camera->hardware.flash_io);
-    ESP_LOGI(TAG, "Camera opened idle; stream starts on App entry");
+    ESP_LOGI(TAG, "Camera opened: sensor=%s pid=0x%04" PRIx16 " format=%" PRIu32 "x%" PRIu32 "; stream starts on App entry",
+             camera_sensor_name(camera->sensor_id.pid), camera->sensor_id.pid, camera->info.width, camera->info.height);
     return ESP_OK;
 }
 
@@ -1073,18 +1124,17 @@ static esp_err_t camera_query_ctrl_optional(int fd, uint32_t id,
     return ESP_OK;
 }
 
-static esp_err_t sensor_read_exposure(int fd, uint32_t *exposure,
-                                      uint8_t *exposure_reg_l)
+static esp_err_t ov3640_read_exposure(int fd, uint32_t *exposure, uint8_t *exposure_reg_l)
 {
     uint8_t expo_h = 0;
     uint8_t expo_m = 0;
     uint8_t expo_l = 0;
 
-    ESP_RETURN_ON_ERROR(sensor_read_reg(fd, OV3640_REG_AEC_EXPO_H, &expo_h), TAG,
+    ESP_RETURN_ON_ERROR(ov3640_read_reg(fd, OV3640_REG_AEC_EXPO_H, &expo_h), TAG,
                         "read OV3640 exposure high byte failed");
-    ESP_RETURN_ON_ERROR(sensor_read_reg(fd, OV3640_REG_AEC_EXPO_M, &expo_m), TAG,
+    ESP_RETURN_ON_ERROR(ov3640_read_reg(fd, OV3640_REG_AEC_EXPO_M, &expo_m), TAG,
                         "read OV3640 exposure mid byte failed");
-    ESP_RETURN_ON_ERROR(sensor_read_reg(fd, OV3640_REG_AEC_EXPO_L, &expo_l), TAG,
+    ESP_RETURN_ON_ERROR(ov3640_read_reg(fd, OV3640_REG_AEC_EXPO_L, &expo_l), TAG,
                         "read OV3640 exposure low byte failed");
 
     *exposure =
@@ -1095,19 +1145,16 @@ static esp_err_t sensor_read_exposure(int fd, uint32_t *exposure,
     return ESP_OK;
 }
 
-static esp_err_t sensor_write_exposure(int fd, uint32_t exposure,
-                                       uint8_t exposure_reg_l)
+static esp_err_t ov3640_write_exposure(int fd, uint32_t exposure, uint8_t exposure_reg_l)
 {
     ESP_RETURN_ON_ERROR(
-        sensor_write_reg(fd, OV3640_REG_AEC_EXPO_H,
-                         (uint8_t)((exposure >> 12) & 0xFFU)),
+        ov3640_write_reg(fd, OV3640_REG_AEC_EXPO_H, (uint8_t)((exposure >> 12) & 0xFFU)),
         TAG, "write OV3640 exposure high byte failed");
     ESP_RETURN_ON_ERROR(
-        sensor_write_reg(fd, OV3640_REG_AEC_EXPO_M,
-                         (uint8_t)((exposure >> 4) & 0xFFU)),
+        ov3640_write_reg(fd, OV3640_REG_AEC_EXPO_M, (uint8_t)((exposure >> 4) & 0xFFU)),
         TAG, "write OV3640 exposure mid byte failed");
     ESP_RETURN_ON_ERROR(
-        sensor_write_reg(
+        ov3640_write_reg(
             fd, OV3640_REG_AEC_EXPO_L,
             (uint8_t)((exposure & 0x0FU) << 4) | (exposure_reg_l & 0x0FU)),
         TAG, "write OV3640 exposure low byte failed");
@@ -1135,8 +1182,7 @@ static esp_err_t camera_set_ctrl(int fd, uint32_t id, int32_t value)
     return camera_ioctl(fd, VIDIOC_S_CTRL, &control, "VIDIOC_S_CTRL");
 }
 
-static esp_err_t prepare_flash_exposure(mosaico_camera_handle_t camera,
-                                        mosaico_camera_flash_state_t *state)
+static esp_err_t ov3640_prepare_flash_exposure(mosaico_camera_handle_t camera, mosaico_camera_flash_state_t *state)
 {
     struct v4l2_queryctrl query = {0};
     esp_err_t ret =
@@ -1157,16 +1203,14 @@ static esp_err_t prepare_flash_exposure(mosaico_camera_handle_t camera,
     }
 
     uint32_t sensor_exposure = 0;
-    ret = sensor_read_exposure(camera->fd, &sensor_exposure,
-                               &state->exposure_reg_l);
+    ret = ov3640_read_exposure(camera->fd, &sensor_exposure, &state->exposure_reg_l);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "OV3640 has no V4L2 exposure; sensor exposure read failed");
         return ESP_OK;
     }
 
     state->exposure = (int32_t)sensor_exposure;
-    ret = sensor_write_exposure(camera->fd, OV3640_FLASH_MAX_EXPOSURE,
-                                state->exposure_reg_l);
+    ret = ov3640_write_exposure(camera->fd, OV3640_FLASH_MAX_EXPOSURE, state->exposure_reg_l);
     if (ret == ESP_OK) {
         state->exposure_adjusted = true;
         ESP_LOGD(TAG, "Flash capture exposure via sensor reg: 0x%04" PRIx32
@@ -1180,8 +1224,7 @@ static esp_err_t prepare_flash_exposure(mosaico_camera_handle_t camera,
     return ret;
 }
 
-static esp_err_t restore_flash_exposure(mosaico_camera_handle_t camera,
-                                        const mosaico_camera_flash_state_t *state)
+static esp_err_t ov3640_restore_flash_exposure(mosaico_camera_handle_t camera, const mosaico_camera_flash_state_t *state)
 {
     if (!state->exposure_adjusted) {
         return ESP_OK;
@@ -1191,25 +1234,22 @@ static esp_err_t restore_flash_exposure(mosaico_camera_handle_t camera,
         return camera_set_ctrl(camera->fd, V4L2_CID_EXPOSURE, state->exposure);
     }
 
-    return sensor_write_exposure(camera->fd, (uint32_t)state->exposure,
-                                 state->exposure_reg_l);
+    return ov3640_write_exposure(camera->fd, (uint32_t)state->exposure, state->exposure_reg_l);
 }
 
-static esp_err_t prepare_flash_gain(mosaico_camera_handle_t camera,
-                                    mosaico_camera_flash_state_t *state)
+static esp_err_t ov3640_prepare_flash_gain(mosaico_camera_handle_t camera, mosaico_camera_flash_state_t *state)
 {
-    esp_err_t ret = sensor_read_reg(camera->fd, OV3640_REG_GAIN_H, &state->gain_h);
+    esp_err_t ret = ov3640_read_reg(camera->fd, OV3640_REG_GAIN_H, &state->gain_h);
     if (ret != ESP_OK) {
         return ret;
     }
-    ret = sensor_read_reg(camera->fd, OV3640_REG_GAIN_L, &state->gain_l);
+    ret = ov3640_read_reg(camera->fd, OV3640_REG_GAIN_L, &state->gain_l);
     if (ret != ESP_OK) {
         return ret;
     }
-    ret = sensor_write_reg(camera->fd, OV3640_REG_GAIN_H, OV3640_FLASH_MAX_GAIN_H);
+    ret = ov3640_write_reg(camera->fd, OV3640_REG_GAIN_H, OV3640_FLASH_MAX_GAIN_H);
     if (ret == ESP_OK) {
-        ret = sensor_write_reg(camera->fd, OV3640_REG_GAIN_L,
-                               OV3640_FLASH_MAX_GAIN_L);
+        ret = ov3640_write_reg(camera->fd, OV3640_REG_GAIN_L, OV3640_FLASH_MAX_GAIN_L);
     }
     if (ret == ESP_OK) {
         state->gain_adjusted = true;
@@ -1217,15 +1257,14 @@ static esp_err_t prepare_flash_gain(mosaico_camera_handle_t camera,
     return ret;
 }
 
-static esp_err_t restore_flash_gain(mosaico_camera_handle_t camera,
-                                    const mosaico_camera_flash_state_t *state)
+static esp_err_t ov3640_restore_flash_gain(mosaico_camera_handle_t camera, const mosaico_camera_flash_state_t *state)
 {
     if (!state->gain_adjusted) {
         return ESP_OK;
     }
-    esp_err_t ret = sensor_write_reg(camera->fd, OV3640_REG_GAIN_H, state->gain_h);
+    esp_err_t ret = ov3640_write_reg(camera->fd, OV3640_REG_GAIN_H, state->gain_h);
     if (ret == ESP_OK) {
-        ret = sensor_write_reg(camera->fd, OV3640_REG_GAIN_L, state->gain_l);
+        ret = ov3640_write_reg(camera->fd, OV3640_REG_GAIN_L, state->gain_l);
     }
     return ret;
 }
@@ -1303,25 +1342,25 @@ esp_err_t mosaico_camera_prepare_flash_capture(
                         "invalid flash prepare request");
 
     memset(state, 0, sizeof(*state));
+    if (!camera_is_ov3640(camera)) {
+        return ESP_OK;
+    }
     xSemaphoreTake(camera->lock, portMAX_DELAY);
 
-    esp_err_t ret = sensor_read_reg(camera->fd, OV3640_REG_AEC_CTRL,
-                                    &state->aec_ctrl_3012);
+    esp_err_t ret = ov3640_read_reg(camera->fd, OV3640_REG_AEC_CTRL, &state->aec_ctrl_3012);
     if (ret == ESP_OK) {
-        ret = sensor_read_reg(camera->fd, OV3640_REG_AEC_AGC_CTRL,
-                              &state->aec_agc_ctrl);
+        ret = ov3640_read_reg(camera->fd, OV3640_REG_AEC_AGC_CTRL, &state->aec_agc_ctrl);
     }
     if (ret == ESP_OK) {
-        ret = sensor_write_reg(
-            camera->fd, OV3640_REG_AEC_AGC_CTRL,
-            (uint8_t)(state->aec_agc_ctrl & OV3640_AEC_AGC_DISABLE_MASK));
+        ret = ov3640_write_reg(camera->fd, OV3640_REG_AEC_AGC_CTRL,
+                              (uint8_t)(state->aec_agc_ctrl & OV3640_AEC_AGC_DISABLE_MASK));
     }
 
     if (ret == ESP_OK) {
-        ret = prepare_flash_exposure(camera, state);
+        ret = ov3640_prepare_flash_exposure(camera, state);
     }
     if (ret == ESP_OK) {
-        ret = prepare_flash_gain(camera, state);
+        ret = ov3640_prepare_flash_gain(camera, state);
     }
 
     xSemaphoreGive(camera->lock);
@@ -1347,14 +1386,13 @@ esp_err_t mosaico_camera_restore_flash_capture(
     xSemaphoreTake(camera->lock, portMAX_DELAY);
     flash_gpio_set_off(camera);
     esp_err_t ret = ESP_OK;
-    if (state && state->prepared) {
-        ret = restore_flash_gain(camera, state);
+    if (state && state->prepared && camera_is_ov3640(camera)) {
+        ret = ov3640_restore_flash_gain(camera, state);
         if (ret == ESP_OK) {
-            ret = restore_flash_exposure(camera, state);
+            ret = ov3640_restore_flash_exposure(camera, state);
         }
         if (ret == ESP_OK) {
-            ret = sensor_write_reg(camera->fd, OV3640_REG_AEC_AGC_CTRL,
-                                   state->aec_agc_ctrl);
+            ret = ov3640_write_reg(camera->fd, OV3640_REG_AEC_AGC_CTRL, state->aec_agc_ctrl);
         }
     }
     xSemaphoreGive(camera->lock);
@@ -1478,29 +1516,14 @@ esp_err_t mosaico_camera_probe(mosaico_camera_handle_t camera)
         close_probe_fd = true;
     }
 
-    uint8_t chip_id_high = 0;
-    uint8_t chip_id_low = 0;
-    esp_err_t ret =
-        sensor_read_reg(probe_fd, OV3640_REG_CHIP_ID_HIGH, &chip_id_high);
-    if (ret == ESP_OK) {
-        ret = sensor_read_reg(probe_fd, OV3640_REG_CHIP_ID_LOW,
-                              &chip_id_low);
-    }
+    esp_cam_sensor_id_t sensor_id = {0};
+    esp_err_t ret = camera_get_sensor_id(probe_fd, &sensor_id);
     if (close_probe_fd && close(probe_fd) != 0 && ret == ESP_OK) {
         ret = ESP_FAIL;
     }
     xSemaphoreGive(camera->lock);
 
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    if (chip_id_high != OV3640_CHIP_ID_HIGH ||
-            chip_id_low != OV3640_CHIP_ID_LOW) {
-        ESP_LOGW(TAG, "Unexpected OV3640 chip ID: %02X%02X",
-                 chip_id_high, chip_id_low);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    return ESP_OK;
+    return ret;
 }
 
 esp_err_t mosaico_camera_del(mosaico_camera_handle_t camera)

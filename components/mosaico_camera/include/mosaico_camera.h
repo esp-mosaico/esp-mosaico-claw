@@ -18,12 +18,11 @@ extern "C" {
 
 #define MOSAICO_CAMERA_DEFAULT_CONFIG() {                        \
     .slot = BSP_SUBBOARD_SLOT_LEFT,                              \
-    .width = 640,                                               \
-    .height = 480,                                               \
+    .width = 1280,                                               \
+    .height = 720,                                               \
     .pixel_format = MOSAICO_CAMERA_PIXEL_FORMAT_UYVY,            \
     .buffer_count = 2,                                           \
     .frame_timeout_ms = 1000,                                    \
-    .apply_module_tuning = true,                                 \
 }
 
 typedef struct mosaico_camera_t *mosaico_camera_handle_t;
@@ -43,7 +42,6 @@ typedef struct {
     mosaico_camera_pixel_format_t pixel_format;
     uint8_t buffer_count;
     uint32_t frame_timeout_ms;
-    bool apply_module_tuning;
 } mosaico_camera_config_t;
 
 typedef struct {
@@ -88,7 +86,7 @@ bool mosaico_camera_is_available(void);
 void mosaico_camera_set_availability_callback(mosaico_camera_availability_callback_t callback, void *user_ctx);
 
 /**
- * @brief Claim subboard resources and register the Mosaico OV3640 video device
+ * @brief Claim subboard resources and register the Mosaico camera video device
  *
  * Discovery and slot ownership belong to mosaico_module_mgr. Pass NULL for
  * automatic defaults; the current camera hardware supports the left slot only.
@@ -188,7 +186,7 @@ bool mosaico_camera_is_power_down(mosaico_camera_handle_t camera);
 esp_err_t mosaico_camera_restart(mosaico_camera_handle_t camera);
 
 /**
- * @brief Verify that the active OV3640 still responds
+ * @brief Verify that the active camera sensor still responds
  *
  * This diagnostic API is not used for hot-plug detection.
  */

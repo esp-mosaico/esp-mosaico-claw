@@ -120,7 +120,7 @@ STACK_PAGE_COUNT = 3
 
 # Launcher PageFlow tab indices.
 TAB_HOME = 0
-FLOW_PAGE_COUNT = 2
+FLOW_PAGE_COUNT = 3
 
 # Shared app-icon grid (Figma 时钟 bottom / 应用界面). Coords are relative to
 # the PageFlow layer (stage y=56); absolute screen y = 56 + value.
@@ -150,6 +150,8 @@ HUB_IMAGES = [
     (f'{ASSETS}/icons/music.png', 118, 118),
     (f'{ASSETS}/icons/bricks.png', 118, 118),
     (f'{ASSETS}/icons/weather.png', 118, 118),
+    (f'{ASSETS}/icons/calculator.png', 118, 118),
+    (f'{ASSETS}/icons/air_battle.png', 118, 118),
     *[(f'{ASSETS}/control_center/{name}.png', width, height)
       for name, width, height in (
           ('wifi', 44, 44), ('wifi_active', 44, 44),
@@ -390,6 +392,16 @@ def build_apps1_content(objs, parent):
          'callback': 'app_breakout'},
         {'name': 'app_weather', 'icon': 'weather', 'text': 'Weather',
          'callback': 'app_weather'},
+    ))
+
+
+def build_apps2_content(objs, parent):
+    """Apps page 2 — Calculator and Sky Shooter launchers."""
+    place_app_grid(objs, parent, (
+        {'name': 'app_calculator', 'icon': 'calculator', 'text': 'Calculator',
+         'callback': 'app_calculator'},
+        {'name': 'app_air_battle', 'icon': 'air_battle', 'text': 'Sky Shooter',
+         'callback': 'app_air_battle'},
     ))
 
 
@@ -801,6 +813,12 @@ def build_hub_objects():
     objs.append(layer(flow, CONTENT_W, 0, CONTENT_W, CONTENT_H,
                       name='launcher_flow_tab1'))
     build_apps1_content(objs, apps1_main)
+
+    # tab2: Calculator and Sky Shooter.
+    apps2_main = len(objs)
+    objs.append(layer(flow, CONTENT_W * 2, 0, CONTENT_W, CONTENT_H,
+                      name='launcher_flow_tab2'))
+    build_apps2_content(objs, apps2_main)
 
     # Fixed chrome is authored after PageFlow content so it remains topmost.
     status_bar(objs, launcher_page, ASSETS)

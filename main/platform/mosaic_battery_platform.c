@@ -17,14 +17,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#define MOSAIC_BATTERY_SAMPLE_MS 5000U
+#define MOSAIC_BATTERY_SAMPLE_MS 2000U
 #define MOSAIC_BATTERY_CHARGE_ON_MA 8
 #define MOSAIC_BATTERY_CHARGE_CONFIRM_SAMPLES 3U
+#define MOSAIC_BATTERY_FULL_VOLTAGE_MV 4140U
+#define MOSAIC_BATTERY_FULL_CURRENT_MA 5
+#define MOSAIC_BATTERY_FULL_CONFIRM_SAMPLES 3U
 #define MOSAIC_BATTERY_LOW_SHUTDOWN_SOC 2U
 #define MOSAIC_BATTERY_LOW_SHUTDOWN_CONFIRM_SAMPLES 3U
 #define MOSAIC_BATTERY_POWER_OFF_GPIO GPIO_NUM_57
 #define MOSAIC_BATTERY_POWER_OFF_PULSE_MS 100U
-#define MOSAIC_BATTERY_TELEMETRY_SAMPLES 8U
 #define MOSAIC_BATTERY_MIN_VALID_MV 2500U
 #define MOSAIC_BATTERY_MAX_VALID_MV 5000U
 
@@ -36,16 +38,15 @@ static bool s_sample_valid;
 static bool s_charging_latched;
 static bool s_charge_candidate;
 static uint8_t s_charge_candidate_samples;
-static uint8_t s_telemetry_div;
 static uint8_t s_low_shutdown_samples;
 static bool s_low_shutdown_requested;
+static uint8_t s_full_candidate_samples;
 
 static void battery_low_shutdown_task(void *arg)
 {
     (void)arg;
     ESP_LOGW(TAG, "battery SoC below %u%%; requesting hardware power-off",
              (unsigned)MOSAIC_BATTERY_LOW_SHUTDOWN_SOC);
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
     const gpio_config_t power_off_cfg = {
         .pin_bit_mask = 1ULL << MOSAIC_BATTERY_POWER_OFF_GPIO,
         .mode = GPIO_MODE_OUTPUT,
@@ -68,9 +69,6 @@ static void battery_low_shutdown_task(void *arg)
     (void)gpio_set_level(MOSAIC_BATTERY_POWER_OFF_GPIO, 1);
     ESP_LOGW(TAG, "power-off pulse sent on GPIO57 (%u ms)",
              (unsigned)MOSAIC_BATTERY_POWER_OFF_PULSE_MS);
-#else
-    ESP_LOGE(TAG, "low-battery power-off is unsupported on this board");
-#endif
     vTaskDelete(NULL);
 }
 
@@ -181,9 +179,27 @@ static bool read_battery(mosaic_settings_battery_t *out_battery)
                  (int)avg_ma, (int)status.DSG, (int)status.FC);
     }
 
+    /* The 80 mAh cell terminates at only a few milliamps. Some gauges retain
+     * their pre-termination RemainingCapacity (for example 68%) even though
+     * the cell is already at its full-charge voltage. Confirm both conditions
+     * for several samples before normalizing the user-facing capacity. */
+    const int32_t avg_abs_ma = avg_ma < 0 ? -(int32_t)avg_ma : (int32_t)avg_ma;
+    const bool full_candidate =
+        voltage_mv >= MOSAIC_BATTERY_FULL_VOLTAGE_MV &&
+        avg_abs_ma <= MOSAIC_BATTERY_FULL_CURRENT_MA;
+    if (status.FC || full_candidate) {
+        if (s_full_candidate_samples < MOSAIC_BATTERY_FULL_CONFIRM_SAMPLES) {
+            ++s_full_candidate_samples;
+        }
+    } else {
+        s_full_candidate_samples = 0U;
+    }
+    const bool normalized_full = status.FC ||
+        s_full_candidate_samples >= MOSAIC_BATTERY_FULL_CONFIRM_SAMPLES;
+
     out_battery->available = true;
     out_battery->charging = s_charging_latched;
-    out_battery->state_of_charge = state_of_charge;
+    out_battery->state_of_charge = normalized_full ? 100U : state_of_charge;
     out_battery->voltage_mv = voltage_mv;
     /* AverageCurrent is intentionally published: the instantaneous channel
      * jitters with display/Wi-Fi load and is unsuitable for a settings row. */
@@ -198,19 +214,24 @@ static bool read_battery(mosaic_settings_battery_t *out_battery)
         out_battery->state_of_health = UINT16_MAX;
     }
 
-    if (++s_telemetry_div >= MOSAIC_BATTERY_TELEMETRY_SAMPLES) {
-        s_telemetry_div = 0;
-        const uint16_t rem_mah = bq27220_get_remaining_capacity(battery);
-        const uint16_t full_mah = bq27220_get_full_charge_capacity(battery);
-        const uint16_t design_mah = bq27220_get_design_capacity(battery);
-        ESP_LOGD(TAG,
-                 "raw V=%umV I=%d/%d mA SoC=%u%% rem=%u full=%u design=%u "
-                 "DSG=%d FC=%d latch=%d",
-                 (unsigned)voltage_mv, (int)current_ma, (int)avg_ma,
-                 (unsigned)state_of_charge, (unsigned)rem_mah,
-                 (unsigned)full_mah, (unsigned)design_mah, (int)status.DSG,
-                 (int)status.FC, (int)s_charging_latched);
-    }
+    const uint16_t rem_mah = bq27220_get_remaining_capacity(battery);
+    const uint16_t full_mah = bq27220_get_full_charge_capacity(battery);
+    const uint16_t design_mah = bq27220_get_design_capacity(battery);
+    ESP_LOGD(TAG,
+             "sample V=%umV I=%d/%d mA raw_soc=%u%% ui_soc=%u%% "
+             "rem=%umAh full=%umAh design=%umAh TTE=%u TTF=%u "
+             "cycles=%u SOH=%u DSG=%d FC=%d charging=%d "
+             "full_candidate=%d/%u",
+             (unsigned)voltage_mv, (int)current_ma, (int)avg_ma,
+             (unsigned)state_of_charge,
+             (unsigned)out_battery->state_of_charge, (unsigned)rem_mah,
+             (unsigned)full_mah, (unsigned)design_mah,
+             (unsigned)out_battery->time_to_empty_min,
+             (unsigned)out_battery->time_to_full_min,
+             (unsigned)out_battery->cycle_count,
+             (unsigned)out_battery->state_of_health, (int)status.DSG,
+             (int)status.FC, (int)s_charging_latched,
+             (int)full_candidate, (unsigned)s_full_candidate_samples);
     return true;
 }
 

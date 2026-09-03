@@ -16,9 +16,14 @@ idf_component_register(
         espressif2022__bmi270
         gen_bmgr_codes
         hot_plug_register
+        mosaic_capabilities
+        mosaic_services
+        mosaic_ui
         mosaico_board_variant
         mosaico_boot_splash
         nvs_flash
+        network_provisioning_service
+        wechat_binding_service
         weather_service
         update_check_service
         gmf_core

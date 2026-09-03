@@ -16,6 +16,11 @@
 /** Synthetic action emitted by the shared Shell for Apps without a scene
  * back button. It must remain distinct from the no-action sentinel. */
 #define MOSAIC_APP_SHELL_BACK_ACTION (UINT16_MAX - 1U)
+#include "mosaic_capability.h"
+
+#define MOSAIC_APP_CAP_SENSOR_IMU_READ MOSAIC_CAP_SENSOR_IMU_READ
+#define MOSAIC_DYNAMIC_LAUNCH_ACTION_BASE 4U
+#define MOSAIC_DYNAMIC_LAUNCH_SLOT_COUNT 6U
 
 struct mosaic_event;
 
@@ -58,6 +63,12 @@ typedef struct mosaic_app_descriptor {
     void (*on_event)(esp_gsp_handle_t ui, const struct mosaic_event *event);
     /** Optional physical Back hook; true means one App-local level was consumed. */
     bool (*on_back)(esp_gsp_handle_t ui, int64_t timestamp_us);
+    /** Root App only: collapse one level of the root-owned navigation the
+     * loader itself cannot see. True means the Back was consumed. */
+    bool (*on_root_back)(esp_gsp_handle_t ui);
+    /** Root App only: snapshot the idle presentation before the panel is
+     * turned off. */
+    void (*on_idle_lock)(esp_gsp_handle_t ui);
 } mosaic_app_descriptor_t;
 
 struct mosaic_logic_ops;
@@ -73,6 +84,8 @@ typedef struct {
     const struct mosaic_logic_ops *logic;
     const char *logic_entry;
     uint32_t tick_ms;
+    bool deployable;
+    mosaic_capability_mask_t capabilities;
 } mosaic_app_package_t;
 
 extern const mosaic_app_descriptor_t *const mosaic_app_registry[];
@@ -89,7 +102,11 @@ const mosaic_app_descriptor_t *mosaic_app_descriptor_for_action(
 const mosaic_app_package_t *mosaic_app_package_for_descriptor(
     const mosaic_app_descriptor_t *descriptor);
 const mosaic_app_package_t *mosaic_app_package_for_name(const char *name);
+size_t mosaic_app_catalog_count(void);
+const mosaic_app_descriptor_t *mosaic_app_catalog_at(size_t index);
 bool mosaic_app_catalog_validate(void);
+/** Discover and register installable App manifests from the ui_apps store. */
+esp_err_t mosaic_app_catalog_load_dynamic(void);
 bool mosaic_app_route_event(
     const mosaic_app_descriptor_t *active, const esp_gsp_event_t *event,
     const mosaic_app_descriptor_t **out_target);

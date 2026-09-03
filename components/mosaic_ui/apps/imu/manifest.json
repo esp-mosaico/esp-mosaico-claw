@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": 2,
+  "name": "imu",
+  "title": "IMU",
+  "launch_action": 9,
+  "bundle": "imu.gspb",
+  "logic": "imu.lua",
+  "tick_ms": 50,
+  "disable_swipe": true,
+  "capabilities": ["sensor.imu.read"]
+}

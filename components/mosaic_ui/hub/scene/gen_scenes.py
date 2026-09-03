@@ -120,6 +120,10 @@ STACK_PAGE_COUNT = 3
 
 # Launcher PageFlow tab indices.
 TAB_HOME = 0
+# Only Home and the populated Apps grid are currently reachable.  Keep the
+# authored installable-App layer below as an ABI/resource reservation for
+# actions 5..8, but do not expose an empty swipe destination until the catalog
+# can rebuild PageFlow membership at runtime.
 FLOW_PAGE_COUNT = 2
 
 # Shared app-icon grid (Figma 时钟 bottom / 应用界面). Coords are relative to
@@ -268,7 +272,7 @@ def build_clock_face(objs, parent):
     card_w = 454
     objs.append(container(
         parent, card_x, card_y, card_w, 209, bg='#242425', radius=40,
-        name='clock_card', callback='app_weather',
+        name='clock_card',
     ))
 
     # Match the runtime's unavailable state on the very first frame. Live
@@ -329,7 +333,8 @@ def stack_pop_btn(objs, parent, *, x=12, y=14, w=72, h=44, text='Back'):
 
 def place_app_icon(objs, parent, *, name, text, x, y, icon=None,
                    callback=None, events=None, button_text=None,
-                   bg='#181819', visible_bind=None, hidden=False):
+                   bg='#181819', visible_bind=None, title_bind=None,
+                   hidden=False):
     """One launcher cell: 118² icon (image or solid button) + label under it."""
     cell = len(objs)
     objs.append(layer(
@@ -348,10 +353,14 @@ def place_app_icon(objs, parent, *, name, text, x, y, icon=None,
             cell, f'{ASSETS}/icons/{asset}.png', 0, 0, ICON_SIZE, ICON_SIZE,
             name=name, callback=cb, events=events,
         ))
-    objs.append(label(
+    title = label(
         cell, 0, ICON_SIZE + ICON_LABEL_GAP, ICON_SIZE, ICON_LABEL_H,
         text, size=18, align='center', callback=cb, events=events,
-    ))
+        bind=title_bind,
+    )
+    if title_bind is not None:
+        title['bind_target'] = 'text'
+    objs.append(title)
 
 
 def place_app_grid(objs, parent, slots):
@@ -371,6 +380,7 @@ def place_app_grid(objs, parent, slots):
             button_text=slot.get('button_text'),
             bg=slot.get('bg', '#181819'),
             visible_bind=slot.get('visible_bind'),
+            title_bind=slot.get('title_bind'),
             hidden=slot.get('visible_bind') is not None,
         )
 
@@ -387,9 +397,25 @@ def build_apps1_content(objs, parent):
         {'name': 'app_music', 'icon': 'music', 'text': 'Music',
          'callback': 'app_music'},
         {'name': 'app_breakout', 'icon': 'bricks', 'text': 'Bricks',
-         'callback': 'app_breakout'},
+         'callback': 'app_dynamic_1',
+         'visible_bind': 'app_slot_breakout_visible'},
         {'name': 'app_weather', 'icon': 'weather', 'text': 'Weather',
          'callback': 'app_weather'},
+    ))
+
+
+def build_dynamic_apps_content(objs, parent):
+    """Installable Apps page; every cell is populated from the catalog."""
+    place_app_grid(objs, parent, tuple(
+        {
+            'name': f'app_dynamic_{slot}',
+            'text': 'App',
+            'button_text': 'APP',
+            'callback': f'app_dynamic_{slot}',
+            'visible_bind': f'app_slot_dynamic_{slot}_visible',
+            'title_bind': f'app_slot_dynamic_{slot}_title',
+        }
+        for slot in range(2, 6)
     ))
 
 
@@ -478,7 +504,7 @@ def build_quick_content(objs, parent):
                       40, 13, 139, 139))
     objs.append(image(right_group, f'{ASSETS}/control_center/prev.png',
                       34, 152, 48, 48))
-    objs.append(image(right_group, f'{ASSETS}/control_center/pause.png',
+    objs.append(image(right_group, f'{ASSETS}/control_center/play.png',
                       86, 152, 48, 48, name='quick_play'))
     objs.append(image(right_group, f'{ASSETS}/control_center/next.png',
                       138, 152, 48, 48))
@@ -768,6 +794,14 @@ def build_insert_content(objs, parent):
 def build_hub_objects():
     objs, content = shared_prefix(HUB_IMAGES, FONT_POLICIES, BOLD)
 
+    # Callback IDs are the sorted callback-name ABI consumed by installed App
+    # manifests. Breakout moved to dynamic slot 1, but its former callback must
+    # remain reserved or every later launcher ID (including IMU) would shift.
+    # The resource seed is hidden and cannot receive input.
+    objs.append(button(
+        2, 0, 0, 1, 1, '', name='reserved_app_breakout_action',
+        callback='app_breakout'))
+
     stack = len(objs)
     objs.append({
         'type': 'stackview', 'parent': content,
@@ -801,6 +835,12 @@ def build_hub_objects():
     objs.append(layer(flow, CONTENT_W, 0, CONTENT_W, CONTENT_H,
                       name='launcher_flow_tab1'))
     build_apps1_content(objs, apps1_main)
+
+    # tab2: installable Apps discovered from ui_apps manifests.
+    dynamic_main = len(objs)
+    objs.append(layer(flow, CONTENT_W * 2, 0, CONTENT_W, CONTENT_H,
+                      name='launcher_flow_tab2'))
+    build_dynamic_apps_content(objs, dynamic_main)
 
     # Fixed chrome is authored after PageFlow content so it remains topmost.
     status_bar(objs, launcher_page, ASSETS)

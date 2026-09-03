@@ -17,6 +17,7 @@
 #include "lauxlib.h"
 #include "lua.h"
 #include "lualib.h"
+#include "mosaic_capability.h"
 
 #define MOSAIC_LUA_BINDING_MAX 40U
 #define MOSAIC_LUA_TEXT_MAX 95U
@@ -114,6 +115,251 @@ static mosaic_lua_logic_t* runtime_from_state(lua_State* state)
     mosaic_lua_logic_t* logic = lua_touserdata(state, -1);
     lua_pop(state, 1);
     return logic;
+}
+
+static void push_contract_field(lua_State* state,
+    const mosaic_capability_field_t* field, const uint8_t* payload);
+
+/** Convert one contract payload into a Lua table.
+ *
+ * The capability layer describes every payload with a flat field table, so
+ * this walk covers all present and future capabilities without any
+ * per-domain code here.
+ */
+static void push_contract_table(lua_State* state,
+    const mosaic_capability_contract_t* contract, const void* payload)
+{
+    const uint8_t* bytes = payload;
+    lua_createtable(state, 0, contract->field_count);
+    for (uint8_t index = 0; index < contract->field_count; ++index) {
+        const mosaic_capability_field_t* field = &contract->fields[index];
+        push_contract_field(state, field, bytes + field->offset);
+        lua_setfield(state, -2, field->name);
+    }
+}
+
+static void push_contract_field(lua_State* state,
+    const mosaic_capability_field_t* field, const uint8_t* member)
+{
+    switch (field->type) {
+    case MOSAIC_CAP_FIELD_BOOL: {
+        bool value = false;
+        memcpy(&value, member, sizeof(value));
+        lua_pushboolean(state, value);
+        break;
+    }
+    case MOSAIC_CAP_FIELD_I32: {
+        int32_t value = 0;
+        memcpy(&value, member, sizeof(value));
+        lua_pushinteger(state, (lua_Integer)value);
+        break;
+    }
+    case MOSAIC_CAP_FIELD_I64: {
+        int64_t value = 0;
+        memcpy(&value, member, sizeof(value));
+        lua_pushinteger(state, (lua_Integer)value);
+        break;
+    }
+    case MOSAIC_CAP_FIELD_U32: {
+        uint32_t value = 0;
+        memcpy(&value, member, sizeof(value));
+        lua_pushinteger(state, (lua_Integer)value);
+        break;
+    }
+    case MOSAIC_CAP_FIELD_F32: {
+        float value = 0.0f;
+        memcpy(&value, member, sizeof(value));
+        lua_pushnumber(state, (lua_Number)value);
+        break;
+    }
+    case MOSAIC_CAP_FIELD_STRING:
+        lua_pushlstring(state, (const char*)member,
+            strnlen((const char*)member, field->size));
+        break;
+    case MOSAIC_CAP_FIELD_ARRAY:
+        lua_createtable(state, field->element_count, 0);
+        for (uint16_t item = 0; item < field->element_count; ++item) {
+            push_contract_table(state, field->element,
+                member + (size_t)item * field->element->size);
+            lua_rawseti(state, -2, item + 1);
+        }
+        break;
+    default:
+        lua_pushnil(state);
+        break;
+    }
+}
+
+/** Fill one command argument payload from a Lua table.
+ *
+ * Missing keys keep the zeroed default. Nested arrays are not accepted as
+ * command arguments; commands take flat records by contract.
+ */
+static bool fill_contract_from_table(lua_State* state, int table_index,
+    const mosaic_capability_contract_t* contract, uint8_t* payload)
+{
+    for (uint8_t index = 0; index < contract->field_count; ++index) {
+        const mosaic_capability_field_t* field = &contract->fields[index];
+        uint8_t* member = payload + field->offset;
+        lua_getfield(state, table_index, field->name);
+        if (lua_isnil(state, -1)) {
+            lua_pop(state, 1);
+            continue;
+        }
+        switch (field->type) {
+        case MOSAIC_CAP_FIELD_BOOL: {
+            const bool value = lua_toboolean(state, -1);
+            memcpy(member, &value, sizeof(value));
+            break;
+        }
+        case MOSAIC_CAP_FIELD_I32: {
+            const int32_t value = (int32_t)lua_tointeger(state, -1);
+            memcpy(member, &value, sizeof(value));
+            break;
+        }
+        case MOSAIC_CAP_FIELD_I64: {
+            const int64_t value = (int64_t)lua_tointeger(state, -1);
+            memcpy(member, &value, sizeof(value));
+            break;
+        }
+        case MOSAIC_CAP_FIELD_U32: {
+            const uint32_t value = (uint32_t)lua_tointeger(state, -1);
+            memcpy(member, &value, sizeof(value));
+            break;
+        }
+        case MOSAIC_CAP_FIELD_F32: {
+            const float value = (float)lua_tonumber(state, -1);
+            memcpy(member, &value, sizeof(value));
+            break;
+        }
+        case MOSAIC_CAP_FIELD_STRING: {
+            size_t length = 0;
+            const char* text = lua_tolstring(state, -1, &length);
+            if (text == NULL || length >= field->size) {
+                lua_pop(state, 1);
+                return false;
+            }
+            memcpy(member, text, length + 1U);
+            break;
+        }
+        default:
+            lua_pop(state, 1);
+            return false;
+        }
+        lua_pop(state, 1);
+    }
+    return true;
+}
+
+static int push_capability_error(lua_State* state, esp_err_t err)
+{
+    lua_pushnil(state);
+    lua_pushinteger(state, err);
+    return 2;
+}
+
+static int lua_capability_read(lua_State* state)
+{
+    const char* name = luaL_checkstring(state, 1);
+    mosaic_lua_logic_t* logic = runtime_from_state(state);
+    if (logic == NULL) {
+        lua_pushnil(state);
+        lua_pushliteral(state, "capability is unavailable");
+        return 2;
+    }
+    const mosaic_capability_contract_t* contract =
+        mosaic_capability_read_contract(name);
+    if (contract == NULL) {
+        return push_capability_error(state, ESP_ERR_NOT_SUPPORTED);
+    }
+    void* payload = calloc(1, contract->size);
+    if (payload == NULL) {
+        return push_capability_error(state, ESP_ERR_NO_MEM);
+    }
+    const esp_err_t err = mosaic_capability_read(
+        name, logic->package->capabilities, payload, contract->size);
+    if (err != ESP_OK) {
+        free(payload);
+        return push_capability_error(state, err);
+    }
+    push_contract_table(state, contract, payload);
+    free(payload);
+    return 1;
+}
+
+static int lua_capability_invoke(lua_State* state)
+{
+    const char* name = luaL_checkstring(state, 1);
+    const char* command = luaL_checkstring(state, 2);
+    mosaic_lua_logic_t* logic = runtime_from_state(state);
+    if (logic == NULL) {
+        lua_pushnil(state);
+        lua_pushliteral(state, "capability is unavailable");
+        return 2;
+    }
+    const mosaic_capability_command_t* declared =
+        mosaic_capability_command_for_name(name, command);
+    if (declared == NULL) {
+        return push_capability_error(state, ESP_ERR_NOT_SUPPORTED);
+    }
+
+    uint8_t* args = NULL;
+    const size_t args_size = declared->args != NULL ? declared->args->size : 0;
+    if (args_size != 0) {
+        if (!lua_istable(state, 3)) {
+            return push_capability_error(state, ESP_ERR_INVALID_ARG);
+        }
+        args = calloc(1, args_size);
+        if (args == NULL) {
+            return push_capability_error(state, ESP_ERR_NO_MEM);
+        }
+        if (!fill_contract_from_table(state, 3, declared->args, args)) {
+            free(args);
+            return push_capability_error(state, ESP_ERR_INVALID_ARG);
+        }
+    }
+
+    uint8_t* result = NULL;
+    const size_t result_size =
+        declared->result != NULL ? declared->result->size : 0;
+    if (result_size != 0) {
+        result = calloc(1, result_size);
+        if (result == NULL) {
+            free(args);
+            return push_capability_error(state, ESP_ERR_NO_MEM);
+        }
+    }
+
+    const esp_err_t err = mosaic_capability_invoke(name,
+        logic->package->capabilities, command, args, args_size, result,
+        result_size);
+    free(args);
+    if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
+        free(result);
+        return push_capability_error(state, err);
+    }
+    if (result_size != 0 && err == ESP_OK) {
+        push_contract_table(state, declared->result, result);
+    } else {
+        lua_pushboolean(state, true);
+    }
+    free(result);
+    /* An accepted async command reports the pending status as a second
+     * return value so scripts can distinguish it from a completed call. */
+    lua_pushinteger(state, err);
+    return 2;
+}
+
+static void open_mosaic_api(lua_State* state)
+{
+    lua_createtable(state, 0, 1);
+    lua_createtable(state, 0, 2);
+    lua_pushcfunction(state, lua_capability_read);
+    lua_setfield(state, -2, "read");
+    lua_pushcfunction(state, lua_capability_invoke);
+    lua_setfield(state, -2, "invoke");
+    lua_setfield(state, -2, "capability");
+    lua_setglobal(state, "mosaic");
 }
 
 static void instruction_hook(lua_State* state, lua_Debug* debug)
@@ -542,6 +788,7 @@ static esp_err_t lua_create(
     lua_pushlightuserdata(logic->state, logic);
     lua_rawset(logic->state, LUA_REGISTRYINDEX);
     open_safe_libraries(logic->state);
+    open_mosaic_api(logic->state);
     esp_err_t err = load_application(logic, config->program,
         config->program_size, config->package->logic_entry);
     if (err == ESP_OK) {

@@ -210,6 +210,7 @@ typedef struct {
 } mosaic_settings_ops_t;
 
 esp_err_t mosaic_settings_configure(const mosaic_settings_ops_t *ops);
+esp_err_t mosaic_settings_set_rotation(uint16_t degrees);
 esp_err_t mosaic_settings_set_brightness(int brightness, bool persist);
 esp_err_t mosaic_settings_set_volume(int volume, bool persist);
 esp_err_t mosaic_settings_set_vibration(bool enabled);
@@ -234,6 +235,8 @@ esp_err_t mosaic_settings_scan_wifi(mosaic_settings_wifi_ap_t *records,
 esp_err_t mosaic_settings_connect_wifi(const char *ssid,
                                        const char *password);
 esp_err_t mosaic_settings_forget_wifi(void);
+/** Restart provisioning so the device can be moved to another network. */
+esp_err_t mosaic_settings_request_network_reconfigure(void);
 /** Read the provisioning AP name and Wi-Fi join QR used by phone setup. */
 esp_err_t mosaic_settings_get_phone_setup(
     char *ap_ssid, size_t ap_ssid_size,

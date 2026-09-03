@@ -12,10 +12,9 @@ endif()
 
 idf_component_register(
     SRCS "mosaic_ui.c"
-         "core/mosaic_demo.c"
          "core/mosaic_camera.c"
          "core/mosaic_loader.c"
-         "core/mosaic_esp_platform.c"
+         "core/mosaic_gsp_backend.c"
          "logic/mosaic_logic.c"
          "logic/mosaic_native_logic.c"
          "logic/mosaic_lua_logic.c"
@@ -24,7 +23,6 @@ idf_component_register(
          "common/mosaic_system_flow.c"
          "common/mosaic_app_shell.c"
          "common/mosaic_app_shell_titles.c"
-         "common/mosaic_settings_model.c"
          "common/works_runtime.c"
          "common/mosaic_top_notice.c"
          "common/wechat_binding_flow.c"
@@ -47,8 +45,6 @@ idf_component_register(
                  "${CMAKE_CURRENT_BINARY_DIR}/generated"
     REQUIRES
         display_service
-        audio_hub
-        audio_playback
         esp_timer
         freertos
         espressif__esp_mmap_assets
@@ -61,25 +57,14 @@ idf_component_register(
         claw_skill
         cap_lua
         cjson
-        bt
         nvs_flash
-        espressif__esp_audio_codec
-        espressif__esp_asrc
-        espressif__esp_bt_audio
         hot_plug_register
+        mosaic_capabilities
+        mosaic_services
         mosaico_camera
-        weather_service
-        esp_board_manager
         esp_driver_jpeg
         esp_driver_ppa
-        settings
 )
-
-if(CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO)
-    idf_build_set_property(LINK_OPTIONS
-        "-Wl,--wrap=esp_a2d_sink_init;-Wl,--wrap=esp_a2d_register_callback;-Wl,--wrap=esp_a2d_sink_deinit;-Wl,-u,__wrap_esp_a2d_sink_init"
-        APPEND)
-endif()
 
 # Mosaic loads its dynamic CJK fallback from the read-only SYSTEM filesystem.
 # Enable the optional esp-gsp FreeType provider without embedding another copy
@@ -94,7 +79,21 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
         ${COMPONENT_LIB})
 
     set(UI_ASSETS_DIR "${CMAKE_CURRENT_BINARY_DIR}/ui_apps")
-    set(UI_ASSET_FILES ${MOSAIC_LINKED_BUNDLES})
+    # Static Apps share the partition font catalog.  A dynamic App must be a
+    # self-contained deployable: it can be installed without also replacing
+    # common-fonts.gspb, so stage its pre-font-link bundle instead.
+    set(UI_ASSET_FILES)
+    list(LENGTH MOSAIC_APP_BUNDLE_NAMES UI_BUNDLE_COUNT)
+    math(EXPR UI_BUNDLE_LAST "${UI_BUNDLE_COUNT} - 1")
+    foreach(index RANGE ${UI_BUNDLE_LAST})
+        list(GET MOSAIC_APP_BUNDLE_NAMES ${index} name)
+        if(name IN_LIST MOSAIC_DYNAMIC_MANIFEST_NAMES)
+            list(GET MOSAIC_INTERMEDIATE_BUNDLES ${index} source)
+        else()
+            list(GET MOSAIC_LINKED_BUNDLES ${index} source)
+        endif()
+        list(APPEND UI_ASSET_FILES "${source}")
+    endforeach()
     list(APPEND UI_ASSET_FILES "${MOSAIC_FONT_CATALOG}")
     set(UI_ASSET_NAMES ${MOSAIC_APP_BUNDLE_NAMES})
     list(APPEND UI_ASSET_NAMES common-fonts)
@@ -126,6 +125,19 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
         endforeach()
     endif()
 
+    list(LENGTH MOSAIC_DYNAMIC_MANIFEST_FILES UI_MANIFEST_ASSET_COUNT)
+    if(UI_MANIFEST_ASSET_COUNT GREATER 0)
+        math(EXPR UI_MANIFEST_ASSET_LAST "${UI_MANIFEST_ASSET_COUNT} - 1")
+        foreach(index RANGE ${UI_MANIFEST_ASSET_LAST})
+            list(GET MOSAIC_DYNAMIC_MANIFEST_FILES ${index} source)
+            list(GET MOSAIC_DYNAMIC_MANIFEST_NAMES ${index} name)
+            set(staged "${UI_ASSETS_DIR}/${name}.json")
+            list(APPEND UI_STAGED_FILES "${staged}")
+            list(APPEND UI_STAGE_COMMANDS
+                COMMAND ${CMAKE_COMMAND} -E copy "${source}" "${staged}")
+        endforeach()
+    endif()
+
     add_custom_command(
         OUTPUT ${UI_STAGED_FILES}
         ${UI_STAGE_COMMANDS}
@@ -133,6 +145,7 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
         # scene generation changes it.  A target-only dependency orders the
         # steps but can leave an older file in ui_apps.
         DEPENDS mosaic_ui_bundles ${UI_ASSET_FILES} ${MOSAIC_APP_LOGIC_FILES}
+                ${MOSAIC_DYNAMIC_MANIFEST_FILES}
         COMMENT "mosaic: staging ui_apps partition assets"
         VERBATIM)
 
@@ -143,7 +156,7 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
         ui_apps
         "${UI_ASSETS_DIR}"
         FLASH_IN_PROJECT
-        MMAP_FILE_SUPPORT_FORMAT ".gspb,.lua"
+        MMAP_FILE_SUPPORT_FORMAT ".gspb,.lua,.json"
         MMAP_FILE_ALIGNMENT 64
         IMPORT_INC_PATH "${CMAKE_CURRENT_BINARY_DIR}"
         DEPENDS mosaic_ui_stage_assets

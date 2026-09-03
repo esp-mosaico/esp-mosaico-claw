@@ -58,7 +58,8 @@ PAGE_INTEGRATIONS_CHANNELS = 10
 PAGE_SOUND = 11
 PAGE_SECURITY = 12
 PAGE_UPDATE = 13
-PAGE_COUNT = 14
+PAGE_BATTERY_DETAIL = 14
+PAGE_COUNT = 15
 STACK_CAPACITY = 8
 
 # Mock scan results for the settings WLAN list (prototype SYS_NETWORKS + extras).
@@ -1155,6 +1156,22 @@ def _build_update(objs, page):
     objs.append(action)
 
 
+def _build_battery_detail(objs, page):
+    _web_nav(objs, page, "Battery", "nav_settings_battery_detail")
+    objs.append({
+        "type": "list", "parent": page,
+        "x": 0, "y": 64, "w": 480, "h": 416,
+        "item_height": 100, "item_count": 3,
+        "name": "settings_battery_detail_list",
+        "row_template": "settings_detail_row",
+        # Live Battery rows cannot use a scroll snapshot: it would keep
+        # presenting stale pixels until the page is reopened. Keep this
+        # exception isolated from About and Safe Mode.
+        "scroll_snapshot": False,
+        "bg_color": BG, "fg_color": FG,
+    })
+
+
 def _build_factory(objs, page):
     _web_nav(objs, page, "Factory Reset", "nav_factory_reset")
     objs.append(label(page, 24, 142, 432, 34,
@@ -1232,6 +1249,9 @@ def build_settings_ui(objs, content):
     _build_security(objs, page)
     page = _page(objs, stack, PAGE_UPDATE)
     _build_update(objs, page)
+
+    page = _page(objs, stack, PAGE_BATTERY_DETAIL)
+    _build_battery_detail(objs, page)
 
     # Notifications belong to the App stage rather than an individual
     # StackView page. Connection failures arrive after the password page has

@@ -18,6 +18,8 @@ function(mosaic_collect_app_modules root binary_dir)
     set(logic_files)
     set(logic_names)
     set(logic_rel_paths)
+    set(dynamic_manifest_files)
+    set(dynamic_manifest_names)
     set(include_dirs)
     set(registry_externs "")
     set(registry_entries "")
@@ -34,10 +36,13 @@ function(mosaic_collect_app_modules root binary_dir)
         unset(MOSAIC_APP_LOGIC)
         unset(MOSAIC_APP_LUA_MAIN)
         unset(MOSAIC_APP_TICK_MS)
+        unset(MOSAIC_APP_DEPLOYABLE)
+        unset(MOSAIC_APP_DYNAMIC)
+        unset(MOSAIC_APP_MANIFEST)
         unset(MOSAIC_APP_EXTRA_SOURCES)
         unset(MOSAIC_APP_EXTRA_INCLUDE_DIRS)
         include("${manifest}")
-        foreach(required IN ITEMS NAME MODULE_SOURCE MODULE_SYMBOL BUNDLE)
+        foreach(required IN ITEMS NAME BUNDLE)
             if(NOT DEFINED MOSAIC_APP_${required})
                 message(FATAL_ERROR
                     "${manifest}: MOSAIC_APP_${required} is required")
@@ -47,7 +52,14 @@ function(mosaic_collect_app_modules root binary_dir)
         get_filename_component(module_slug "${module_dir}" NAME)
         set(gen_include "${binary_dir}/mosaic_gen/${module_slug}")
         file(MAKE_DIRECTORY "${gen_include}")
-        if(NOT EXISTS "${module_dir}/${MOSAIC_APP_MODULE_SOURCE}")
+        if(NOT MOSAIC_APP_DYNAMIC AND
+                (NOT DEFINED MOSAIC_APP_MODULE_SOURCE OR
+                 NOT DEFINED MOSAIC_APP_MODULE_SYMBOL))
+            message(FATAL_ERROR
+                "${manifest}: native registry Apps require MODULE_SOURCE and MODULE_SYMBOL")
+        endif()
+        if(NOT MOSAIC_APP_DYNAMIC AND
+                NOT EXISTS "${module_dir}/${MOSAIC_APP_MODULE_SOURCE}")
             message(FATAL_ERROR
                 "${manifest}: missing ${module_dir}/${MOSAIC_APP_MODULE_SOURCE}")
         endif()
@@ -70,8 +82,10 @@ function(mosaic_collect_app_modules root binary_dir)
             message(FATAL_ERROR
                 "${manifest}: missing ${module_dir}/${MOSAIC_APP_LUA_MAIN}")
         endif()
-        list(APPEND module_sources
-            "${module_dir}/${MOSAIC_APP_MODULE_SOURCE}")
+        if(NOT MOSAIC_APP_DYNAMIC)
+            list(APPEND module_sources
+                "${module_dir}/${MOSAIC_APP_MODULE_SOURCE}")
+        endif()
         foreach(extra_source IN LISTS MOSAIC_APP_EXTRA_SOURCES)
             if(NOT EXISTS "${module_dir}/${extra_source}")
                 message(FATAL_ERROR
@@ -90,14 +104,29 @@ function(mosaic_collect_app_modules root binary_dir)
             endif()
             list(APPEND include_dirs "${module_dir}/${extra_include}")
         endforeach()
-        string(APPEND registry_externs
-            "extern const mosaic_app_descriptor_t "
-            "${MOSAIC_APP_MODULE_SYMBOL};\n")
-        string(APPEND registry_entries
-            "    &${MOSAIC_APP_MODULE_SYMBOL},\n")
+        if(NOT MOSAIC_APP_DYNAMIC)
+            string(APPEND registry_externs
+                "extern const mosaic_app_descriptor_t "
+                "${MOSAIC_APP_MODULE_SYMBOL};\n")
+            string(APPEND registry_entries
+                "    &${MOSAIC_APP_MODULE_SYMBOL},\n")
+        elseif(NOT DEFINED MOSAIC_APP_MANIFEST OR
+                NOT EXISTS "${module_dir}/${MOSAIC_APP_MANIFEST}")
+            message(FATAL_ERROR
+                "${manifest}: dynamic Apps require an existing MANIFEST")
+        else()
+            list(APPEND dynamic_manifest_files
+                "${module_dir}/${MOSAIC_APP_MANIFEST}")
+            list(APPEND dynamic_manifest_names "${MOSAIC_APP_NAME}")
+        endif()
         set(lua_entry "NULL")
         if(NOT DEFINED MOSAIC_APP_TICK_MS)
             set(MOSAIC_APP_TICK_MS 0)
+        endif()
+        if(MOSAIC_APP_DEPLOYABLE)
+            set(deployable "true")
+        else()
+            set(deployable "false")
         endif()
         if(DEFINED MOSAIC_APP_LUA_MAIN)
             set(lua_entry "\"${module_rel}/${MOSAIC_APP_LUA_MAIN}\"")
@@ -107,13 +136,16 @@ function(mosaic_collect_app_modules root binary_dir)
             list(APPEND logic_rel_paths
                 "${module_rel}/${MOSAIC_APP_LUA_MAIN}")
         endif()
-        string(TOLOWER "${MOSAIC_APP_LOGIC}" logic_name)
-        string(APPEND package_entries
-            "    { .descriptor = &${MOSAIC_APP_MODULE_SYMBOL}, "
-            ".bundle_path = \"${module_rel}/${MOSAIC_APP_BUNDLE}\", "
-            ".logic = &mosaic_${logic_name}_logic_ops, "
-            ".logic_entry = ${lua_entry}, "
-            ".tick_ms = ${MOSAIC_APP_TICK_MS} },\n")
+        if(NOT MOSAIC_APP_DYNAMIC)
+            string(TOLOWER "${MOSAIC_APP_LOGIC}" logic_name)
+            string(APPEND package_entries
+                "    { .descriptor = &${MOSAIC_APP_MODULE_SYMBOL}, "
+                ".bundle_path = \"${module_rel}/${MOSAIC_APP_BUNDLE}\", "
+                ".logic = &mosaic_${logic_name}_logic_ops, "
+                ".logic_entry = ${lua_entry}, "
+                ".tick_ms = ${MOSAIC_APP_TICK_MS}, "
+                ".deployable = ${deployable} },\n")
+        endif()
     endforeach()
 
     set(registry_dir "${binary_dir}/generated")
@@ -142,6 +174,10 @@ function(mosaic_collect_app_modules root binary_dir)
     set(MOSAIC_APP_LOGIC_FILES "${logic_files}" PARENT_SCOPE)
     set(MOSAIC_APP_LOGIC_NAMES "${logic_names}" PARENT_SCOPE)
     set(MOSAIC_APP_LOGIC_REL_PATHS "${logic_rel_paths}" PARENT_SCOPE)
+    set(MOSAIC_DYNAMIC_MANIFEST_FILES
+        "${dynamic_manifest_files}" PARENT_SCOPE)
+    set(MOSAIC_DYNAMIC_MANIFEST_NAMES
+        "${dynamic_manifest_names}" PARENT_SCOPE)
     set(MOSAIC_APP_INCLUDE_DIRS "${include_dirs}" PARENT_SCOPE)
     set(MOSAIC_APP_REGISTRY_SOURCE "${registry_source}" PARENT_SCOPE)
 endfunction()

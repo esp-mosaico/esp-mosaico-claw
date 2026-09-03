@@ -23,8 +23,9 @@
 #include "mosaic_app_catalog.h"
 #include "mosaic_app_shell.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_capability.h"
+#include "mosaic_capability_contracts.h"
 #include "mosaic_runtime.h"
-#include "mosaic_settings.h"
 #include "mosaic_top_notice.h"
 #include "wechat_binding_flow.h"
 #include "setup_center_actions.h"
@@ -48,6 +49,13 @@
 #define SETUP_NAV_GUARD_US  400000LL
 #define SETUP_NETWORK_SCAN_US 900000LL
 #define SETUP_NETWORK_JOIN_US 3000000LL
+
+/* Onboarding joins networks and reads the pairing QR, but never touches
+ * display, audio, or power. */
+#define SETUP_CENTER_CAPABILITIES ( \
+    MOSAIC_CAP_NET_WIFI_READ | MOSAIC_CAP_NET_WIFI_CONTROL | \
+    MOSAIC_CAP_NET_PROVISIONING_READ | \
+    MOSAIC_CAP_CONFIG_AGENT_READ)
 #define SETUP_WECHAT_REAL_STAGE_US 500000LL
 #define SETUP_LLM_CONFIG_US 2200000LL
 #define SETUP_QR_SIZE 256U
@@ -58,7 +66,7 @@
 #define SETUP_LLM_QR_SIZE 104U
 #define SETUP_LLM_QR_STRIDE (SETUP_LLM_QR_SIZE * 2U)
 #define SETUP_LLM_URL_LEN \
-    (MOSAIC_SETTINGS_PORTAL_URL_LEN + sizeof("#llm"))
+    (MOSAIC_CAP_PORTAL_URL_LEN + sizeof("#llm"))
 #define SETUP_COLOR_PROGRESS_OFF UINT32_C(0x39E7)
 #define SETUP_COLOR_PROGRESS_ON  UINT32_C(0xEA04)
 
@@ -121,8 +129,8 @@ typedef struct {
     setup_wechat_phase_t wechat_phase;
     wechat_binding_flow_t wechat_flow;
     setup_llm_phase_t llm_phase;
-    char selected_ssid[MOSAIC_SETTINGS_SSID_LEN];
-    char connected_ssid[MOSAIC_SETTINGS_SSID_LEN];
+    char selected_ssid[MOSAIC_CAP_SSID_LEN];
+    char connected_ssid[MOSAIC_CAP_SSID_LEN];
     bool network_join_success;
     bool network_scan_ready;
     int64_t network_scan_deadline_us;
@@ -131,14 +139,13 @@ typedef struct {
     int64_t navigation_guard_until_us;
     uint8_t rendered_progress;
     uint8_t rendered_password_length;
-    mosaic_settings_wifi_ap_t
-        networks[MOSAIC_SETTINGS_WIFI_SCAN_MAX];
+    mosaic_cap_wifi_ap_t networks[MOSAIC_CAP_WIFI_SCAN_MAX];
     size_t network_count;
-    mosaic_settings_network_t network_status;
+    mosaic_cap_wifi_t network_status;
     uint32_t network_revision;
     uint32_t rendered_network_revision;
     bool network_connect_pending;
-    bool wifi_subscribed;
+    mosaic_capability_subscription_handle_t wifi_subscription;
     mosaic_setup_wechat_ops_t wechat_ops;
     mosaic_setup_wechat_status_t wechat_status;
     uint32_t wechat_revision;
@@ -152,9 +159,9 @@ typedef struct {
     char rendered_wechat_qr[MOSAIC_SETUP_WECHAT_QR_LEN];
     char pending_wechat_qr[MOSAIC_SETUP_WECHAT_QR_LEN];
     char rendered_llm_qr[SETUP_LLM_URL_LEN];
-    char rendered_network_phone_qr[MOSAIC_SETTINGS_PHONE_QR_LEN];
+    char rendered_network_phone_qr[MOSAIC_CAP_PHONE_QR_LEN];
     char llm_config_url[SETUP_LLM_URL_LEN];
-    mosaic_settings_snapshot_t settings_snapshot;
+    mosaic_cap_agent_config_t agent_config;
 } setup_center_state_t;
 
 static const char *TAG = "setup_center";
@@ -473,18 +480,19 @@ static void setup_llm_push_qr(const char *payload)
 
 static esp_err_t setup_network_phone_refresh(void)
 {
-    char ap_ssid[MOSAIC_SETTINGS_SSID_LEN] = {0};
-    char *payload = calloc(1, MOSAIC_SETTINGS_PHONE_QR_LEN);
-    if (payload == NULL) {
+    mosaic_cap_provisioning_t *provisioning = calloc(1, sizeof(*provisioning));
+    if (provisioning == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t err = mosaic_settings_get_phone_setup(
-        ap_ssid, sizeof(ap_ssid), payload, MOSAIC_SETTINGS_PHONE_QR_LEN);
+    char *ap_ssid = provisioning->ap_ssid;
+    char *payload = provisioning->qr_payload;
+    esp_err_t err = mosaic_capability_read("net.provisioning",
+        SETUP_CENTER_CAPABILITIES, provisioning, sizeof(*provisioning));
 #if !defined(ESP_PLATFORM)
-    if (err == ESP_ERR_NOT_SUPPORTED) {
-        strlcpy(ap_ssid, "esp-claw-SIM", sizeof(ap_ssid));
+    if (err == ESP_ERR_NOT_SUPPORTED || err == ESP_ERR_NOT_FOUND) {
+        strlcpy(ap_ssid, "esp-claw-SIM", MOSAIC_CAP_SSID_LEN);
         strlcpy(payload, "WIFI:T:nopass;S:esp-claw-SIM;;",
-                MOSAIC_SETTINGS_PHONE_QR_LEN);
+                MOSAIC_CAP_PHONE_QR_LEN);
         err = ESP_OK;
     }
 #endif
@@ -511,23 +519,66 @@ static esp_err_t setup_network_phone_refresh(void)
             }
         }
     }
-    free(payload);
+    free(provisioning);
     return err;
 }
 
-static void setup_network_event(
-    const mosaic_settings_network_t *status, void *user_ctx)
+static void setup_network_event(void *user_ctx, const char *name,
+    const void *payload, size_t payload_size)
 {
     (void)user_ctx;
-    if (status == NULL) {
+    (void)name;
+    if (payload == NULL || payload_size != sizeof(mosaic_cap_wifi_t)) {
         return;
     }
     SETUP_MODEL_LOCK();
-    if (memcmp(&s_setup.network_status, status, sizeof(*status)) != 0) {
-        s_setup.network_status = *status;
+    if (memcmp(&s_setup.network_status, payload, payload_size) != 0) {
+        s_setup.network_status = *(const mosaic_cap_wifi_t *)payload;
         ++s_setup.network_revision;
     }
     SETUP_MODEL_UNLOCK();
+}
+
+/* Boards without a Wi-Fi radio leave net.wifi unregistered, which is what
+ * drives the mock network list used by the simulator and by bring-up. */
+static bool setup_network_backend_available(void)
+{
+    return mosaic_capability_available("net.wifi") &&
+        mosaic_capability_available("net.wifi.scan");
+}
+
+static esp_err_t setup_network_status(mosaic_cap_wifi_t *out)
+{
+    return mosaic_capability_read("net.wifi", SETUP_CENTER_CAPABILITIES,
+        out, sizeof(*out));
+}
+
+static bool setup_wifi_accepted(esp_err_t err)
+{
+    return err == ESP_OK || err == ESP_ERR_NOT_FINISHED;
+}
+
+static esp_err_t setup_network_scan_request(void)
+{
+    return mosaic_capability_invoke("net.wifi",
+        SETUP_CENTER_CAPABILITIES, "scan", NULL, 0, NULL, 0);
+}
+
+static esp_err_t setup_network_connect(const char *ssid, const char *password)
+{
+    mosaic_cap_wifi_connect_args_t args = {0};
+    strlcpy(args.ssid, ssid, sizeof(args.ssid));
+    if (password != NULL) {
+        strlcpy(args.password, password, sizeof(args.password));
+    }
+    return mosaic_capability_invoke("net.wifi", SETUP_CENTER_CAPABILITIES,
+        "connect", &args, sizeof(args), NULL, 0);
+}
+
+static esp_err_t setup_network_forget(void)
+{
+    return mosaic_capability_invoke("net.wifi", SETUP_CENTER_CAPABILITIES,
+        "forget", NULL, 0, NULL, 0);
 }
 
 static void setup_network_seed_mock(void)
@@ -553,32 +604,38 @@ static void setup_network_seed_mock(void)
         strlcpy(s_setup.networks[i].ssid, networks[i].ssid,
                 sizeof(s_setup.networks[i].ssid));
         s_setup.networks[i].secured = networks[i].secured;
-        s_setup.networks[i].rssi = (int8_t)(-35 - (int)i * 4);
+        s_setup.networks[i].rssi = -35 - (int32_t)i * 4;
     }
     SETUP_MODEL_UNLOCK();
 }
 
 static bool setup_network_refresh_scan(void)
 {
-    mosaic_settings_wifi_ap_t records[MOSAIC_SETTINGS_WIFI_SCAN_MAX] = {0};
-    size_t count = 0;
-    if (!mosaic_settings_wifi_backend_available()) {
+    if (!setup_network_backend_available()) {
         setup_network_seed_mock();
         return true;
     }
-    if (mosaic_settings_scan_wifi(records, MOSAIC_SETTINGS_WIFI_SCAN_MAX,
-            &count) != ESP_OK) {
+    mosaic_cap_wifi_scan_t *scan = calloc(1, sizeof(*scan));
+    if (scan == NULL) {
         return false;
     }
-    if (count > MOSAIC_SETTINGS_WIFI_SCAN_MAX) {
-        count = MOSAIC_SETTINGS_WIFI_SCAN_MAX;
+    if (mosaic_capability_read("net.wifi.scan", SETUP_CENTER_CAPABILITIES,
+            scan, sizeof(*scan)) != ESP_OK) {
+        free(scan);
+        return false;
+    }
+    size_t count = scan->count;
+    if (count > MOSAIC_CAP_WIFI_SCAN_MAX) {
+        count = MOSAIC_CAP_WIFI_SCAN_MAX;
     }
     SETUP_MODEL_LOCK();
     if (count > 0) {
-        memcpy(s_setup.networks, records, count * sizeof(records[0]));
+        memcpy(s_setup.networks, scan->entries,
+               count * sizeof(scan->entries[0]));
     }
     s_setup.network_count = count;
     SETUP_MODEL_UNLOCK();
+    free(scan);
     return true;
 }
 
@@ -589,8 +646,8 @@ static void setup_network_request_scan(int64_t now_us)
     SETUP_MODEL_LOCK();
     s_setup.network_count = 0;
     SETUP_MODEL_UNLOCK();
-    const esp_err_t err = mosaic_settings_request_wifi_scan();
-    if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
+    const esp_err_t err = setup_network_scan_request();
+    if (!setup_wifi_accepted(err) && err != ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGW(TAG, "request Wi-Fi scan failed: %s",
                  esp_err_to_name(err));
     }
@@ -628,7 +685,7 @@ static gsp_err_t setup_network_bind_item(
     esp_gsp_handle_t ui, esp_gsp_row_t row, uint32_t item, void *user_ctx)
 {
     (void)user_ctx;
-    char ssid[MOSAIC_SETTINGS_SSID_LEN];
+    char ssid[MOSAIC_CAP_SSID_LEN];
     SETUP_MODEL_LOCK();
     if (item >= s_setup.network_count) {
         SETUP_MODEL_UNLOCK();
@@ -704,8 +761,8 @@ static void setup_overview_render(void)
         ? "Mosaico-Lab · Linked"
         : (s_setup.wechat_skipped ? "Skipped · Not linked" : "Not linked");
     const char *llm = s_setup.llm_configured
-        ? (s_setup.settings_snapshot.llm.model[0]
-            ? s_setup.settings_snapshot.llm.model : "Configured")
+        ? (s_setup.agent_config.llm_model[0]
+            ? s_setup.agent_config.llm_model : "Configured")
         : (s_setup.llm_skipped ? "Skipped · Not configured"
                                : "Not configured");
     (void)gsp_setup_center_setup_network_summary_set_text(
@@ -990,35 +1047,37 @@ static void setup_llm_render(void)
 
 static esp_err_t setup_llm_refresh_model(bool push_qr)
 {
-    mosaic_settings_snapshot_t snapshot = {0};
-    const esp_err_t err = mosaic_settings_get_snapshot(&snapshot);
+    const esp_err_t err = mosaic_capability_read("config.agent",
+        SETUP_CENTER_CAPABILITIES, &s_setup.agent_config,
+        sizeof(s_setup.agent_config));
     if (err != ESP_OK) {
         return err;
     }
-    s_setup.settings_snapshot = snapshot;
-    s_setup.llm_configured =
-        mosaic_settings_llm_is_configured(&snapshot);
+    const mosaic_cap_agent_config_t *agent = &s_setup.agent_config;
+    s_setup.llm_configured = agent->llm_configured;
     (void)gsp_setup_center_setup_llm_backend_set_text(
-        s_setup.ui, snapshot.llm.backend[0]
-            ? snapshot.llm.backend : "Not configured");
+        s_setup.ui, agent->llm_backend[0]
+            ? agent->llm_backend : "Not configured");
     (void)gsp_setup_center_setup_llm_model_set_text(
-        s_setup.ui, snapshot.llm.model[0]
-            ? snapshot.llm.model : "Not configured");
+        s_setup.ui, agent->llm_model[0]
+            ? agent->llm_model : "Not configured");
     (void)gsp_setup_center_setup_llm_base_url_set_text(
-        s_setup.ui, snapshot.llm.base_url[0]
-            ? snapshot.llm.base_url : "Not configured");
+        s_setup.ui, agent->llm_base_url[0]
+            ? agent->llm_base_url : "Not configured");
     char capabilities[48];
     (void)snprintf(capabilities, sizeof(capabilities),
         "Tools %s · Vision %s",
-        snapshot.llm.supports_tools ? "On" : "Off",
-        snapshot.llm.supports_vision ? "On" : "Off");
+        agent->llm_supports_tools ? "On" : "Off",
+        agent->llm_supports_vision ? "On" : "Off");
     (void)gsp_setup_center_setup_llm_capabilities_set_text(
         s_setup.ui, capabilities);
 
     char config_url[SETUP_LLM_URL_LEN] = {0};
-    if (snapshot.network.portal_url[0] != '\0') {
+    mosaic_cap_wifi_t network = {0};
+    if (setup_network_status(&network) == ESP_OK &&
+            network.portal_url[0] != '\0') {
         (void)snprintf(config_url, sizeof(config_url), "%s#llm",
-                       snapshot.network.portal_url);
+                       network.portal_url);
     }
     (void)gsp_setup_center_setup_llm_config_url_set_text(
         s_setup.ui, config_url[0] ? config_url : "Unavailable");
@@ -1066,10 +1125,10 @@ static bool setup_pop(uint16_t landing_page, int64_t now_us)
 
 static void setup_open_network(int64_t now_us)
 {
-    const bool backend = mosaic_settings_wifi_backend_available();
-    mosaic_settings_network_t network = {0};
-    if (backend && mosaic_settings_get_wifi(&network) == ESP_OK) {
-        setup_network_event(&network, NULL);
+    const bool backend = setup_network_backend_available();
+    mosaic_cap_wifi_t network = {0};
+    if (backend && setup_network_status(&network) == ESP_OK) {
+        setup_network_event(NULL, "net.wifi", &network, sizeof(network));
         s_setup.network_configured = network.connected;
         if (network.connected && network.ssid[0] != '\0') {
             strlcpy(s_setup.connected_ssid, network.ssid,
@@ -1181,9 +1240,10 @@ static void setup_network_select(const mosaic_event_t *event)
     SETUP_MODEL_UNLOCK();
     (void)gsp_setup_center_setup_selected_ssid_set_text(
         s_setup.ui, s_setup.selected_ssid);
-    if (!secured && mosaic_settings_wifi_backend_available()) {
+    if (!secured && setup_network_backend_available()) {
         s_setup.network_connect_pending = true;
-        if (mosaic_settings_connect_wifi(s_setup.selected_ssid, "") == ESP_OK) {
+        if (setup_wifi_accepted(
+                setup_network_connect(s_setup.selected_ssid, ""))) {
             /* A Join of the already-connected SSID may not publish a new
              * manager revision. Re-evaluate the current snapshot as part of
              * this newly armed transaction. */
@@ -1225,16 +1285,16 @@ static bool setup_network_join(int64_t now_us)
             "Enter at least 8 characters", 2400);
         return false;
     }
-    const bool backend = mosaic_settings_wifi_backend_available();
+    const bool backend = setup_network_backend_available();
     s_setup.network_newly_connected = false;
     if (backend) {
         /* Arm before calling the backend. The device backend applies the new
          * config synchronously enough to publish CONNECTING from inside this
          * call; arming afterwards loses that first state transition. */
         s_setup.network_connect_pending = true;
-        const esp_err_t err = mosaic_settings_connect_wifi(
+        const esp_err_t err = setup_network_connect(
             s_setup.selected_ssid, password);
-        if (err != ESP_OK) {
+        if (!setup_wifi_accepted(err)) {
             s_setup.network_connect_pending = false;
             (void)mosaic_top_notice_show(
                 s_setup.ui, &s_notice, "Unable to join network",
@@ -1301,10 +1361,10 @@ static void setup_network_phone_submitted(void)
     if (s_setup.network_phase != SETUP_NETWORK_PHONE) {
         return;
     }
-    mosaic_settings_network_t live = {0};
-    const bool backend = mosaic_settings_wifi_backend_available();
+    mosaic_cap_wifi_t live = {0};
+    const bool backend = setup_network_backend_available();
     if (backend &&
-            (mosaic_settings_get_wifi(&live) != ESP_OK || !live.connected)) {
+            (setup_network_status(&live) != ESP_OK || !live.connected)) {
         (void)mosaic_top_notice_show(
             s_setup.ui, &s_notice, "Waiting for phone",
             "Submit Wi-Fi settings in the portal", 2800);
@@ -1338,27 +1398,27 @@ static void setup_network_cancel_password(void)
 
 static void setup_network_apply_model(int64_t now_us)
 {
-    if (!mosaic_settings_wifi_backend_available() || s_setup.ui == NULL) {
+    if (!setup_network_backend_available() || s_setup.ui == NULL) {
         return;
     }
     /* Polling also advances the SDL provider; ESP normally arrives here via
      * subscriber events. Both paths publish the same immutable snapshot. */
-    mosaic_settings_network_t live = {0};
-    if (mosaic_settings_get_wifi(&live) == ESP_OK) {
-        setup_network_event(&live, NULL);
+    mosaic_cap_wifi_t live = {0};
+    if (setup_network_status(&live) == ESP_OK) {
+        setup_network_event(NULL, "net.wifi", &live, sizeof(live));
     }
 
-    mosaic_settings_network_t network;
+    mosaic_cap_wifi_t network;
     uint32_t revision;
     SETUP_MODEL_LOCK();
     revision = s_setup.network_revision;
     network = s_setup.network_status;
     SETUP_MODEL_UNLOCK();
 #if !defined(ESP_PLATFORM)
-    const bool terminal = network.state == MOSAIC_SETTINGS_WIFI_CONNECTED ||
-        network.state == MOSAIC_SETTINGS_WIFI_AUTH_FAILED ||
-        network.state == MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND ||
-        network.state == MOSAIC_SETTINGS_WIFI_FAILED;
+    const bool terminal = network.state == MOSAIC_CAP_WIFI_CONNECTED ||
+        network.state == MOSAIC_CAP_WIFI_AUTH_FAILED ||
+        network.state == MOSAIC_CAP_WIFI_AP_NOT_FOUND ||
+        network.state == MOSAIC_CAP_WIFI_FAILED;
     if (s_setup.network_connect_pending && terminal &&
             now_us < s_setup.operation_deadline_us) {
         /* Do not consume the revision: the same terminal snapshot is applied
@@ -1391,15 +1451,15 @@ static void setup_network_apply_model(int64_t now_us)
         const char *title = NULL;
         const char *message = NULL;
         switch (network.state) {
-        case MOSAIC_SETTINGS_WIFI_AUTH_FAILED:
+        case MOSAIC_CAP_WIFI_AUTH_FAILED:
             title = "Incorrect password";
             message = "Update the password on your phone";
             break;
-        case MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND:
+        case MOSAIC_CAP_WIFI_AP_NOT_FOUND:
             title = "Network unavailable";
             message = "Choose another WLAN on your phone";
             break;
-        case MOSAIC_SETTINGS_WIFI_FAILED:
+        case MOSAIC_CAP_WIFI_FAILED:
             title = "Connection failed";
             message = "Check the settings and try again";
             break;
@@ -1426,7 +1486,7 @@ static void setup_network_apply_model(int64_t now_us)
     const char *title = NULL;
     const char *message = NULL;
     switch (network.state) {
-    case MOSAIC_SETTINGS_WIFI_CONNECTED:
+    case MOSAIC_CAP_WIFI_CONNECTED:
         if (s_setup.selected_ssid[0] != '\0' &&
                 strcmp(network.ssid, s_setup.selected_ssid) != 0) {
             /* The old association can still be visible while replacement
@@ -1444,22 +1504,22 @@ static void setup_network_apply_model(int64_t now_us)
                 sizeof(s_setup.connected_ssid));
         s_setup.network_phase = SETUP_NETWORK_CONNECTED;
         break;
-    case MOSAIC_SETTINGS_WIFI_AUTH_FAILED:
+    case MOSAIC_CAP_WIFI_AUTH_FAILED:
         title = "Incorrect password";
         message = "Check the password and try again";
         break;
-    case MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND:
+    case MOSAIC_CAP_WIFI_AP_NOT_FOUND:
         title = "Network unavailable";
         message = "The selected WLAN was not found";
         break;
-    case MOSAIC_SETTINGS_WIFI_FAILED:
+    case MOSAIC_CAP_WIFI_FAILED:
         title = "Connection failed";
         message = "Check the network and try again";
         break;
-    case MOSAIC_SETTINGS_WIFI_CONNECTING:
-    case MOSAIC_SETTINGS_WIFI_RETRY_WAIT:
-    case MOSAIC_SETTINGS_WIFI_IDLE:
-    case MOSAIC_SETTINGS_WIFI_SCANNING:
+    case MOSAIC_CAP_WIFI_CONNECTING:
+    case MOSAIC_CAP_WIFI_RETRY_WAIT:
+    case MOSAIC_CAP_WIFI_IDLE:
+    case MOSAIC_CAP_WIFI_SCANNING:
     default:
         break;
     }
@@ -1469,7 +1529,7 @@ static void setup_network_apply_model(int64_t now_us)
         s_setup.network_newly_connected = false;
         s_setup.connected_ssid[0] = '\0';
         s_setup.selected_ssid[0] = '\0';
-        (void)mosaic_settings_forget_wifi();
+        (void)setup_network_forget();
         s_setup.network_phase = SETUP_NETWORK_SCAN;
         setup_network_request_scan(now_us);
         (void)mosaic_top_notice_show(
@@ -1580,7 +1640,7 @@ static void setup_handle_call(const mosaic_event_t *event)
         if (s_setup.network_phase == SETUP_NETWORK_CONNECTED) {
             s_setup.network_newly_connected = false;
             s_setup.network_phase = SETUP_NETWORK_SCAN;
-            if (mosaic_settings_wifi_backend_available()) {
+            if (setup_network_backend_available()) {
                 setup_network_request_scan(now_us);
             } else {
                 s_setup.network_scan_ready = false;
@@ -1785,7 +1845,7 @@ static void setup_step(int64_t now_us)
     }
     if (s_setup.network_phase == SETUP_NETWORK_SCAN &&
             !s_setup.network_scan_ready) {
-        if (mosaic_settings_wifi_backend_available()) {
+        if (setup_network_backend_available()) {
             if (setup_network_refresh_scan()) {
                 s_setup.network_scan_ready = true;
                 setup_network_render();
@@ -1801,7 +1861,7 @@ static void setup_step(int64_t now_us)
             setup_network_render();
         }
     } else if (s_setup.network_phase == SETUP_NETWORK_JOINING &&
-            !mosaic_settings_wifi_backend_available()) {
+            !setup_network_backend_available()) {
         const uint8_t progress = setup_operation_progress(now_us);
         if (progress != s_setup.rendered_progress) {
             setup_progress_render(s_network_progress, progress);
@@ -1917,10 +1977,10 @@ static void setup_start(esp_gsp_handle_t ui, int64_t now_us)
     if (setup_wechat_has_backend() && setup_qr_ensure_buffers() != ESP_OK) {
         ESP_LOGE(TAG, "allocate WeChat QR buffers failed");
     }
-    if (mosaic_settings_wifi_backend_available()) {
-        const esp_err_t err = mosaic_settings_subscribe_wifi(
-            setup_network_event, NULL);
-        s_setup.wifi_subscribed = err == ESP_OK;
+    if (setup_network_backend_available()) {
+        const esp_err_t err = mosaic_capability_subscribe("net.wifi",
+            SETUP_CENTER_CAPABILITIES, setup_network_event, NULL,
+            &s_setup.wifi_subscription);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "subscribe Wi-Fi state failed: %s",
                      esp_err_to_name(err));
@@ -1991,10 +2051,10 @@ static void setup_center_event(
             setup_wechat_schedule_cancel();
         }
         mosaic_top_notice_detach(ui);
-        if (s_setup.wifi_subscribed) {
-            (void)mosaic_settings_unsubscribe_wifi(
-                setup_network_event, NULL);
-            s_setup.wifi_subscribed = false;
+        if (s_setup.wifi_subscription != NULL &&
+                mosaic_capability_unsubscribe(
+                    s_setup.wifi_subscription) == ESP_OK) {
+            s_setup.wifi_subscription = NULL;
         }
         s_setup.network_list = ESP_GSP_LIST_NONE;
         SETUP_MODEL_LOCK();

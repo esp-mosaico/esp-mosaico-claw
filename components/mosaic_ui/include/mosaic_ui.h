@@ -19,8 +19,6 @@
 extern "C" {
 #endif
 
-typedef esp_err_t (*mosaic_ui_haptic_cb_t)(void *user_ctx,
-                                           uint32_t duration_ms);
 /**
  * Start the ported esp-gsp mosaic example UI.
  *
@@ -49,11 +47,7 @@ esp_err_t mosaic_ui_set_ai_create_asr(asr_service_handle_t asr);
 /** Publish a structured unavailable state when no ASR instance can be built. */
 esp_err_t mosaic_ui_set_ai_create_voice_status(ai_create_voice_status_t status);
 
-/** Register optional device haptics. Simulators may leave this unset. */
-void mosaic_ui_set_haptic_callback(
-    mosaic_ui_haptic_cb_t callback, void *user_ctx);
-
-/** Request one bounded haptic pulse; a missing backend is a no-op. */
+/** Request one bounded haptic pulse through system.haptic. */
 esp_err_t mosaic_ui_haptic_feedback(uint32_t duration_ms);
 
 #ifdef __cplusplus

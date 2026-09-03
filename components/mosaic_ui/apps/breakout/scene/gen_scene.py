@@ -4,12 +4,11 @@
 """Scene generator for the Breakout demo App.
 
 Static structure only: HUD, a brick wall (each brick toggled by a visibility
-bind), a movable paddle and ball (bounded x/y geometry moved at runtime with
-esp_gsp_component_set_position), and a start/end overlay. All motion is driven
-by breakout_app.c; the scene never rebuilds.
+property), a movable paddle and ball, and a start/end overlay. All motion is
+driven by the deployable App's Lua reducer; the scene never rebuilds.
 
-Geometry constants here MUST match BRICK_* / PADDLE_* / BALL_* in
-breakout_app.c so collision math lines up with what is drawn.
+Geometry constants here MUST match apps/breakout/main.lua so collision math
+lines up with what is drawn.
 """
 from __future__ import annotations
 
@@ -48,7 +47,7 @@ PADDLE = "#F2F5F7"
 BALL = "#FFD166"
 ROW_COLORS = ["#EF6461", "#E4B363", "#7FB685", "#4F9DDE"]
 
-# Brick wall geometry (keep in sync with breakout_app.c).
+# Brick wall geometry (keep in sync with apps/breakout/main.lua).
 ROWS = 4
 COLS = 5
 BRICK_W = 84
@@ -86,7 +85,8 @@ def main() -> None:
             y = BRICK_TOP + r * (BRICK_H + BRICK_GAP)
             brick = container(content, x, y, BRICK_W, BRICK_H,
                               bg=ROW_COLORS[r], radius=6,
-                              bind=f"brick_{r}_{c}_visible")
+                              bind=f"brick_{r}_{c}_visible",
+                              name=f"brick_{r}_{c}")
             brick["bind_target"] = "visible"
             objs.append(brick)
 

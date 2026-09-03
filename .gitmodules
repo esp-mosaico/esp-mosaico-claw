@@ -4,3 +4,6 @@
 [submodule "third-party/esp-iris"]
 	path = third-party/esp-iris
 	url = https://github.com/lisir233/ESP-Iris.git
+[submodule "third-party/esp-mosaico-tools"]
+	path = third-party/esp-mosaico-tools
+	url = git@github.com:lisir233/esp-mosaico-tools.git

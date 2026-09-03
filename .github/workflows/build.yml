@@ -31,6 +31,13 @@ jobs:
           python -m pip install --disable-pip-version-check \
             -r third-party/esp-iris/components/esp_iris/tools/requirements.lock
 
+      - name: Test Mosaico host integration
+        shell: bash
+        run: |
+          python -m unittest discover -s third-party/esp-mosaico-tools/tests -v
+          python -m unittest discover -s tests/mosaico_cli -v
+          python mosaico.py --version
+
       - name: Configure board and build project
         shell: bash
         run: |

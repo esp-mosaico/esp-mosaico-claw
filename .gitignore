@@ -5,6 +5,8 @@ build-*/
 build-host/
 tmp/
 releases/
+.codex-runs/
+.mosaico-state/
 
 # ESP-IDF
 sdkconfig

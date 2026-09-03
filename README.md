@@ -22,8 +22,47 @@ idf.py build
 idf.py factory-bundle-validate
 ```
 
-`ESP-Iris` is pinned as a regular Git submodule. Initialize it recursively
-before building the firmware or starting Gateway/Workbench.
+`ESP-Iris` and the repository-local Mosaico CLI are pinned as regular Git
+submodules. Initialize them recursively before building firmware or operating
+a device.
+
+## Unified Mosaico Commands
+
+Use the repository-level product CLI for routine host checks, device discovery,
+Recovery, application installation, and retained logs:
+
+```bash
+python mosaico.py doctor
+python mosaico.py list
+python mosaico.py recover
+python mosaico.py install
+python mosaico.py monitor
+```
+
+The launcher delegates to the pinned `third-party/esp-mosaico-tools` checkout;
+the CLI does not need to be installed globally. [`.mosaico.json`](.mosaico.json)
+maps the Claw root application, board files, reviewed Recovery bundle, and
+ESP-Iris checkout into that shared tool. To initialize only the CLI dependency,
+run:
+
+```bash
+git submodule update --init third-party/esp-mosaico-tools
+```
+
+Run `doctor` first. It checks Python, ESP-IDF and ESP32-S31 support, ESP-Iris,
+the host state directory, and currently visible USB devices without building or
+writing firmware. `install` builds this root project and updates `ota_0` only
+through the ESP-Iris Gateway. Before OTA begins, it compares the device's live
+partition-table SHA-256 with the 4 KiB Flash-sector hash of the partition table
+from the current application build and refuses mismatched layouts. `recover`
+defaults to the checked-in, reviewed
+Factory Recovery bundle; this repository intentionally does not offer an
+unreviewed Recovery build, so use the default `--source reviewed` mode.
+
+Recovery is local-only and obtains a maintenance lease from the local Gateway
+before writing the bootloader, partition table, OTA data, and retained Factory
+Recovery images. The command never erases the whole flash and does not write
+credentials, device identity, application NVS, core dumps, or `ota_0`.
 
 ## Factory Provisioning
 
@@ -83,23 +122,20 @@ python "$IRIS" ctl ota DEVICE_ID build/edge_agent.bin \
   --wait
 ```
 
-To update `ota_0`, `ui_apps`, and `system` in one Recovery transaction, first
-build the bounded ESP-Iris System Update bundle. This target never accesses a
-device:
+To build and update `ota_0`, `ui_apps`, and `system` in one validated Recovery
+transaction, use the unified command:
 
 ```bash
-idf.py system-update-bundle
+python mosaico.py system-update
 ```
 
-Archive the matching ELF and map for crash symbolization, then submit the
-single three-part update bundle through the native CLI:
+Reuse a previously built default bundle, or select an explicit `.irisfw`
+artifact, with:
 
 ```bash
-python "$IRIS" ctl firmware-add build/edge_agent.bin \
-  --elf build/edge_agent.elf \
-  --map build/edge_agent.map
-python "$IRIS" ctl system-update DEVICE_ID \
-  build/edge_agent-system-update.irisfw --wait
+python mosaico.py system-update --skip-build
+python mosaico.py system-update \
+  --bundle build/edge_agent-system-update.irisfw
 ```
 
 The bundle authorizes only the fixed `ota_0`, `ui_apps`, and `system` ranges.
@@ -107,6 +143,10 @@ Recovery verifies every component SHA-256 and Flash readback before selecting
 `ota_0`. It requires Factory Recovery `2.3.0-recovery` or newer. Restart the
 Gateway after updating the ESP-Iris submodule so its 1 GiB artifact request
 limit is active.
+
+Advanced deployments may keep Recovery-side HTTP(S) or NAND pull mode by using
+`--manifest-url` or `--manifest-path`. The native ESP-Iris `ctl system-update`
+command remains available for lower-level Gateway testing.
 
 Common diagnostics are available through the same native CLI:
 

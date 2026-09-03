@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "workspace": {
+    "projects_dir": ".",
+    "default_project": ".",
+    "environment_file": "Environment",
+    "run_dir": ".codex-runs/mosaico",
+    "idf_constraint_manifest": "main/idf_component.yml"
+  },
+  "dependencies": {
+    "bsp": "boards/esp_mosaico",
+    "esp_iris": "third-party/esp-iris"
+  },
+  "build": {
+    "runner": "builtin"
+  },
+  "devices": [
+    {
+      "id": "esp-mosaico",
+      "name": "ESP-Mosaico Claw",
+      "target": "esp32s31",
+      "status": "supported",
+      "default": true,
+      "preview_target": true,
+      "recovery_project": "tools/mosaico_recovery",
+      "bsp_path": "boards/esp_mosaico",
+      "recovery_dir": "prebuilt/recovery",
+      "recovery_usb_ids": [
+        {
+          "vid": "0x303a",
+          "pid": "0x0020",
+          "product": "ESP32-S31"
+        }
+      ]
+    }
+  ]
+}

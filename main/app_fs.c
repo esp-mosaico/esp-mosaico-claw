@@ -5,7 +5,6 @@
  */
 #include "app_fs.h"
 
-#include <inttypes.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -20,8 +19,12 @@
 #include "esp_littlefs.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_check.h"
 #include "esp_board_manager_includes.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "freertos/task.h"
 #include "setup_nand_flash.h"
 
 #define APP_FS_SYSTEM_PARTITION_LABEL   "system"
@@ -31,6 +34,9 @@
 #define APP_FS_RAMFS_MAX_BYTES          (512 * 1024)
 #define APP_FS_RECOVERY_PATH_SIZE       (256)
 #define APP_FS_COPY_BUFFER_SIZE         (512)
+#define APP_FS_RECOVERY_TASK_STACK      (4096)
+#define APP_FS_RECOVERY_TASK_PRIORITY   (tskIDLE_PRIORITY + 1)
+#define APP_FS_RECOVERY_DONE_BIT        BIT0
 
 static const char *TAG = "app_fs";
 
@@ -41,6 +47,8 @@ static const char *const s_recovery_dir_name = ".recovery";
 
 static EXT_RAM_BSS_ATTR char s_storage_base_path[32];
 static EXT_RAM_BSS_ATTR void *s_nand_device_handle;
+static EventGroupHandle_t s_recovery_event;
+static esp_err_t s_recovery_result = ESP_OK;
 
 // Dot-prefixed by convention so cap_files list_dir hides the seed tree from the LLM.
 static esp_err_t build_recovery_path(char *path, size_t path_size)
@@ -48,20 +56,6 @@ static esp_err_t build_recovery_path(char *path, size_t path_size)
     int len = snprintf(path, path_size, "%s/%s", s_system_base_path, s_recovery_dir_name);
     ESP_RETURN_ON_FALSE(len > 0 && len < (int)path_size, ESP_ERR_INVALID_SIZE, TAG, "Recovery path too long");
     return ESP_OK;
-}
-
-static void log_littlefs_info(const char *partition_label, const char *base_path)
-{
-    size_t total = 0;
-    size_t used = 0;
-    esp_err_t err = esp_littlefs_info(partition_label, &total, &used);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to query LittleFS info for %s: %s", base_path,
-                 esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "LittleFS at %s total=%u used=%u", base_path,
-                 (unsigned int)total, (unsigned int)used);
-    }
 }
 
 static esp_err_t copy_file(const char *src_path, const char *dst_path)
@@ -170,6 +164,42 @@ static esp_err_t recover_missing_files(const char *src_dir, const char *dst_dir)
     return result;
 }
 
+static esp_err_t run_recovery(void)
+{
+    char recovery_path[64];
+    ESP_RETURN_ON_ERROR(build_recovery_path(recovery_path, sizeof(recovery_path)), TAG, "Failed to build recovery path");
+    return recover_missing_files(recovery_path, s_storage_base_path);
+}
+
+static void recovery_task(void *arg)
+{
+    (void)arg;
+    const int64_t start_us = esp_timer_get_time();
+    s_recovery_result = run_recovery();
+    ESP_LOGI(TAG, "Recovery scan complete: result=%s elapsed=%lld ms", esp_err_to_name(s_recovery_result),
+             (long long)((esp_timer_get_time() - start_us) / 1000));
+    xEventGroupSetBits(s_recovery_event, APP_FS_RECOVERY_DONE_BIT);
+    vTaskDelete(NULL);
+}
+
+static esp_err_t start_recovery(void)
+{
+    s_recovery_event = xEventGroupCreate();
+    if (s_recovery_event == NULL) {
+        ESP_LOGW(TAG, "Recovery event allocation failed; running synchronously");
+        s_recovery_result = run_recovery();
+        return ESP_OK;
+    }
+    if (xTaskCreate(recovery_task, "fs_recovery", APP_FS_RECOVERY_TASK_STACK, NULL, APP_FS_RECOVERY_TASK_PRIORITY, NULL) != pdPASS) {
+        ESP_LOGW(TAG, "Recovery task creation failed; running synchronously");
+        s_recovery_result = run_recovery();
+        xEventGroupSetBits(s_recovery_event, APP_FS_RECOVERY_DONE_BIT);
+    } else {
+        ESP_LOGI(TAG, "Recovery scan started in background");
+    }
+    return ESP_OK;
+}
+
 static esp_err_t remove_directory_contents(const char *dir_path)
 {
     DIR *dir = opendir(dir_path);
@@ -235,39 +265,31 @@ static esp_err_t app_fs_init_system(void)
     ESP_RETURN_ON_ERROR(err, TAG, "Failed to mount system LittleFS: %s",
                         esp_err_to_name(err));
 
-    log_littlefs_info(APP_FS_SYSTEM_PARTITION_LABEL, s_system_base_path);
+    ESP_LOGI(TAG, "System LittleFS mounted at %s", s_system_base_path);
     return ESP_OK;
 }
 
 static esp_err_t app_fs_init_storage(void)
 {
-    char recovery_path[64];
-    ESP_RETURN_ON_ERROR(build_recovery_path(recovery_path, sizeof(recovery_path)), TAG, "Failed to build recovery path");
-
     ESP_RETURN_ON_ERROR(
         esp_board_manager_get_device_handle(APP_FS_NAND_DEVICE_NAME,
                                             &s_nand_device_handle),
         TAG, "Failed to get mandatory NAND device");
 
-    uint64_t total = 0;
-    uint64_t free_bytes = 0;
-    ESP_RETURN_ON_ERROR(
-        mosaico_nand_flash_get_space(s_nand_device_handle, &total, &free_bytes),
-        TAG, "Mandatory NAND LittleFS is unavailable");
-
     strlcpy(s_storage_base_path, s_nand_storage_base_path,
             sizeof(s_storage_base_path));
-    ESP_LOGI(TAG, "Using mandatory NAND LittleFS at '%s' as DATA, total=%" PRIu64
-                  " free=%" PRIu64,
-             s_storage_base_path, total, free_bytes);
+    ESP_LOGI(TAG, "Using mandatory NAND LittleFS at '%s' as DATA", s_storage_base_path);
 
-    // Restore firmware-provided defaults that are missing from NAND. Existing
-    // files are preserved; legacy internal storage is intentionally ignored.
-    esp_err_t rec = recover_missing_files(recovery_path, s_storage_base_path);
-    if (rec != ESP_OK) {
-        ESP_LOGW(TAG, "Recovery into NAND LittleFS incomplete: %s", esp_err_to_name(rec));
+    // Restore missing firmware defaults without blocking display startup.
+    return start_recovery();
+}
+
+esp_err_t app_fs_wait_recovery(void)
+{
+    if (s_recovery_event != NULL) {
+        (void)xEventGroupWaitBits(s_recovery_event, APP_FS_RECOVERY_DONE_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
     }
-    return ESP_OK;
+    return s_recovery_result;
 }
 
 const char *app_fs_storage_base_path(void)
@@ -297,6 +319,10 @@ esp_err_t app_fs_factory_reset(void)
     ESP_RETURN_ON_FALSE(s_storage_base_path[0] != '\0',
                         ESP_ERR_INVALID_STATE, TAG,
                         "storage filesystem is not initialized");
+    esp_err_t recovery_err = app_fs_wait_recovery();
+    if (recovery_err != ESP_OK) {
+        ESP_LOGW(TAG, "Boot recovery was incomplete before factory reset: %s", esp_err_to_name(recovery_err));
+    }
     ESP_RETURN_ON_ERROR(remove_directory_contents(s_storage_base_path), TAG,
                         "clear NAND data");
 
@@ -307,6 +333,7 @@ esp_err_t app_fs_factory_reset(void)
     ESP_RETURN_ON_ERROR(
         recover_missing_files(recovery_path, s_storage_base_path), TAG,
         "restore factory files");
+    s_recovery_result = ESP_OK;
     ESP_LOGW(TAG, "NAND user data cleared and factory files restored");
     return ESP_OK;
 }

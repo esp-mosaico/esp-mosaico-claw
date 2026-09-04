@@ -53,12 +53,21 @@ esp_err_t app_fs_get_storage_space(void *ctx,
 esp_err_t app_fs_factory_reset(void);
 
 /**
+ * @brief Wait for boot-time recovery of missing DATA files to finish.
+ *
+ * @return Recovery result. A partial recovery is reported without unmounting
+ *         the writable filesystem.
+ */
+esp_err_t app_fs_wait_recovery(void);
+
+/**
  * @brief  Initialize all filesystems.
  *
  *         Must be called after esp_board_manager_init() since it relies on the
  *         board manager to mount the mandatory NAND device. The system
- *         partition is mounted first, followed by validation and seeding of
- *         NAND DATA, and then the RAMFS.
+ *         partition is mounted first, followed by NAND DATA and RAMFS. DATA
+ *         recovery starts in the background and must be joined with
+ *         app_fs_wait_recovery() before services consume recovery seeds.
  *
  * @return
  *       - ESP_OK  On success

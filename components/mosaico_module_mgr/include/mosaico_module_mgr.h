@@ -19,7 +19,7 @@ extern "C" {
 #define MOSAICO_MODULE_MGR_EEPROM_MAGIC_LEN 3U
 #define MOSAICO_MODULE_MGR_EEPROM_IMAGE_SIZE 0x86U
 #define MOSAICO_MODULE_MGR_SLOT_AUTO MOSAICO_MODULE_MGR_SLOT_COUNT
-#define MOSAICO_MODULE_MGR_DEFAULT_CONFIG() { .scan_period_ms = 200, .debounce_count = 3, .event_callback = NULL, .event_user_data = NULL }
+#define MOSAICO_MODULE_MGR_DEFAULT_CONFIG() { .scan_period_ms = 1000, .debounce_count = 3, .event_callback = NULL, .event_user_data = NULL }
 
 typedef enum {
     MOSAICO_MODULE_MGR_SLOT_LEFT = 0,

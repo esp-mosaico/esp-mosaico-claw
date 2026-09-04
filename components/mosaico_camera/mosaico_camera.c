@@ -91,9 +91,6 @@ typedef struct {
     mosaico_camera_handle_t camera;
     mosaico_camera_availability_callback_t callback;
     void *callback_ctx;
-    bool pending_notice;
-    bool pending_available;
-    char pending_slot;
 } mosaico_camera_default_state_t;
 
 static mosaico_camera_default_state_t s_default;
@@ -106,11 +103,6 @@ static void default_camera_notify(char slot, bool available)
     xSemaphoreTake(s_default.lock, portMAX_DELAY);
     callback = s_default.callback;
     callback_ctx = s_default.callback_ctx;
-    if (callback == NULL) {
-        s_default.pending_notice = true;
-        s_default.pending_available = available;
-        s_default.pending_slot = slot;
-    }
     xSemaphoreGive(s_default.lock);
     if (callback != NULL) {
         callback(slot, available, callback_ctx);
@@ -718,7 +710,7 @@ esp_err_t mosaico_camera_init(void)
     }
     s_default.initialized = true;
     const mosaico_module_mgr_config_t config = {
-        .scan_period_ms = 200,
+        .scan_period_ms = 1000,
         .debounce_count = 3,
         .event_callback = default_camera_module_event,
     };
@@ -800,24 +792,15 @@ bool mosaico_camera_is_available(void)
 void mosaico_camera_set_availability_callback(mosaico_camera_availability_callback_t callback, void *user_ctx)
 {
     if (!s_default.initialized) {
+        /* Allow the UI to subscribe before background discovery starts. */
+        s_default.callback = callback;
+        s_default.callback_ctx = user_ctx;
         return;
     }
-    bool notify = false;
-    bool available = false;
-    char slot = 'L';
     xSemaphoreTake(s_default.lock, portMAX_DELAY);
     s_default.callback = callback;
     s_default.callback_ctx = user_ctx;
-    if (callback != NULL && s_default.pending_notice) {
-        notify = true;
-        available = s_default.pending_available;
-        slot = s_default.pending_slot;
-        s_default.pending_notice = false;
-    }
     xSemaphoreGive(s_default.lock);
-    if (notify) {
-        callback(slot, available, user_ctx);
-    }
 }
 
 esp_err_t mosaico_camera_new(const mosaico_camera_config_t *config,

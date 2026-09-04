@@ -37,7 +37,6 @@
 #include "time.h"
 #include "nvs_flash.h"
 #include "http_server.h"
-#include "hot_plug_register.h"
 #include "mosaico_iris.h"
 #include "mosaico_camera.h"
 #include "esp_attr.h"

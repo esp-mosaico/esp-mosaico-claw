@@ -18,6 +18,19 @@ EXPECTED_LAYOUT = {
 }
 PARTITION_TABLE_REGION_BYTES = 0x1000
 
+# Authorized predecessor layout used by esp-mosaico-vibe/projects/hello_world.
+# Its protected Recovery region below 0x300000 is identical; the former single
+# ota_0 partition from 0x300000 to the end of Flash is migrated into the
+# ota_0/ui_apps/system split described by EXPECTED_LAYOUT.
+LEGACY_WHOLE_OTA_LAYOUT_SHA256 = (
+    "068246e2e1f05b063b0c5cef5ee80633b1a9e0dee834dd8eb91249b1e84b0ed2"
+)
+
+
+def authorized_source_layouts(target_layout_sha256: str) -> list[str]:
+    layouts = [target_layout_sha256, LEGACY_WHOLE_OTA_LAYOUT_SHA256]
+    return list(dict.fromkeys(layouts))
+
 
 def _integer(value: str) -> int:
     return int(value.strip().removesuffix("K"), 0) * (
@@ -87,7 +100,7 @@ def main() -> int:
         "release": args.release,
         "minimum_recovery_version": "2.3.0-recovery",
         "target": {"chip_id": 0x20, "flash_size": 16 * 1024 * 1024},
-        "source_layout_sha256": [layout_sha256],
+        "source_layout_sha256": authorized_source_layouts(layout_sha256),
         "target_layout_sha256": layout_sha256,
         "components": [
             {

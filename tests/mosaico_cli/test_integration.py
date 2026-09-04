@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import unittest
@@ -17,6 +18,17 @@ from mosaico_cli.workspace import load_workspace
 
 
 class ToolSubmoduleIntegrationTests(unittest.TestCase):
+    def test_system_update_authorizes_the_legacy_whole_ota_layout(self) -> None:
+        namespace = runpy.run_path(str(REPOSITORY / "tools" / "prepare_system_update.py"))
+        target = "1c8c4109ee5232ee43508eef3f60bd127de9349fab991b7722a84a4f25889f4c"
+        self.assertEqual(
+            namespace["authorized_source_layouts"](target),
+            [
+                target,
+                "068246e2e1f05b063b0c5cef5ee80633b1a9e0dee834dd8eb91249b1e84b0ed2",
+            ],
+        )
+
     def test_workspace_resolves_claw_resources(self) -> None:
         workspace = load_workspace(TOOL_ROOT, explicit=str(REPOSITORY))
         model = select_model(workspace, None)

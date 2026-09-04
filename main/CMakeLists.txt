@@ -17,6 +17,7 @@ idf_component_register(
         gen_bmgr_codes
         hot_plug_register
         mosaico_iris
+        mosaico_camera
         mosaico_board_variant
         mosaico_boot_splash
         nvs_flash

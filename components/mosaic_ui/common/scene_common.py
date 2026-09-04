@@ -439,6 +439,21 @@ def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
         parent, 0, 0, 480, 80,
         bg="#3B3C3D", opacity=160, name="camera_top_bar",
     ))
+    objs.append(label(
+        parent, 16, 27, 304, 28, "", size=18, color="#FCFCFF",
+        bind="camera_recognition_status", name="camera_recognition_status",
+    ))
+    objs.append(image(
+        parent, f"{camera_assets_prefix}/camera_recognition.png",
+        344, 16, 48, 48, name="camera_recognition_button",
+        callback="camera_recognition_menu",
+    ))
+    recognition_active = len(objs)
+    objs.append(layer(
+        parent, 379, 18, 8, 8, hidden=True,
+        name="camera_recognition_active", bind="camera_recognition_active_visible",
+    ))
+    objs.append(container(recognition_active, 0, 0, 8, 8, bg="#FF4C01", radius=4))
     flash_off = len(objs)
     objs.append(layer(
         parent, 408, 16, 48, 48, name="camera_flash_off_layer",
@@ -485,6 +500,38 @@ def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
         parent, f"{camera_assets_prefix}/camera_flip.png",
         368, 409, 48, 48, name="camera_flip", callback="camera_flip",
     ))
+    result = len(objs)
+    objs.append(layer(
+        parent, 24, 326, 432, 48, hidden=True,
+        name="camera_recognition_result", bind="camera_recognition_result_visible",
+    ))
+    objs.append(container(result, 0, 0, 432, 48, bg="#181819", radius=16, opacity=224))
+    objs.append(label(
+        result, 16, 11, 400, 26, "", size=18, color="#FCFCFF", align="center",
+        bind="camera_recognition_result_text", name="camera_recognition_result_text",
+    ))
+    menu = len(objs)
+    objs.append(layer(
+        parent, 188, 80, 280, 128, hidden=True,
+        name="camera_recognition_menu", bind="camera_recognition_menu_visible",
+    ))
+    objs.append(container(menu, 0, 0, 280, 128, bg="#181819", radius=20, opacity=240))
+    objs.append(button(menu, 16, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_qrcode_mode"))
+    objs.append(button(menu, 152, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_color_mode"))
+    qrcode_selected = len(objs)
+    objs.append(layer(menu, 16, 14, 112, 96, hidden=True,
+                      name="camera_qrcode_selected", bind="camera_qrcode_selected_visible"))
+    objs.append(container(qrcode_selected, 0, 0, 112, 96, bg="#5A2B1B", radius=16,
+                          border="#FF4C01", border_w=2, callback="camera_qrcode_mode"))
+    color_selected = len(objs)
+    objs.append(layer(menu, 152, 14, 112, 96, hidden=True,
+                      name="camera_color_selected", bind="camera_color_selected_visible"))
+    objs.append(container(color_selected, 0, 0, 112, 96, bg="#5A2B1B", radius=16,
+                          border="#FF4C01", border_w=2, callback="camera_color_mode"))
+    objs.append(label(menu, 42, 22, 60, 48, "QR", size=26, color="#FCFCFF", align="center", callback="camera_qrcode_mode"))
+    objs.append(label(menu, 178, 20, 60, 48, "●", size=32, color="#4FD66D", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 24, 76, 96, 24, "QR Code", size=16, color="#D6D6DE", align="center", callback="camera_qrcode_mode"))
+    objs.append(label(menu, 160, 76, 96, 24, "Color", size=16, color="#D6D6DE", align="center", callback="camera_color_mode"))
 
 
 def build_imu_page(objs, parent):

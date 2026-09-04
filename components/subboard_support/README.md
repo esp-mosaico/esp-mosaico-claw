@@ -12,4 +12,4 @@ This component owns the shared resources used by Mosaico expansion boards:
 
 Use `subboard_support/subboard.h` for the public API. Applications should
 normally access these resources through a concrete subboard driver such as
-`mosaico_camera` or through `hot_plug_register`.
+`mosaico_camera` or through `mosaico_module_mgr`.

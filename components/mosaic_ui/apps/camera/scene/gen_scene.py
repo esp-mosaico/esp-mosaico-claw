@@ -38,6 +38,7 @@ IMAGES = [
     (f"{CAMERA_ASSETS}/camera_flash_auto.png", 48, 48),
     (f"{CAMERA_ASSETS}/camera_flash_off.png", 48, 48),
     (f"{CAMERA_ASSETS}/camera_flash_on.png", 48, 48),
+    (f"{CAMERA_ASSETS}/camera_recognition.png", 48, 48),
 ]
 FONT_POLICIES = {
     16: shared_charset(),

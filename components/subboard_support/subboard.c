@@ -277,11 +277,6 @@ esp_err_t bsp_subboard_camera_acquire(bsp_subboard_slot_t slot,
         /* Flash LED is wired to GPIO34 only (active-low). */
         .flash_io = GPIO_NUM_34,
         .xclk_freq_hz = 0,
-        /*
-         * XCLK is supplied by the CameraBoard's 24 MHz oscillator. Keep the
-         * stabilization interval explicit so SCCB is never accessed
-         * immediately after the board resource is acquired.
-         */
         .xclk_stabilization_ms = 20,
         .sccb_freq_hz = 400000,
     };

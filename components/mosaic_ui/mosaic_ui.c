@@ -16,7 +16,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "hot_plug_register.h"
+#include "mosaico_camera.h"
 #include "mosaic_welcome.h"
 #include "mosaic_hub_actions.h"
 #include "mosaic_hub_app.h"
@@ -262,16 +262,11 @@ esp_err_t mosaic_system_configure(const mosaic_system_ops_t *ops)
     return err;
 }
 
-static void on_subboard_insert_notice(
-    const char *subboard_name, char slot, bool present, void *user_ctx)
+static void on_camera_availability_notice(char slot, bool available, void *user_ctx)
 {
     (void)user_ctx;
-    if (subboard_name == NULL ||
-            strcmp(subboard_name, HOT_PLUG_SUBBOARD_CAMERA_NAME) != 0) {
-        return;
-    }
-    mosaic_hub_request_quick_slot_camera(slot, present);
-    if (!present) {
+    mosaic_hub_request_quick_slot_camera(slot, available);
+    if (!available) {
         return;
     }
     if (mosaic_loader_app() != mosaic_app_root()) {
@@ -472,8 +467,7 @@ esp_err_t mosaic_ui_start(void)
     }
 
     s_started = true;
-    hot_plug_register_set_insert_notice_callback(
-        on_subboard_insert_notice, NULL);
+    mosaico_camera_set_availability_callback(on_camera_availability_notice, NULL);
     ESP_LOGI(TAG, "mosaic hub live (ported esp-gsp example)");
     return ESP_OK;
 }

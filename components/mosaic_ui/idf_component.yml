@@ -21,6 +21,8 @@ dependencies:
     path: ../../third-party/esp-claw/components/claw_modules/claw_memory
   claw_manager:
     path: ../../third-party/esp-claw/components/claw_modules/claw_manager
+  claw_launcher:
+    path: ../../third-party/esp-claw/components/claw_modules/claw_launcher
   claw_skill:
     path: ../../third-party/esp-claw/components/claw_modules/claw_skill
   cap_lua:

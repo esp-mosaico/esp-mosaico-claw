@@ -82,10 +82,35 @@ static const uint16_t s_row_active_text_binds[WORKS_ROW_COUNT] = {
     GSP_BIND_WORKS_ROW_2_ACTIVE_TEXT,
     GSP_BIND_WORKS_ROW_3_ACTIVE_TEXT,
 };
+static const gsp_component_key_t s_row_visibility_keys[WORKS_ROW_COUNT][4] = {
+    {GSP_OBJ_KEY_WORKS_ROW_0, GSP_OBJ_KEY_WORKS_ROW_0_ACTIVE, GSP_OBJ_KEY_WORKS_ROW_0_STOPPED, GSP_OBJ_KEY_WORKS_ROW_0_FAILED},
+    {GSP_OBJ_KEY_WORKS_ROW_1, GSP_OBJ_KEY_WORKS_ROW_1_ACTIVE, GSP_OBJ_KEY_WORKS_ROW_1_STOPPED, GSP_OBJ_KEY_WORKS_ROW_1_FAILED},
+    {GSP_OBJ_KEY_WORKS_ROW_2, GSP_OBJ_KEY_WORKS_ROW_2_ACTIVE, GSP_OBJ_KEY_WORKS_ROW_2_STOPPED, GSP_OBJ_KEY_WORKS_ROW_2_FAILED},
+    {GSP_OBJ_KEY_WORKS_ROW_3, GSP_OBJ_KEY_WORKS_ROW_3_ACTIVE, GSP_OBJ_KEY_WORKS_ROW_3_STOPPED, GSP_OBJ_KEY_WORKS_ROW_3_FAILED},
+};
 
 static const char *TAG = "works_app";
 static works_tab_t s_selected_tab;
 static size_t s_installed_page;
+
+static esp_err_t works_first_error(esp_err_t current, esp_err_t next)
+{
+    return current == ESP_OK ? next : current;
+}
+
+static esp_err_t works_set_row_visibility(esp_gsp_handle_t ui, size_t row, bool visible, bool active, bool stopped, bool failed)
+{
+    const bool values[] = {visible, active, stopped, failed};
+    gsp_component_update_t updates[4];
+    for (size_t i = 0; i < 4U; ++i) {
+        updates[i] = (gsp_component_update_t) {
+            .key = s_row_visibility_keys[row][i],
+            .prop = GSP_COMPONENT_PROP_VISIBLE,
+            .value = {.type = GSP_VALUE_BOOL, .data.boolean = values[i]},
+        };
+    }
+    return esp_gsp_component_set_many(ui, updates, 4U);
+}
 
 static bool works_state_is_active(works_runtime_state_t state)
 {
@@ -160,25 +185,22 @@ static void works_render(esp_gsp_handle_t ui)
     for (size_t row = 0; row < WORKS_ROW_COUNT; ++row) {
         works_runtime_item_snapshot_t item;
         bool visible = works_item_for_row(row, &item) == ESP_OK;
-        (void)esp_gsp_set_visible(ui, s_row_visible_binds[row], visible);
         if (!visible) {
-            (void)esp_gsp_set_visible(ui, s_row_active_binds[row], false);
-            (void)esp_gsp_set_visible(ui, s_row_stopped_binds[row], false);
-            (void)esp_gsp_set_visible(ui, s_row_failed_binds[row], false);
+            esp_err_t err = works_set_row_visibility(ui, row, false, false, false, false);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "hide work row %u failed: %s", (unsigned)row, esp_err_to_name(err));
+            }
             continue;
         }
-        (void)esp_gsp_set_text(ui, s_row_name_binds[row], item.skill_id);
-        (void)esp_gsp_set_text(ui, s_row_meta_binds[row],
-                               item.builtin ? "Lua · System" : "Lua · Local");
         bool active = works_state_is_active(item.state);
-        (void)esp_gsp_set_visible(ui, s_row_active_binds[row], active);
-        (void)esp_gsp_set_visible(ui, s_row_stopped_binds[row],
-                                  item.state == WORKS_RUNTIME_STOPPED);
-        (void)esp_gsp_set_visible(ui, s_row_failed_binds[row],
-                                  item.state == WORKS_RUNTIME_FAILED);
+        esp_err_t err = esp_gsp_set_text(ui, s_row_name_binds[row], item.skill_id);
+        err = works_first_error(err, esp_gsp_set_text(ui, s_row_meta_binds[row], item.builtin ? "Lua · System" : "Lua · Local"));
         if (active) {
-            (void)esp_gsp_set_text(ui, s_row_active_text_binds[row],
-                                   works_active_label(item.state));
+            err = works_first_error(err, esp_gsp_set_text(ui, s_row_active_text_binds[row], works_active_label(item.state)));
+        }
+        err = works_first_error(err, works_set_row_visibility(ui, row, true, active, item.state == WORKS_RUNTIME_STOPPED, item.state == WORKS_RUNTIME_FAILED));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "render work row %u failed: %s", (unsigned)row, esp_err_to_name(err));
         }
     }
 }

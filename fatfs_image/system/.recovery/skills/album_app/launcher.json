@@ -1,9 +1,8 @@
 {
   "schema_version": 1,
   "entry": "scripts/album_app.lua",
+  "display_name": "Album",
   "args": {},
-  "exclusive": "display",
-  "replace": true,
   "order": 12,
   "visible": true
 }

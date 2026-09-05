@@ -193,7 +193,7 @@ static void works_render(esp_gsp_handle_t ui)
             continue;
         }
         bool active = works_state_is_active(item.state);
-        esp_err_t err = esp_gsp_set_text(ui, s_row_name_binds[row], item.skill_id);
+        esp_err_t err = esp_gsp_set_text(ui, s_row_name_binds[row], item.display_name);
         err = works_first_error(err, esp_gsp_set_text(ui, s_row_meta_binds[row], item.builtin ? "Lua · System" : "Lua · Local"));
         if (active) {
             err = works_first_error(err, esp_gsp_set_text(ui, s_row_active_text_binds[row], works_active_label(item.state)));

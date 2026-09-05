@@ -7,9 +7,8 @@
       "cap_lua",
       "cap_http_request",
       "cap_boards",
-      "cap_skill"
-    ],
-    "manage_mode": "readonly"
+      "cap_skill_manage"
+    ]
   }
 }
 ---
@@ -33,8 +32,8 @@ Use this skill when the user wants to install a skill from the ESP-Claw's Skill 
 8. Before installation, inspect `metadata.peripherals`. If it is non-empty, activate `board_hardware_info` and compare every listed peripheral against the current board device inventory.
 9. If one or more required peripherals are unavailable, do not install by default. Tell the user which peripherals are missing and stop unless the user explicitly asks to force install.
 10. Only after compatibility is confirmed, or the user explicitly approves force install, run the install step.
-11. After the install script succeeds, registration is optional: call `register_skill` only when the user or workflow needs the skill to be available to `activate_skill` immediately.
-12. If `register_skill` is called and succeeds, tell the user the skill has been installed and registered. If it is skipped, tell the user the skill has been installed and will become available after the next registry reload or device restart.
+11. After the install script succeeds, publication is optional: call `publish_skill` only when the user or workflow needs the skill to be available to `activate_skill` immediately.
+12. If `publish_skill` is called and succeeds, tell the user the skill has been installed and published. If it is skipped, tell the user the skill has been installed and will become available after the next registry reload or device restart.
 13. Do not ask Lua to parse `_metadata.json`. The model must read the JSON string, make the install decision, and pass the file lists to Lua as structured args.
 
 ## Workflow
@@ -75,21 +74,20 @@ Use this skill when the user wants to install a skill from the ESP-Claw's Skill 
 }
 ```
 
-8. If immediate activation is needed after the install script succeeds, call `register_skill`:
+8. If immediate activation is needed after the install script succeeds, call `publish_skill`:
 
 ```json
 {
-  "skill_id": "example-skill",
-  "file": "example-skill/SKILL.md"
+  "skill_id": "example-skill"
 }
 ```
 
-9. Report completion to the user. If registration was skipped, mention that the skill may require the next registry reload or device restart before `activate_skill` can use it.
+9. Report completion to the user. If publication was skipped, mention that the skill may require the next registry reload or device restart before `activate_skill` can use it.
 
 ## Notes
 - During installation, files are streamed directly from `http_request` into their target paths with `save_path`; the script does not load downloaded skill files into Lua memory before writing them.
 - If any streamed file exceeds the downloader's file-size limit, installation fails and the partial file is removed.
-- After all files are saved, the model can call `register_skill` when immediate activation is needed; without this optional step, the skill becomes available after the next registry reload or device restart.
+- After all files are saved, the model can call `publish_skill` when immediate activation is needed; without this optional step, the skill becomes available after the next registry reload or device restart.
 - `extra_files.references`, `extra_files.scripts`, and `extra_files.assets` are additional files that must be downloaded when present.
 - The installer script expects the model to pass the validated `extra_files` object directly from `_metadata.json`.
 - Do not guess or normalize a similar-looking title into a skill name. Ask the user for the exact skill name when needed.

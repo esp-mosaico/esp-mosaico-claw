@@ -3,8 +3,7 @@
   "name": "ai_create_quick",
   "description": "Answer a focused AI Create question concisely while retaining the normal agent capability loop.",
   "metadata": {
-    "cap_groups": [],
-    "manage_mode": "readonly"
+    "cap_groups": []
   }
 }
 ---

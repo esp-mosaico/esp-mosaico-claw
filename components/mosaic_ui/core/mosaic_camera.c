@@ -256,7 +256,7 @@ static esp_err_t camera_convert_frame(
     ppa_client_handle_t ppa,
     const mosaico_camera_frame_t *frame,
     uint8_t *output,
-    bool mirror_y)
+    bool mirror_x)
 {
     if (ppa == NULL || frame == NULL || frame->data == NULL || output == NULL) {
         return ESP_ERR_INVALID_ARG;
@@ -312,10 +312,86 @@ static esp_err_t camera_convert_frame(
         .rotation_angle = PPA_SRM_ROTATION_ANGLE_90,
         .scale_x = scale,
         .scale_y = scale,
-        .mirror_x = mirror_y,
+        .mirror_x = mirror_x,
         .mode = PPA_TRANS_MODE_BLOCKING,
     };
     return ppa_do_scale_rotate_mirror(ppa, &operation);
+}
+
+static esp_err_t camera_transform_capture(ppa_client_handle_t ppa, const mosaico_camera_frame_t *frame, bool mirror_x,
+                                          uint8_t **out_pixels, uint32_t *out_width, uint32_t *out_height)
+{
+    if (out_pixels == NULL || out_width == NULL || out_height == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *out_pixels = NULL;
+    *out_width = 0;
+    *out_height = 0;
+    if (ppa == NULL || frame == NULL || frame->data == NULL || frame->width == 0 || frame->height == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const uint64_t frame_bytes = (uint64_t)frame->width * frame->height * sizeof(uint16_t);
+    const uint32_t packed_stride = frame->width * sizeof(uint16_t);
+    if ((frame->bytes_per_line != 0 && frame->bytes_per_line != packed_stride) || frame_bytes > frame->size || frame_bytes > UINT32_MAX) {
+        ESP_LOGE(TAG, "invalid capture frame layout: %ux%u stride=%u size=%u", (unsigned)frame->width, (unsigned)frame->height,
+                 (unsigned)frame->bytes_per_line, (unsigned)frame->size);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    const ppa_srm_color_mode_t input_mode = camera_ppa_color_mode(frame->pixel_format);
+    if ((int)input_mode < 0) {
+        ESP_LOGE(TAG, "unsupported capture pixel format: 0x%08x", (unsigned)frame->pixel_format);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
+    uint8_t *pixels = heap_caps_aligned_alloc(MOSAIC_CAMERA_BUFFER_ALIGN, (size_t)frame_bytes,
+                                               MALLOC_CAP_DMA | MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (pixels == NULL) {
+        pixels = heap_caps_aligned_alloc(MOSAIC_CAMERA_BUFFER_ALIGN, (size_t)frame_bytes,
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    }
+    if (pixels == NULL) {
+        ESP_LOGE(TAG, "failed to allocate full-resolution capture buffer: %" PRIu64 " bytes", frame_bytes);
+        return ESP_ERR_NO_MEM;
+    }
+
+    const uint32_t width = frame->height;
+    const uint32_t height = frame->width;
+    const ppa_srm_oper_config_t operation = {
+        .in = {
+            .buffer = frame->data,
+            .pic_w = frame->width,
+            .pic_h = frame->height,
+            .block_w = frame->width,
+            .block_h = frame->height,
+            .srm_cm = input_mode,
+            .yuv_range = PPA_COLOR_RANGE_LIMIT,
+            .yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT601,
+        },
+        .out = {
+            .buffer = pixels,
+            .buffer_size = (uint32_t)frame_bytes,
+            .pic_w = width,
+            .pic_h = height,
+            .srm_cm = PPA_SRM_COLOR_MODE_RGB565,
+        },
+        .rotation_angle = PPA_SRM_ROTATION_ANGLE_90,
+        .scale_x = 1.0f,
+        .scale_y = 1.0f,
+        .mirror_x = mirror_x,
+        .mode = PPA_TRANS_MODE_BLOCKING,
+    };
+    const esp_err_t err = ppa_do_scale_rotate_mirror(ppa, &operation);
+    if (err != ESP_OK) {
+        heap_caps_free(pixels);
+        return err;
+    }
+
+    *out_pixels = pixels;
+    *out_width = width;
+    *out_height = height;
+    return ESP_OK;
 }
 
 static bool camera_take_capture_request(
@@ -398,15 +474,23 @@ static void camera_stop_registered_stream(void)
     }
 }
 
-static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels)
+static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels, uint32_t width, uint32_t height)
 {
+    if (path == NULL || pixels == NULL || width == 0 || height == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const uint64_t input_bytes_64 = (uint64_t)width * height * sizeof(uint16_t);
+    if (input_bytes_64 > UINT32_MAX) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const uint32_t input_bytes = (uint32_t)input_bytes_64;
     const jpeg_encode_memory_alloc_cfg_t memory = {
         .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
     };
     size_t output_capacity = 0;
-    uint8_t *output = jpeg_alloc_encoder_mem(
-        MOSAIC_CAMERA_FRAME_BYTES, &memory, &output_capacity);
-    if (output == NULL) {
+    uint8_t *output = jpeg_alloc_encoder_mem(input_bytes, &memory, &output_capacity);
+    if (output == NULL || output_capacity > UINT32_MAX) {
+        free(output);
         return ESP_ERR_NO_MEM;
     }
 
@@ -419,16 +503,14 @@ static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels)
     uint32_t output_size = 0;
     if (ret == ESP_OK) {
         const jpeg_encode_cfg_t encode_config = {
-            .height = MOSAIC_CAMERA_H,
-            .width = MOSAIC_CAMERA_W,
+            .height = height,
+            .width = width,
             .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
             .sub_sample = JPEG_DOWN_SAMPLING_YUV420,
             .image_quality = MOSAIC_CAMERA_JPEG_QUALITY,
             .pixel_reverse = false,
         };
-        ret = jpeg_encoder_process(
-            encoder, &encode_config, pixels, MOSAIC_CAMERA_FRAME_BYTES,
-            output, output_capacity, &output_size);
+        ret = jpeg_encoder_process(encoder, &encode_config, pixels, input_bytes, output, (uint32_t)output_capacity, &output_size);
     }
 
     FILE *file = NULL;
@@ -452,8 +534,7 @@ static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels)
     free(output);
 
     if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Photo saved: %s (%" PRIu32 " bytes)",
-                 path, output_size);
+        ESP_LOGI(TAG, "Photo saved: %s (%ux%u, %" PRIu32 " bytes)", path, (unsigned)width, (unsigned)height, output_size);
     } else {
         ESP_LOGE(TAG, "Save photo failed: %s (%s)",
                  path, esp_err_to_name(ret));
@@ -623,9 +704,32 @@ static void camera_capture_task(void *ctx)
             continue;
         }
 
-        err = camera_convert_frame(
-            ppa, &frame, s_camera.frames[slot].pixels,
-            camera_mirror_x_enabled());
+        const bool mirror_x = camera_mirror_x_enabled();
+        if (capture_requested) {
+            uint8_t *capture_pixels = NULL;
+            uint32_t capture_width = 0;
+            uint32_t capture_height = 0;
+            err = camera_transform_capture(ppa, &frame, mirror_x, &capture_pixels, &capture_width, &capture_height);
+            const esp_err_t release_err = mosaico_camera_return_frame(camera, &frame);
+            if (release_err != ESP_OK) {
+                ESP_LOGE(TAG, "camera capture frame release failed: %s", esp_err_to_name(release_err));
+            }
+            if (use_flash) {
+                (void)mosaico_camera_flash_stop(camera);
+                camera_restore_after_flash(camera, &flash_state);
+            }
+            frame_finish_write((size_t)slot, false);
+            if (err == ESP_OK) {
+                (void)camera_save_jpeg(capture_path, capture_pixels, capture_width, capture_height);
+            } else {
+                ESP_LOGE(TAG, "camera capture transform failed: %s", esp_err_to_name(err));
+            }
+            heap_caps_free(capture_pixels);
+            mosaic_camera_tick(ui);
+            continue;
+        }
+
+        err = camera_convert_frame(ppa, &frame, s_camera.frames[slot].pixels, mirror_x);
         if (err == ESP_OK) {
             camera_clear_preview_borders(s_camera.frames[slot].pixels);
         }
@@ -634,14 +738,6 @@ static void camera_capture_task(void *ctx)
         if (release_err != ESP_OK) {
             ESP_LOGE(TAG, "camera frame release failed: %s",
                      esp_err_to_name(release_err));
-        }
-        if (err == ESP_OK && capture_requested) {
-            (void)camera_save_jpeg(
-                capture_path, s_camera.frames[slot].pixels);
-        }
-        if (capture_requested && use_flash) {
-            (void)mosaico_camera_flash_stop(camera);
-            camera_restore_after_flash(camera, &flash_state);
         }
         const camera_vision_mode_t mode = camera_recognition_mode();
         if (mode != previous_mode) {

@@ -16,6 +16,7 @@
 #include "edge_agent_version.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -158,7 +159,15 @@ static esp_err_t get_snapshot(
     memset(ret_snapshot, 0, sizeof(*ret_snapshot));
     strlcpy(ret_snapshot->software_version, edge_agent_get_version(),
             sizeof(ret_snapshot->software_version));
-    esp_err_t err = app_settings_service_get_snapshot(service, snapshot);
+    uint8_t mac[6] = {0};
+    esp_err_t err = esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    if (err == ESP_OK) {
+        (void)snprintf(ret_snapshot->serial_number, sizeof(ret_snapshot->serial_number), "%02X:%02X:%02X:%02X:%02X:%02X",
+                       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    } else {
+        ESP_LOGW(TAG, "read device MAC failed: %s", esp_err_to_name(err));
+    }
+    err = app_settings_service_get_snapshot(service, snapshot);
     if (err == ESP_OK) {
         wifi_manager_status_t wifi = {0};
         wifi_manager_get_status(&wifi);

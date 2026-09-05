@@ -842,7 +842,7 @@ static const settings_detail_row_t s_about_rows[] = {
     {"Software", "--", false, false, false},
     {"GSP", "--", false, false, false},
     {"Display", "2.16\" 480×480", false, false, false},
-    {"Serial", "MSC-0427-8831", false, false, false},
+    {"Serial", "--", false, false, false},
     {"Update", "", false, true, true},
 };
 
@@ -899,6 +899,9 @@ static gsp_err_t settings_detail_bind_item(
                            GSP_VERSION_MAJOR, GSP_VERSION_MINOR,
                            GSP_VERSION_PATCH);
             value = value_text;
+            break;
+        case 4:
+            value = s_state.snapshot.serial_number[0] != '\0' ? s_state.snapshot.serial_number : "--";
             break;
         case 5:
             switch (s_state.snapshot.update.state) {

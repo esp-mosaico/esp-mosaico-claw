@@ -13,8 +13,9 @@
 
 #include "cJSON.h"
 #include "cap_lua.h"
+#include "claw_launcher.h"
 #include "claw_paths.h"
-#include "claw_skill.h"
+#include "claw_utils_file.h"
 #include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -34,12 +35,11 @@
 
 typedef struct {
     char *id;
+    char *display_name;
     char *entry;
     char *args_json;
-    char *exclusive;
     int order;
     bool builtin;
-    bool replace;
     works_runtime_state_t state;
     char job_id[CAP_LUA_JOB_ID_LEN];
     char last_error[WORKS_RUNTIME_ERROR_MAX];
@@ -70,7 +70,6 @@ typedef struct {
     size_t item_count;
     char *recent_ids[WORKS_RUNTIME_RECENT_LIMIT];
     size_t recent_count;
-    uint32_t registry_revision;
     uint32_t revision;
     bool recents_loaded;
     bool recent_dirty;
@@ -119,9 +118,9 @@ static void item_free(works_item_t *item)
         return;
     }
     free(item->id);
+    free(item->display_name);
     free(item->entry);
     free(item->args_json);
-    free(item->exclusive);
     memset(item, 0, sizeof(*item));
 }
 
@@ -172,12 +171,11 @@ static bool path_is_under(const char *path, const char *root)
            (path[root_len] == '/' || path[root_len] == '\0');
 }
 
-static esp_err_t collect_catalog(const claw_skill_catalog_entry_t *entry,
+static esp_err_t collect_catalog(const claw_launcher_entry_t *entry,
                                  void *user_ctx)
 {
     works_catalog_builder_t *builder = user_ctx;
-    if (!entry || !builder || !entry->execution ||
-            !entry->execution->visible || !entry->execution->entry) {
+    if (!entry || !builder || !entry->visible || !entry->entry) {
         return ESP_OK;
     }
     if (builder->count >= WORKS_CATALOG_LIMIT) {
@@ -200,22 +198,17 @@ static esp_err_t collect_catalog(const claw_skill_catalog_entry_t *entry,
     }
 
     works_item_t *item = &builder->items[builder->count];
-    item->id = strdup(entry->id);
-    item->entry = strdup(entry->execution->entry);
-    item->args_json = entry->execution->args_json
-                          ? strdup(entry->execution->args_json) : NULL;
-    item->exclusive = entry->execution->exclusive
-                          ? strdup(entry->execution->exclusive) : NULL;
-    if (!item->id || !item->entry ||
-            (entry->execution->args_json && !item->args_json) ||
-            (entry->execution->exclusive && !item->exclusive)) {
+    item->id = strdup(entry->skill_id);
+    item->display_name = strdup(entry->display_name ? entry->display_name : entry->skill_id);
+    item->entry = strdup(entry->entry);
+    item->args_json = entry->args_json ? strdup(entry->args_json) : NULL;
+    if (!item->id || !item->display_name || !item->entry ||
+            (entry->args_json && !item->args_json)) {
         item_free(item);
         return ESP_ERR_NO_MEM;
     }
-    item->order = entry->execution->order;
-    item->replace = entry->execution->replace;
-    item->builtin = path_is_under(entry->skill_dir,
-                                  claw_paths_get(CLAW_PATH_SYSTEM));
+    item->order = entry->order;
+    item->builtin = path_is_under(entry->entry, claw_paths_get(CLAW_PATH_SYSTEM));
     item->state = WORKS_RUNTIME_STOPPED;
     builder->count++;
     return ESP_OK;
@@ -245,11 +238,10 @@ static bool catalog_equal_locked(const works_item_t *items, size_t count)
         const works_item_t *old = &s_runtime.items[i];
         const works_item_t *next = &items[i];
         if (old->order != next->order || old->builtin != next->builtin ||
-                old->replace != next->replace ||
                 strcmp(old->id, next->id) != 0 ||
+                strcmp(old->display_name, next->display_name) != 0 ||
                 strcmp(old->entry, next->entry) != 0 ||
-                !optional_equal(old->args_json, next->args_json) ||
-                !optional_equal(old->exclusive, next->exclusive)) {
+                !optional_equal(old->args_json, next->args_json)) {
             return false;
         }
     }
@@ -427,37 +419,14 @@ esp_err_t works_runtime_flush(void)
 
     char directory[WORKS_PATH_MAX];
     char path[WORKS_PATH_MAX];
-    char temporary[WORKS_PATH_MAX];
     esp_err_t err = recent_paths(directory, sizeof(directory), path, sizeof(path));
     struct stat info = {0};
     if (err == ESP_OK && stat(directory, &info) != 0 &&
             mkdir(directory, 0755) != 0) {
         err = ESP_FAIL;
     }
-    if (err == ESP_OK && snprintf(temporary, sizeof(temporary), "%s.tmp", path) >=
-            (int)sizeof(temporary)) {
-        err = ESP_ERR_INVALID_SIZE;
-    }
-    FILE *file = err == ESP_OK ? fopen(temporary, "wb") : NULL;
-    if (!file) {
-        err = ESP_FAIL;
-    } else {
-        size_t length = strlen(rendered);
-        bool ok = fwrite(rendered, 1, length, file) == length &&
-                  fflush(file) == 0;
-        if (fclose(file) != 0) {
-            ok = false;
-        }
-        if (!ok) {
-            err = ESP_FAIL;
-            (void)remove(temporary);
-        } else {
-            (void)remove(path);
-            if (rename(temporary, path) != 0) {
-                err = ESP_FAIL;
-                (void)remove(temporary);
-            }
-        }
+    if (err == ESP_OK) {
+        err = claw_utils_file_write_atomic(path, rendered, strlen(rendered));
     }
     free(rendered);
     if (err != ESP_OK) {
@@ -579,29 +548,22 @@ static void execute_start(const works_command_t *command)
     cap_lua_async_config_t config = {0};
     char *path = NULL;
     char *args = NULL;
-    char *exclusive = NULL;
     char name[CAP_LUA_JOB_NAME_MAX];
     bool found = false;
     bool has_args = false;
-    bool has_exclusive = false;
 
     xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
     works_item_t *item = find_item_locked(command->skill_id);
     if (item) {
         found = true;
         has_args = item->args_json != NULL;
-        has_exclusive = item->exclusive != NULL;
         path = strdup(item->entry);
         args = item->args_json ? strdup(item->args_json) : NULL;
-        exclusive = item->exclusive ? strdup(item->exclusive) : NULL;
-        config.replace = item->replace;
     }
     xSemaphoreGive(s_runtime.lock);
-    if (!found || !path || (has_args && !args) ||
-            (has_exclusive && !exclusive)) {
+    if (!found || !path || (has_args && !args)) {
         free(path);
         free(args);
-        free(exclusive);
         xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
         item = find_item_locked(command->skill_id);
         uint32_t revision = 0;
@@ -620,7 +582,6 @@ static void execute_start(const works_command_t *command)
     config.path = path;
     config.args_json = args;
     config.name = name;
-    config.exclusive = exclusive;
     config.skill_id = command->skill_id;
     config.timeout_ms = 0;
     char output[WORKS_OUTPUT_BYTES] = {0};
@@ -641,7 +602,6 @@ static void execute_start(const works_command_t *command)
     }
     free(path);
     free(args);
-    free(exclusive);
 }
 
 static void execute_stop(const works_command_t *command)
@@ -699,18 +659,9 @@ esp_err_t works_runtime_refresh(void)
         return ESP_ERR_INVALID_STATE;
     }
     register_job_callback();
-    uint32_t registry_revision = 0;
-    ESP_RETURN_ON_ERROR(claw_skill_get_registry_revision(&registry_revision),
-                        TAG, "read skill registry revision");
-    xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
-    bool current = s_runtime.registry_revision == registry_revision;
-    xSemaphoreGive(s_runtime.lock);
-    if (current) {
-        return ESP_OK;
-    }
 
     works_catalog_builder_t builder = {0};
-    esp_err_t err = claw_skill_foreach_catalog_entry(collect_catalog, &builder);
+    esp_err_t err = claw_launcher_foreach_entry(collect_catalog, &builder);
     if (err != ESP_OK) {
         catalog_free(builder.items, builder.count);
         return err;
@@ -739,7 +690,6 @@ esp_err_t works_runtime_refresh(void)
         prune_recents_locked();
         changed = true;
     }
-    s_runtime.registry_revision = registry_revision;
     xSemaphoreGive(s_runtime.lock);
     catalog_free(builder.items, builder.count);
     if (changed) {
@@ -749,6 +699,15 @@ esp_err_t works_runtime_refresh(void)
         notify_changed(revision);
     }
     return ESP_OK;
+}
+
+static void works_launcher_changed(void *user_ctx)
+{
+    (void)user_ctx;
+    esp_err_t err = works_runtime_refresh();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "refresh launcher catalog failed: %s", esp_err_to_name(err));
+    }
 }
 
 esp_err_t works_runtime_init(const works_runtime_config_t *config)
@@ -786,6 +745,7 @@ esp_err_t works_runtime_init(const works_runtime_config_t *config)
     s_runtime.on_changed = config->on_changed;
     s_runtime.on_changed_ctx = config->user_ctx;
     xSemaphoreGive(s_runtime.lock);
+    ESP_RETURN_ON_ERROR(claw_launcher_register_changed_cb(works_launcher_changed, NULL), TAG, "register launcher listener");
     return works_runtime_refresh();
 }
 
@@ -816,6 +776,7 @@ static void snapshot_item(const works_item_t *item,
 {
     memset(out, 0, sizeof(*out));
     strlcpy(out->skill_id, item->id, sizeof(out->skill_id));
+    strlcpy(out->display_name, item->display_name, sizeof(out->display_name));
     out->builtin = item->builtin;
     out->state = item->state;
     strlcpy(out->last_error, item->last_error, sizeof(out->last_error));

@@ -58,7 +58,9 @@ idf_component_register(
         claw_core
         claw_memory
         claw_manager
+        claw_launcher
         claw_skill
+        claw_utils
         cap_lua
         cjson
         bt

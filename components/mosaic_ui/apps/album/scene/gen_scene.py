@@ -104,32 +104,21 @@ def visible_button(parent, x, y, w, h, text, *, name, bind, bg, fg, radius, size
 def toolbar_normal(objs, root):
     bar = len(objs)
     objs.append(layer(root, 0, 0, CONTENT_W, 64, name="album_toolbar_normal", bind="album_toolbar_normal_visible"))
-    objs.append(container(bar, 16, 26, 22, 22, bg="#FF4C01", radius=4,
+    objs.append(container(bar, 16, 21, 22, 22, bg="#FF4C01", radius=4,
                           name="album_app_marker"))
-    objs.append(label(bar, 52, 20, 130, 34, "Album", size=24,
+    objs.append(label(bar, 52, 15, 130, 34, "Album", size=24,
                       color="#D6D6DE", name="album_title"))
-    objs.append(button(bar, 218, 8, 66, 34, "Delete", bg="#000000", fg="#595959", radius=17, size=14, callback="album_disabled_action"))
-    objs.append(button(bar, 288, 8, 50, 34, "Info", bg="#000000", fg="#595959", radius=17, size=14, callback="album_disabled_action"))
-    objs.append(button(bar, 342, 8, 76, 34, "Select", bg="#181819", fg="#FCFCFF", radius=17, size=14, callback="album_select"))
+    objs.append(button(bar, 376, 12, 88, 40, "Select", bg="#181819", fg="#FCFCFF", radius=20, size=14, callback="album_select"))
 
 
 def toolbar_select(objs, root):
     bar = len(objs)
     objs.append(layer(root, 0, 0, CONTENT_W, 64, hidden=True, name="album_toolbar_select", bind="album_toolbar_select_visible"))
-    objs.append(label(bar, 10, 10, 178, 30, "0 selected", size=18, color="#FCFCFF", name="album_select_count", bind="album_select_count"))
-    objs.append(visible_button(bar, 200, 8, 50, 34, "Info", name="album_select_info_enabled",
-                               bind="album_select_info_enabled_visible", bg="#000000", fg="#D6D6DE",
-                               radius=17, size=14, callback="album_info", hidden=True))
-    objs.append(visible_button(bar, 200, 8, 50, 34, "Info", name="album_select_info_disabled",
-                               bind="album_select_info_disabled_visible", bg="#000000", fg="#595959",
-                               radius=17, size=14, callback="album_disabled_action"))
-    objs.append(button(bar, 258, 8, 76, 34, "Cancel", bg="#000000", fg="#D6D6DE", radius=17, size=14, callback="album_cancel_select"))
-    objs.append(visible_button(bar, 342, 8, 86, 34, "Delete", name="album_select_delete_enabled",
+    objs.append(button(bar, 16, 12, 72, 40, "Cancel", bg="#181819", fg="#D6D6DE", radius=20, size=14, callback="album_cancel_select"))
+    objs.append(label(bar, 152, 17, 176, 30, "0 selected", size=18, color="#FCFCFF", align="center", name="album_select_count", bind="album_select_count"))
+    objs.append(visible_button(bar, 392, 12, 72, 40, "Delete", name="album_select_delete_enabled",
                                bind="album_select_delete_enabled_visible", bg="#FF4C01", fg="#FCFCFF",
-                               radius=17, size=14, callback="album_delete", hidden=True))
-    objs.append(visible_button(bar, 342, 8, 86, 34, "Delete", name="album_select_delete_disabled",
-                               bind="album_select_delete_disabled_visible", bg="#2A2A2C", fg="#595959",
-                               radius=17, size=14, callback="album_disabled_action"))
+                               radius=20, size=14, callback="album_delete", hidden=True))
 
 
 def grid(objs, root):
@@ -180,9 +169,6 @@ def modal(objs, root):
     objs.append(label(card, 24, 22, 344, 30, "Details", size=24, color="#FCFCFF", name="album_modal_title", bind="album_modal_title"))
     objs.append(label(card, 24, 66, 344, 24, "file:", size=16, color="#91919B", name="album_detail_name", bind="album_detail_name"))
     objs.append(label(card, 24, 96, 344, 24, "size:", size=16, color="#91919B", name="album_detail_size", bind="album_detail_size"))
-    objs.append(label(card, 24, 126, 344, 24, "path:", size=16, color="#91919B", name="album_detail_path_0", bind="album_detail_path_0"))
-    objs.append(label(card, 24, 154, 344, 24, "", size=16, color="#91919B", name="album_detail_path_1", bind="album_detail_path_1"))
-    objs.append(label(card, 24, 182, 344, 24, "", size=16, color="#91919B", name="album_detail_path_2", bind="album_detail_path_2"))
     objs.append(button(card, 192, 220, 80, 36, "Cancel", bg="#2A2A2C", fg="#FCFCFF", radius=18, size=14, callback="album_cancel_modal"))
     objs.append(button(card, 284, 220, 84, 36, "Delete", bg="#FF4C01", fg="#FCFCFF", radius=18, size=14, callback="album_confirm_delete"))
 

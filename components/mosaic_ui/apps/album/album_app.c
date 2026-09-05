@@ -50,13 +50,11 @@
 
 typedef enum {
     ALBUM_MODAL_NONE = 0,
-    ALBUM_MODAL_DETAILS,
     ALBUM_MODAL_CONFIRM_DELETE,
 } album_modal_t;
 
 typedef struct {
     char path[ALBUM_PATH_MAX];
-    size_t size;
 } album_photo_t;
 
 typedef struct {
@@ -79,12 +77,6 @@ typedef struct {
 } album_state_t;
 
 static EXT_RAM_BSS_ATTR album_state_t s_album;
-
-static const uint16_t s_path_line_binds[] = {
-    GSP_BIND_ALBUM_DETAIL_PATH_0,
-    GSP_BIND_ALBUM_DETAIL_PATH_1,
-    GSP_BIND_ALBUM_DETAIL_PATH_2,
-};
 
 static uint32_t album_rgb565(uint8_t red, uint8_t green, uint8_t blue)
 {
@@ -136,7 +128,7 @@ static bool album_has_photo(const char *path)
     return false;
 }
 
-static void album_add_photo(const char *path, size_t size)
+static void album_add_photo(const char *path)
 {
     if (s_album.photo_count >= ALBUM_MAX_PHOTOS || album_has_photo(path)) {
         return;
@@ -148,7 +140,6 @@ static void album_add_photo(const char *path, size_t size)
         --s_album.photo_count;
         return;
     }
-    photo->size = size;
 }
 
 static bool album_join_path(const char *dir, const char *name, char *out, size_t out_size)
@@ -189,7 +180,7 @@ static void album_scan_dir_recursive(const char *dir_path, int depth)
         if (S_ISDIR(s_album.stat_buf.st_mode) && depth > 0) {
             album_scan_dir_recursive(child, depth - 1);
         } else if (S_ISREG(s_album.stat_buf.st_mode) && album_is_jpeg_path(child)) {
-            album_add_photo(child, (size_t)s_album.stat_buf.st_size);
+            album_add_photo(child);
         }
     }
     free(child);
@@ -427,25 +418,6 @@ static size_t album_selected_count(void)
     return count;
 }
 
-static size_t album_first_selected(void)
-{
-    for (size_t index = 0; index < s_album.photo_count; ++index) {
-        if (s_album.selected[index]) {
-            return index;
-        }
-    }
-    return SIZE_MAX;
-}
-
-static void album_clear_detail_lines(esp_gsp_handle_t ui)
-{
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_NAME, "");
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, "");
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_PATH_0, "");
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_PATH_1, "");
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_PATH_2, "");
-}
-
 static void album_clamp_indices(void)
 {
     if (s_album.active_index != SIZE_MAX && s_album.active_index >= s_album.photo_count) {
@@ -465,10 +437,7 @@ static void album_refresh_toolbar(esp_gsp_handle_t ui)
     bool has_selection = selected_count > 0;
     snprintf(text, sizeof(text), "%u selected", (unsigned)selected_count);
     (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_SELECT_COUNT, text);
-    (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_SELECT_INFO_ENABLED_VISIBLE, has_selection);
-    (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_SELECT_INFO_DISABLED_VISIBLE, !has_selection);
     (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_SELECT_DELETE_ENABLED_VISIBLE, has_selection);
-    (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_SELECT_DELETE_DISABLED_VISIBLE, !has_selection);
 }
 
 static void album_refresh_selection(esp_gsp_handle_t ui)
@@ -482,61 +451,6 @@ static void album_refresh_cells(esp_gsp_handle_t ui, bool force_images)
     album_clamp_indices();
     album_refresh_grid(ui);
     album_refresh_toolbar(ui);
-}
-
-static void album_set_path_lines(esp_gsp_handle_t ui, const char *path)
-{
-    size_t offset = 0;
-    size_t path_len = strlen(path);
-    for (size_t line_index = 0; line_index < sizeof(s_path_line_binds) / sizeof(s_path_line_binds[0]); ++line_index) {
-        char line[64] = { 0 };
-        if (offset < path_len) {
-            size_t copy_len = path_len - offset;
-            if (copy_len >= sizeof(line)) {
-                copy_len = sizeof(line) - 1;
-            }
-            memcpy(line, path + offset, copy_len);
-            offset += copy_len;
-        }
-        (void)esp_gsp_set_text(ui, s_path_line_binds[line_index], line);
-    }
-}
-
-static const char *album_basename(const char *path)
-{
-    const char *slash = strrchr(path, '/');
-    return slash != NULL ? slash + 1 : path;
-}
-
-static void album_show_details(esp_gsp_handle_t ui)
-{
-    size_t selected_count = album_selected_count();
-    if (selected_count == 0) {
-        return;
-    }
-
-    char text[80];
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_MODAL_TITLE, "Details");
-    album_clear_detail_lines(ui);
-    /* Details and delete actions only operate on explicit user selection. */
-    if (selected_count > 1) {
-        snprintf(text, sizeof(text), "%u items selected", (unsigned)selected_count);
-        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_NAME, text);
-    } else {
-        size_t index = album_first_selected();
-        if (index == SIZE_MAX) {
-            return;
-        }
-        const album_photo_t *photo = &s_album.photos[index];
-        snprintf(text, sizeof(text), "file: %s", album_basename(photo->path));
-        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_NAME, text);
-        snprintf(text, sizeof(text), "size: %llu bytes", (unsigned long long)photo->size);
-        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, text);
-        album_set_path_lines(ui, photo->path);
-    }
-    s_album.modal = ALBUM_MODAL_DETAILS;
-    (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_MODAL_VISIBLE, true);
-    album_refresh_grid(ui);
 }
 
 static void album_hide_modal(esp_gsp_handle_t ui)
@@ -558,9 +472,6 @@ static void album_show_delete_confirm(esp_gsp_handle_t ui)
     snprintf(text, sizeof(text), "Remove %u item%s?", (unsigned)count, count == 1 ? "" : "s");
     (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_NAME, text);
     (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, "This cannot be undone.");
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_PATH_0, "");
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_PATH_1, "");
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_PATH_2, "");
     (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_MODAL_VISIBLE, true);
     album_refresh_grid(ui);
 }
@@ -740,13 +651,8 @@ static esp_err_t album_handle_call(esp_gsp_handle_t ui, const mosaic_event_t *ev
         return ESP_OK;
     }
     switch (action_id) {
-    case GSP_ACT_ID_ALBUM_DISABLED_ACTION:
-        break;
     case GSP_ACT_ID_ALBUM_DELETE:
         album_show_delete_confirm(ui);
-        break;
-    case GSP_ACT_ID_ALBUM_INFO:
-        album_show_details(ui);
         break;
     case GSP_ACT_ID_ALBUM_SELECT:
         album_enter_select(ui);

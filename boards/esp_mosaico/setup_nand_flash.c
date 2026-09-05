@@ -355,15 +355,8 @@ static int nand_flash_init(void *config, int cfg_size, void **device_handle)
     }
     handle->mounted = true;
 
-    size_t total = 0;
-    size_t used = 0;
-    ret = esp_littlefs_blockdev_info(handle->wl_bdl, &total, &used);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "failed to query NAND LittleFS info: %s", esp_err_to_name(ret));
-    } else {
-        ESP_LOGI(TAG, "NAND LittleFS mounted at %s, cfg_chip_size=%" PRIu32 ", total=%zu, used=%zu",
-                 NAND_FLASH_MOUNT_PATH, (uint32_t)cfg->chip_size, total, used);
-    }
+    ESP_LOGI(TAG, "NAND LittleFS mounted at %s, cfg_chip_size=%" PRIu32,
+             NAND_FLASH_MOUNT_PATH, (uint32_t)cfg->chip_size);
 
     *device_handle = handle;
     return ESP_OK;

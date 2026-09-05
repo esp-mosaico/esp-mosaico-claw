@@ -22,6 +22,7 @@ extern "C" {
 #define MOSAIC_SETTINGS_LLM_MODEL_LEN   64U
 #define MOSAIC_SETTINGS_LLM_URL_LEN     160U
 #define MOSAIC_SETTINGS_VERSION_LEN      32U
+#define MOSAIC_SETTINGS_SERIAL_LEN       18U
 #define MOSAIC_SETTINGS_UPDATE_TITLE_LEN 96U
 #define MOSAIC_SETTINGS_UPDATE_SUMMARY_LEN 256U
 #define MOSAIC_SETTINGS_UPDATE_PUBLISHED_AT_LEN 40U
@@ -145,6 +146,7 @@ typedef struct {
 
 typedef struct {
     char software_version[MOSAIC_SETTINGS_VERSION_LEN];
+    char serial_number[MOSAIC_SETTINGS_SERIAL_LEN];
     uint16_t rotation;
     int brightness;
     int volume;

@@ -639,7 +639,8 @@ static esp_err_t app_cap_register_skill_mgr(const app_claw_config_t *config,
                                             const app_claw_storage_paths_t *paths)
 {
     (void)config;
-    return cap_skill_mgr_register_group(paths ? paths->skills_root_dir : NULL);
+    (void)paths;
+    return cap_skill_mgr_register_group();
 }
 #endif
 
@@ -783,7 +784,7 @@ static const app_capability_group_entry_t s_capability_group_entries[] = {
     { "cap_mcp_client", "MCP Client", "Register MCP client cap", false, NULL, app_cap_register_mcp_client },
 #endif
 #if CONFIG_APP_CLAW_CAP_SKILL_MGR
-    { "cap_skill", "Skill Manager", "Register skill cap", true, NULL, app_cap_register_skill_mgr },
+    { "cap_skill", "Skills", "Register skill capabilities", true, NULL, app_cap_register_skill_mgr },
 #endif
 #if CONFIG_APP_CLAW_CAP_SYSTEM
     { "cap_system", "System", "Register system cap", true, NULL, app_cap_register_system },
@@ -840,7 +841,7 @@ static const app_capability_group_info_t s_capability_group_infos[] = {
     { "cap_mcp_client", "MCP Client", false },
 #endif
 #if CONFIG_APP_CLAW_CAP_SKILL_MGR
-    { "cap_skill", "Skill Manager", true },
+    { "cap_skill", "Skills", true },
 #endif
 #if CONFIG_APP_CLAW_CAP_SYSTEM
     { "cap_system", "System", true },

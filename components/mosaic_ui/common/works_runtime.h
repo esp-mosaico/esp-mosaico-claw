@@ -16,6 +16,7 @@ extern "C" {
 #endif
 
 #define WORKS_RUNTIME_SKILL_ID_MAX 64U
+#define WORKS_RUNTIME_DISPLAY_NAME_MAX 64U
 #define WORKS_RUNTIME_ERROR_MAX    160U
 #define WORKS_RUNTIME_RECENT_LIMIT 4U
 
@@ -29,6 +30,7 @@ typedef enum {
 
 typedef struct {
     char skill_id[WORKS_RUNTIME_SKILL_ID_MAX];
+    char display_name[WORKS_RUNTIME_DISPLAY_NAME_MAX];
     bool builtin;
     works_runtime_state_t state;
     char last_error[WORKS_RUNTIME_ERROR_MAX];

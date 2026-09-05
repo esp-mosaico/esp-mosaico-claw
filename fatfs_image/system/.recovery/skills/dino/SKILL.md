@@ -7,8 +7,7 @@
     "category": ["game", "ui"],
     "tags": ["dino", "touch", "button", "gpio", "runner"],
     "peripherals": ["display"],
-    "cap_groups": ["cap_lua"],
-    "manage_mode": "web"
+    "cap_groups": ["cap_lua"]
   },
   "simulator": {
     "entry": "scripts/dino.lua",

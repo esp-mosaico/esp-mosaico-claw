@@ -4,16 +4,16 @@
   "description": "Create or update model-invoked functions/features/skills, workflows, and Lua-backed capabilities.",
   "metadata": {
     "cap_groups": [
-      "cap_skill"
-    ],
-    "manage_mode": "readonly"
+      "cap_files",
+      "cap_skill_manage"
+    ]
   }
 }
 ---
 
 # Skill Creator
 
-Use this skill to create, register, update, or remove reusable model-invoked skills, including tool-like workflows, project-specific features, and Lua-backed automations.
+Use this skill to create, publish, update, or remove reusable model-invoked skills, including tool-like workflows, project-specific features, and Lua-backed automations.
 
 ## Required Flow
 
@@ -22,8 +22,8 @@ Use this skill to create, register, update, or remove reusable model-invoked ski
 3. Read only the conditional references required by the task.
 4. Create the complete source files directly; do not use a preparation script or unchanged template.
 5. Validate metadata, paths, Lua invocation documentation, and any launcher references.
-6. Call `register_skill` after every required file exists.
-7. Report the registered id, launcher inclusion, and any required image rebuild, registry reload, or device restart.
+6. Call `publish_skill` after every required file exists.
+7. Report the published id, launcher inclusion, and any required image rebuild or device restart.
 
 ## Skill Contract
 
@@ -55,8 +55,7 @@ Use this pattern after deciding the final behavior, prerequisites, args, and scr
   "name": "skill_id",
   "description": "Describe the user-facing action, likely trigger wording, and critical prerequisites in one sentence.",
   "metadata": {
-    "cap_groups": ["cap_lua"],
-    "manage_mode": "readonly"
+    "cap_groups": ["cap_lua"]
   }
 }
 ---
@@ -95,18 +94,18 @@ Replace every placeholder with final behavior. Document the exact args, executio
 - For a launcher-visible skill, read `{CUR_SKILL_DIR}/references/launcher.md` before creating or publishing launcher configuration.
 - For a non-Lua skill without a launcher, do not load the Lua or launcher references.
 
-## Registration And Updates
+## Publication And Updates
 
 Ensure `skills/<skill_id>/SKILL.md` and all launcher-referenced files exist, then call:
 
 ```json
-{"skill_id":"weather_alerts","file":"weather_alerts/SKILL.md"}
+{"skill_id":"weather_alerts"}
 ```
 
-Call `register_skill` with `file` exactly `<skill_id>/SKILL.md` and treat its result as the registered metadata source of truth. Confirm launcher metadata when supplied.
+Call `publish_skill` with only `skill_id` and treat its result as the source of truth. Confirm launcher metadata when supplied.
 
-For updates, modify the existing source files and launcher configuration, call `unregister_skill` only when registry replacement requires it, then call `register_skill` with the same id and file.
+For updates, modify the existing source files and launcher configuration, then call `publish_skill` with the same id. Use `remove_skill` only when the user asks to delete the whole runtime skill.
 
 ## Failure Handling
 
-If writing files or calling `register_skill` is impossible, provide the target relative paths and complete contents, report the blocker, and do not claim completion. Stop and report the returned error when registration or unregistration fails.
+If writing files or calling `publish_skill` is impossible, provide the target relative paths and complete contents, report the blocker, and do not claim completion. Stop and report the returned error when publication or removal fails.

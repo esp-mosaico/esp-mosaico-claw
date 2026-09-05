@@ -7,8 +7,7 @@
     "category": ["game", "ui"],
     "tags": ["flappybird", "arcade", "demo", "button", "touch"],
     "peripherals": ["display"],
-    "cap_groups": ["cap_lua"],
-    "manage_mode": "web"
+    "cap_groups": ["cap_lua"]
   },
   "simulator": {
     "entry": "scripts/flappybird.lua",

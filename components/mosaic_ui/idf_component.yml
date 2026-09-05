@@ -25,6 +25,8 @@ dependencies:
     path: ../../third-party/esp-claw/components/claw_modules/claw_launcher
   claw_skill:
     path: ../../third-party/esp-claw/components/claw_modules/claw_skill
+  claw_utils:
+    path: ../../third-party/esp-claw/components/claw_modules/claw_utils
   cap_lua:
     path: ../../third-party/esp-claw/components/claw_capabilities/cap_lua
   lua_module_vision:

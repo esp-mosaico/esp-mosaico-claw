@@ -115,6 +115,11 @@ dependencies:
   claw_skill:
     path: ../../third-party/esp-claw/components/claw_modules/claw_skill
 
+  claw_launcher:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_SKILL_MGR} == True
+    path: ../../third-party/esp-claw/components/claw_modules/claw_launcher
+
   claw_utils:
     path: ../../third-party/esp-claw/components/claw_modules/claw_utils
 

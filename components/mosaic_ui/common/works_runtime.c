@@ -15,6 +15,7 @@
 #include "cap_lua.h"
 #include "claw_launcher.h"
 #include "claw_paths.h"
+#include "claw_utils_file.h"
 #include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -34,6 +35,7 @@
 
 typedef struct {
     char *id;
+    char *display_name;
     char *entry;
     char *args_json;
     int order;
@@ -116,6 +118,7 @@ static void item_free(works_item_t *item)
         return;
     }
     free(item->id);
+    free(item->display_name);
     free(item->entry);
     free(item->args_json);
     memset(item, 0, sizeof(*item));
@@ -196,9 +199,10 @@ static esp_err_t collect_catalog(const claw_launcher_entry_t *entry,
 
     works_item_t *item = &builder->items[builder->count];
     item->id = strdup(entry->skill_id);
+    item->display_name = strdup(entry->display_name ? entry->display_name : entry->skill_id);
     item->entry = strdup(entry->entry);
     item->args_json = entry->args_json ? strdup(entry->args_json) : NULL;
-    if (!item->id || !item->entry ||
+    if (!item->id || !item->display_name || !item->entry ||
             (entry->args_json && !item->args_json)) {
         item_free(item);
         return ESP_ERR_NO_MEM;
@@ -235,6 +239,7 @@ static bool catalog_equal_locked(const works_item_t *items, size_t count)
         const works_item_t *next = &items[i];
         if (old->order != next->order || old->builtin != next->builtin ||
                 strcmp(old->id, next->id) != 0 ||
+                strcmp(old->display_name, next->display_name) != 0 ||
                 strcmp(old->entry, next->entry) != 0 ||
                 !optional_equal(old->args_json, next->args_json)) {
             return false;
@@ -414,37 +419,14 @@ esp_err_t works_runtime_flush(void)
 
     char directory[WORKS_PATH_MAX];
     char path[WORKS_PATH_MAX];
-    char temporary[WORKS_PATH_MAX];
     esp_err_t err = recent_paths(directory, sizeof(directory), path, sizeof(path));
     struct stat info = {0};
     if (err == ESP_OK && stat(directory, &info) != 0 &&
             mkdir(directory, 0755) != 0) {
         err = ESP_FAIL;
     }
-    if (err == ESP_OK && snprintf(temporary, sizeof(temporary), "%s.tmp", path) >=
-            (int)sizeof(temporary)) {
-        err = ESP_ERR_INVALID_SIZE;
-    }
-    FILE *file = err == ESP_OK ? fopen(temporary, "wb") : NULL;
-    if (!file) {
-        err = ESP_FAIL;
-    } else {
-        size_t length = strlen(rendered);
-        bool ok = fwrite(rendered, 1, length, file) == length &&
-                  fflush(file) == 0;
-        if (fclose(file) != 0) {
-            ok = false;
-        }
-        if (!ok) {
-            err = ESP_FAIL;
-            (void)remove(temporary);
-        } else {
-            (void)remove(path);
-            if (rename(temporary, path) != 0) {
-                err = ESP_FAIL;
-                (void)remove(temporary);
-            }
-        }
+    if (err == ESP_OK) {
+        err = claw_utils_file_write_atomic(path, rendered, strlen(rendered));
     }
     free(rendered);
     if (err != ESP_OK) {
@@ -794,6 +776,7 @@ static void snapshot_item(const works_item_t *item,
 {
     memset(out, 0, sizeof(*out));
     strlcpy(out->skill_id, item->id, sizeof(out->skill_id));
+    strlcpy(out->display_name, item->display_name, sizeof(out->display_name));
     out->builtin = item->builtin;
     out->state = item->state;
     strlcpy(out->last_error, item->last_error, sizeof(out->last_error));

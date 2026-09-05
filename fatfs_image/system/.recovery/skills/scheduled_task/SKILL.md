@@ -7,8 +7,7 @@
       "cap_lua",
       "cap_scheduler",
       "cap_router_mgr"
-    ],
-    "manage_mode": "readonly"
+    ]
   }
 }
 ---

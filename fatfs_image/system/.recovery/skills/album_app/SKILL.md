@@ -7,8 +7,7 @@
     "category": ["game"],
     "tags": ["album", "gallery", "photo", "picture", "lvgl", "touch"],
     "peripherals": ["display"],
-    "cap_groups": ["cap_lua"],
-    "manage_mode": "web"
+    "cap_groups": ["cap_lua"]
   }
 }
 ---

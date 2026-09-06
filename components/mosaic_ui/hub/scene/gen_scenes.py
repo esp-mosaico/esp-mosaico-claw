@@ -851,7 +851,10 @@ def build_hub_objects():
     # navigation. Its input interceptor consumes every sample while visible.
     lock_screen = len(objs)
     objs.append(layer(
-        content, 0, 0, CONTENT_W, CONTENT_H,
+        content,
+        {'default': 0, 'min': 0, 'max': 1, 'property': 'x'},
+        {'default': 0, 'min': -CONTENT_H, 'max': 0, 'property': 'y'},
+        CONTENT_W, CONTENT_H,
         hidden=True, name='lock_screen', bind='lock_screen_visible',
         block_scene_swipe=True,
     ))

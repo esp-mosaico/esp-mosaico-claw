@@ -381,7 +381,7 @@ def build_apps1_content(objs, parent):
         {'name': 'app_settings', 'icon': 'settings', 'text': 'Settings',
          'callback': 'app_settings'},
         {'name': 'app_imu', 'icon': 'imu', 'text': 'IMU',
-         'callback': 'app_imu', 'visible_bind': 'app_slot_imu_visible'},
+         'callback': 'app_imu'},
         {'name': 'app_album', 'icon': 'album', 'text': 'Album',
          'callback': 'app_album'},
         {'name': 'app_music', 'icon': 'music', 'text': 'Music',

@@ -1476,24 +1476,6 @@ static void mosaic_hub_notif_bind(esp_gsp_handle_t ui)
     (void)gsp_mosaic_hub_notif_list_set_selected(ui, 0);
 }
 
-static void mosaic_hub_sync_app_slots(esp_gsp_handle_t ui)
-{
-    static const struct {
-        uint16_t action;
-        uint16_t bind;
-    } registry_slots[] = {
-        { GSP_ACT_ID_APP_IMU, GSP_BIND_APP_SLOT_IMU_VISIBLE },
-    };
-    for (size_t index = 0;
-         index < sizeof(registry_slots) / sizeof(registry_slots[0]);
-         ++index) {
-        const bool available = mosaic_app_descriptor_for_action(
-            registry_slots[index].action) != NULL;
-        (void)esp_gsp_set_visible(
-            ui, registry_slots[index].bind, available);
-    }
-}
-
 static void mosaic_hub_started(esp_gsp_handle_t ui)
 {
     s_hub_ui = ui;
@@ -1544,7 +1526,6 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
     mosaic_hub_weather_refresh(ui);
 #endif
     mosaic_hub_notif_bind(ui);
-    mosaic_hub_sync_app_slots(ui);
     mosaic_hub_quick_render(ui);
     bool slot_camera_occupied = false;
     if (mosaic_hub_take_quick_slot_camera(&slot_camera_occupied)) {

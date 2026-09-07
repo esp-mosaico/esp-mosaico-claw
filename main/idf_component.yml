@@ -4,8 +4,6 @@ dependencies:
     version: "^0.6"
     public: true
 
-  espressif/bq27220: "^0.1.0"
-
   app_claw:
     path: ../components/app_claw
 

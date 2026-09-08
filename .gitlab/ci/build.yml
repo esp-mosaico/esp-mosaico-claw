@@ -18,7 +18,7 @@
   artifacts:
     when: always
     paths:
-      - "build/build_log.txt"
+      - "build/log/*"
       - "build/*.bin"
       - "build/*.map"
       - "build/*.elf"
@@ -35,7 +35,7 @@
     - python -m pip install --disable-pip-version-check -r requirements.txt
     - idf.py --version
     - idf.py bmgr -c ./boards -b "$EXAMPLE_BOARD"
-    - idf.py build 2>&1 | tee build/build_log.txt
+    - idf.py build
 
 build_edge_agent:
   extends:

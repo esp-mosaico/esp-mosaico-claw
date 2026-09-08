@@ -165,7 +165,7 @@ static esp_err_t default_camera_activate(const mosaico_module_mgr_info_t *info)
 static void default_camera_module_event(mosaico_module_mgr_event_t event, const mosaico_module_mgr_info_t *info, void *user_data)
 {
     (void)user_data;
-    if (info == NULL || info->eeprom.board_type != MOSAICO_BOARD_TYPE_CAMERA) {
+    if (!s_default.initialized || info == NULL || info->eeprom.board_type != MOSAICO_BOARD_TYPE_CAMERA) {
         return;
     }
     if (event == MOSAICO_MODULE_MGR_EVENT_INSERTED) {
@@ -709,13 +709,11 @@ esp_err_t mosaico_camera_init(void)
         return ESP_ERR_NO_MEM;
     }
     s_default.initialized = true;
-    const mosaico_module_mgr_config_t config = {
-        .scan_period_ms = 1000,
-        .debounce_count = 3,
-        .event_callback = default_camera_module_event,
-    };
-    const esp_err_t ret = mosaico_module_mgr_init(&config);
+    // Subscribe before starting discovery; registration survives manager restarts.
+    esp_err_t ret = mosaico_module_mgr_subscribe(default_camera_module_event, NULL);
+    if (ret == ESP_OK) ret = mosaico_module_mgr_init(NULL);
     if (ret != ESP_OK) {
+        (void)mosaico_module_mgr_unsubscribe(default_camera_module_event);
         vSemaphoreDelete(s_default.lock);
         memset(&s_default, 0, sizeof(s_default));
         ESP_LOGE(TAG, "Initialize module manager failed: %s", esp_err_to_name(ret));
@@ -765,6 +763,7 @@ esp_err_t mosaico_camera_deinit(void)
         return ret;
     }
     ESP_RETURN_ON_ERROR(mosaico_module_mgr_deinit(), TAG, "deinitialize module manager failed");
+    (void)mosaico_module_mgr_unsubscribe(default_camera_module_event);
     vSemaphoreDelete(s_default.lock);
     memset(&s_default, 0, sizeof(s_default));
     return ESP_OK;

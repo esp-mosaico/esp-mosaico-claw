@@ -84,6 +84,14 @@ typedef struct {
  */
 esp_err_t bsp_subboard_init(void);
 
+typedef struct {
+    gpio_num_t ldr_io, ir_io, key_l_io, key_r_io, pir_io, ws2812_io;
+    uint8_t led_count, eeprom_addr;
+    bool rotated_180;
+} bsp_subboard_interact_config_t;
+
+esp_err_t bsp_subboard_interact_get_config(bsp_subboard_slot_t slot, bsp_subboard_interact_config_t *out_config);
+
 /**
  * @brief Return the shared I2C bus used for subboard discovery and control
  *

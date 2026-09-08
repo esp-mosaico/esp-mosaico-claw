@@ -13,6 +13,8 @@ dependencies:
     path: ../cap_im_ai_create
   mosaico_camera:
     path: ../mosaico_camera
+  mosaico_interact:
+    path: ../mosaico_interact
   weather_service:
     path: ../weather_service
   claw_core:

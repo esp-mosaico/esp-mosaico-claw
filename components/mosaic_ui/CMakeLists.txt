@@ -69,6 +69,7 @@ idf_component_register(
         espressif__esp_asrc
         espressif__esp_bt_audio
         mosaico_camera
+        mosaico_interact
         lua_module_vision
         tda-2030__esp_vision_core
         weather_service

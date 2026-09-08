@@ -17,9 +17,6 @@
 #include "air_battle_objects.h"
 #include "chiptune.h"
 #include "chiptune_bgm.h"
-#include "esp_gsp_debug.h"
-#include "esp_log.h"
-#include "esp_timer.h"
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
 #include "mosaic_runtime.h"
@@ -1982,140 +1979,11 @@ static void render_overlay(esp_gsp_handle_t ui)
     s_render.overlay_state = s_game.state;
 }
 
-#ifndef AIR_BATTLE_PROFILE
-#define AIR_BATTLE_PROFILE 1
-#endif
-
-#if AIR_BATTLE_PROFILE
-
-/*
- * Lightweight per-tick profiler. Enabled by default; disable with
- * `-DAIR_BATTLE_PROFILE=0` at compile time. Only samples timer-driven
- * frames (steady state) to keep numbers meaningful; flushes an ESP_LOGI
- * line roughly once per second with avg / max microseconds per phase.
- */
-
-static const char *AIR_BATTLE_TAG = "air_battle";
-
-typedef struct {
-    uint32_t frames;
-    int64_t last_report_us;
-    int64_t sum_tick_us,     max_tick_us;
-    int64_t sum_sim_us,      max_sim_us;
-    int64_t sum_render_us,   max_render_us;
-    int64_t sum_gameplay_us, max_gameplay_us;
-    int64_t sum_hud_us,      max_hud_us;
-    int64_t sum_overlay_us,  max_overlay_us;
-    /* Baseline snapshots of GSP-side cumulative counters. Deltas across
-     * a report window reveal the real display frame rate (which can be
-     * much lower than the CPU-side submission rate), plus how much of
-     * each second the render task was actually busy rasterizing and
-     * pushing pixels over SPI. */
-    uint32_t base_gpu_frames;
-    uint64_t base_gpu_busy_us;
-    uint64_t base_gpu_render_us;
-    uint64_t base_gpu_submit_us;
-} air_battle_prof_t;
-
-static air_battle_prof_t s_prof;
-/* Set only around the timer-driven render() call so pointer/UI-driven
- * renders don't skew the render sub-part statistics. */
-static bool s_prof_collect;
-
-static inline void prof_accum(int64_t *sum, int64_t *max, int64_t v)
-{
-    *sum += v;
-    if (v > *max) {
-        *max = v;
-    }
-}
-
-static void prof_snapshot_gpu(esp_gsp_handle_t ui)
-{
-    uint32_t frames = 0;
-    uint64_t busy_us = 0;
-    uint64_t render_us = 0;
-    uint64_t submit_us = 0;
-    esp_gsp_render_stats(ui, &frames, &busy_us);
-    esp_gsp_render_phases(ui, &render_us, &submit_us);
-    s_prof.base_gpu_frames = frames;
-    s_prof.base_gpu_busy_us = busy_us;
-    s_prof.base_gpu_render_us = render_us;
-    s_prof.base_gpu_submit_us = submit_us;
-}
-
-static void prof_reset(esp_gsp_handle_t ui)
-{
-    memset(&s_prof, 0, sizeof(s_prof));
-    s_prof.last_report_us = esp_timer_get_time();
-    prof_snapshot_gpu(ui);
-}
-
-static void prof_flush_if_due(esp_gsp_handle_t ui, int64_t now_us)
-{
-    if (s_prof.frames == 0) return;
-    const int64_t elapsed_us = now_us - s_prof.last_report_us;
-    if (elapsed_us < 1000000) return;
-
-    uint32_t gpu_frames_now = 0;
-    uint64_t gpu_busy_us_now = 0;
-    uint64_t gpu_render_us_now = 0;
-    uint64_t gpu_submit_us_now = 0;
-    esp_gsp_render_stats(ui, &gpu_frames_now, &gpu_busy_us_now);
-    esp_gsp_render_phases(ui, &gpu_render_us_now, &gpu_submit_us_now);
-    const uint32_t d_frames = gpu_frames_now - s_prof.base_gpu_frames;
-    const uint64_t d_busy   = gpu_busy_us_now - s_prof.base_gpu_busy_us;
-    const uint64_t d_render = gpu_render_us_now - s_prof.base_gpu_render_us;
-    const uint64_t d_submit = gpu_submit_us_now - s_prof.base_gpu_submit_us;
-    /* Normalise busy/render/submit to "ms of activity per second of
-     * wall time" so a value of 1000 means the render task was fully
-     * saturated during the last window. */
-    const int64_t disp_fps    = (int64_t)d_frames * 1000000 / elapsed_us;
-    const int64_t busy_ms_s   = (int64_t)(d_busy   / 1000) * 1000000 / elapsed_us;
-    const int64_t render_ms_s = (int64_t)(d_render / 1000) * 1000000 / elapsed_us;
-    const int64_t submit_ms_s = (int64_t)(d_submit / 1000) * 1000000 / elapsed_us;
-
-    const uint32_t n = s_prof.frames;
-    ESP_LOGI(AIR_BATTLE_TAG,
-        "prof tick=%uHz disp=%lldfps busy=%lldms/s (raster=%lld spi=%lld) "
-        "| tick avg=%lldus max=%lldus | sim avg=%lldus max=%lldus "
-        "| render avg=%lldus max=%lldus "
-        "(gp %lld/%lld hud %lld/%lld ov %lld/%lld)",
-        (unsigned)n, (long long)disp_fps,
-        (long long)busy_ms_s, (long long)render_ms_s, (long long)submit_ms_s,
-        (long long)(s_prof.sum_tick_us / n),     (long long)s_prof.max_tick_us,
-        (long long)(s_prof.sum_sim_us / n),      (long long)s_prof.max_sim_us,
-        (long long)(s_prof.sum_render_us / n),   (long long)s_prof.max_render_us,
-        (long long)(s_prof.sum_gameplay_us / n), (long long)s_prof.max_gameplay_us,
-        (long long)(s_prof.sum_hud_us / n),      (long long)s_prof.max_hud_us,
-        (long long)(s_prof.sum_overlay_us / n),  (long long)s_prof.max_overlay_us);
-    prof_reset(ui);
-}
-
-#endif  /* AIR_BATTLE_PROFILE */
-
 static void render(esp_gsp_handle_t ui)
 {
-#if AIR_BATTLE_PROFILE
-    const bool sample = s_prof_collect;
-    const int64_t t0 = sample ? esp_timer_get_time() : 0;
-    render_gameplay(ui);
-    const int64_t t1 = sample ? esp_timer_get_time() : 0;
-    render_hud(ui);
-    const int64_t t2 = sample ? esp_timer_get_time() : 0;
-    render_overlay(ui);
-    const int64_t t3 = sample ? esp_timer_get_time() : 0;
-    if (sample) {
-        prof_accum(&s_prof.sum_gameplay_us, &s_prof.max_gameplay_us, t1 - t0);
-        prof_accum(&s_prof.sum_hud_us,      &s_prof.max_hud_us,      t2 - t1);
-        prof_accum(&s_prof.sum_overlay_us,  &s_prof.max_overlay_us,  t3 - t2);
-        prof_accum(&s_prof.sum_render_us,   &s_prof.max_render_us,   t3 - t0);
-    }
-#else
     render_gameplay(ui);
     render_hud(ui);
     render_overlay(ui);
-#endif
     s_render.valid = true;
 }
 
@@ -2175,9 +2043,6 @@ static void air_battle_started(esp_gsp_handle_t ui)
     reset_idle();
     (void)chiptune_engine_start();
     battle_audio_stop();
-#if AIR_BATTLE_PROFILE
-    prof_reset(ui);
-#endif
 }
 
 static void air_battle_stopping(esp_gsp_handle_t ui)
@@ -2198,26 +2063,10 @@ static void air_battle_event(
         invalidate_render_cache();
         render(ui);
         break;
-    case MOSAIC_EVENT_TIMER: {
-#if AIR_BATTLE_PROFILE
-        const int64_t t_start = esp_timer_get_time();
-#endif
+    case MOSAIC_EVENT_TIMER:
         sim_step(16);
-#if AIR_BATTLE_PROFILE
-        const int64_t t_after_sim = esp_timer_get_time();
-        s_prof_collect = true;
-#endif
         render(ui);
-#if AIR_BATTLE_PROFILE
-        s_prof_collect = false;
-        const int64_t t_end = esp_timer_get_time();
-        prof_accum(&s_prof.sum_sim_us,  &s_prof.max_sim_us,  t_after_sim - t_start);
-        prof_accum(&s_prof.sum_tick_us, &s_prof.max_tick_us, t_end - t_start);
-        s_prof.frames++;
-        prof_flush_if_due(ui, t_end);
-#endif
         break;
-    }
     case MOSAIC_EVENT_POINTER:
         on_pointer(ui, event);
         break;
@@ -2233,7 +2082,7 @@ static void air_battle_event(
 
 const mosaic_app_descriptor_t mosaic_air_battle_app = {
     .id = AIR_BATTLE_APP_ID,
-    .launch_action = GSP_ACT_ID_APP_DYNAMIC_3,
+    .launch_action = GSP_ACT_ID_APP_DYNAMIC_1,
     .back_action = MOSAIC_APP_SHELL_BACK_ACTION,
     .routes = s_air_battle_routes,
     .route_count = sizeof(s_air_battle_routes) /

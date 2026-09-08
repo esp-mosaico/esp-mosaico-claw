@@ -614,7 +614,8 @@ static gsp_err_t settings_detail_bind_item(
             value = value_text;
             break;
         case 4:
-            value = s_state.snapshot.serial_number[0] != '\0' ? s_state.snapshot.serial_number : "--";
+            value = s_state.device.lifecycle.serial_number[0] != '\0'
+                ? s_state.device.lifecycle.serial_number : "--";
             break;
         case 5:
             switch (s_state.device.update.state) {

@@ -377,6 +377,8 @@ static esp_err_t lifecycle_read(
     mosaic_cap_lifecycle_t *out = out_payload;
     copy_field(out->software_version, sizeof(out->software_version),
         snapshot->software_version);
+    copy_field(out->serial_number, sizeof(out->serial_number),
+        snapshot->serial_number);
     free(snapshot);
     return ESP_OK;
 }

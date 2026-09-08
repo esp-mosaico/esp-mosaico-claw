@@ -149,7 +149,6 @@ HUB_IMAGES = [
     (f'{ASSETS}/icons/skills.png', 118, 118),
     (f'{ASSETS}/icons/album.png', 118, 118),
     (f'{ASSETS}/icons/music.png', 118, 118),
-    (f'{ASSETS}/icons/bricks.png', 118, 118),
     (f'{ASSETS}/icons/weather.png', 118, 118),
     (f'{ASSETS}/icons/calculator.png', 118, 118),
     (f'{ASSETS}/icons/air_battle.png', 118, 118),
@@ -395,27 +394,40 @@ def build_apps1_content(objs, parent):
          'callback': 'app_album'},
         {'name': 'app_music', 'icon': 'music', 'text': 'Music',
          'callback': 'app_music'},
-        {'name': 'app_breakout', 'icon': 'bricks', 'text': 'Bricks',
-         'callback': 'app_dynamic_1',
-         'visible_bind': 'app_slot_breakout_visible'},
+        {'name': 'app_air_battle', 'icon': 'air_battle', 'text': 'Sky Shooter',
+         'callback': 'app_dynamic_1'},
         {'name': 'app_weather', 'icon': 'weather', 'text': 'Weather',
          'callback': 'app_weather'},
     ))
 
 
+# Compile-time icon binding for dynamic slots that host a known native App.
+# The catalog still owns visibility + title at runtime; only the icon asset is
+# baked in so the slot looks like a proper App instead of the generic 'APP'
+# placeholder used by unclaimed slots.
+_DYNAMIC_SLOT_ICONS = {
+    2: 'calculator',
+}
+
+
 def build_dynamic_apps_content(objs, parent):
     """Installable Apps page; every cell is populated from the catalog."""
-    place_app_grid(objs, parent, tuple(
-        {
+    def _slot(slot):
+        entry = {
             'name': f'app_dynamic_{slot}',
             'text': 'App',
-            'button_text': 'APP',
             'callback': f'app_dynamic_{slot}',
             'visible_bind': f'app_slot_dynamic_{slot}_visible',
             'title_bind': f'app_slot_dynamic_{slot}_title',
         }
-        for slot in range(2, 6)
-    ))
+        icon = _DYNAMIC_SLOT_ICONS.get(slot)
+        if icon is not None:
+            entry['icon'] = icon
+        else:
+            entry['button_text'] = 'APP'
+        return entry
+
+    place_app_grid(objs, parent, tuple(_slot(slot) for slot in range(2, 6)))
 
 
 def build_quick_content(objs, parent):
@@ -794,9 +806,9 @@ def build_hub_objects():
     objs, content = shared_prefix(HUB_IMAGES, FONT_POLICIES, BOLD)
 
     # Callback IDs are the sorted callback-name ABI consumed by installed App
-    # manifests. Breakout moved to dynamic slot 1, but its former callback must
-    # remain reserved or every later launcher ID (including IMU) would shift.
-    # The resource seed is hidden and cannot receive input.
+    # manifests. Breakout is gone, but its former callback must remain reserved
+    # or every later launcher ID (including IMU) would shift. The resource seed
+    # is hidden and cannot receive input.
     objs.append(button(
         2, 0, 0, 1, 1, '', name='reserved_app_breakout_action',
         callback='app_breakout'))

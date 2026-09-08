@@ -114,6 +114,7 @@ typedef struct {
 /* ---------------- system.update ---------------- */
 
 #define MOSAIC_CAP_VERSION_LEN 32U
+#define MOSAIC_CAP_SERIAL_LEN  18U
 #define MOSAIC_CAP_UPDATE_TITLE_LEN 96U
 #define MOSAIC_CAP_UPDATE_SUMMARY_LEN 256U
 #define MOSAIC_CAP_UPDATE_PUBLISHED_AT_LEN 40U
@@ -145,6 +146,7 @@ typedef enum {
 
 typedef struct {
     char software_version[MOSAIC_CAP_VERSION_LEN];
+    char serial_number[MOSAIC_CAP_SERIAL_LEN];
 } mosaic_cap_lifecycle_t;
 
 typedef enum {

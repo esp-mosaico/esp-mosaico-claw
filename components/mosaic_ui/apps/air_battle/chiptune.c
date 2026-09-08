@@ -34,7 +34,7 @@
 
 /* Per-voice int16 peak.  6 * VOICE_PEAK is the worst-case mix bus; keep well
  * under INT16_MAX to avoid soft-clipping when every voice hits at once. */
-#define CHIPTUNE_VOICE_PEAK         300
+#define CHIPTUNE_VOICE_PEAK         600
 
 /* Amp slew per sample: VOICE_PEAK / AMP_SLEW = samples to cross full range,
  * ~a few ms at 16 kHz -- fast enough to feel immediate, slow enough to kill

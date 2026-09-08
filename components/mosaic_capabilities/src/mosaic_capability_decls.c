@@ -212,6 +212,8 @@ static const mosaic_capability_command_t s_update_commands[] = {
 static const mosaic_capability_field_t s_lifecycle_fields[] = {
     MOSAIC_CAP_FIELD(
         mosaic_cap_lifecycle_t, software_version, MOSAIC_CAP_FIELD_STRING),
+    MOSAIC_CAP_FIELD(
+        mosaic_cap_lifecycle_t, serial_number, MOSAIC_CAP_FIELD_STRING),
 };
 
 static const mosaic_capability_contract_t s_lifecycle_contract =

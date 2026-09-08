@@ -5,8 +5,7 @@
   "metadata": {
     "cap_groups": [
       "cap_lua"
-    ],
-    "manage_mode": "readonly"
+    ]
   }
 }
 ---

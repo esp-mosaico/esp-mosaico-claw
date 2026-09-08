@@ -1,8 +1,4 @@
 version: "0.1.0"
-description: Managed OV3640 DVP camera subboard for ESP32-S31-Mosaico
-
-targets:
-  - esp32s31
 
 dependencies:
   idf: ">=5.5"
@@ -14,6 +10,3 @@ dependencies:
     path: ../mosaico_module_mgr
 
   espressif/esp_board_manager: "^0.6"
-
-  esp_video:
-    path: ../../third-party/esp-claw/components/common/esp_video

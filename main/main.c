@@ -801,7 +801,7 @@ static void main_restore_display_brightness(void)
 
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE && CONFIG_ESP_BOARD_ESP_MOSAICO
 #define MOSAICO_BOOT_SPLASH_BRIGHTNESS_PERCENT 40U
-#define MOSAICO_BOOT_BRIGHTNESS_FADE_MS        240U
+#define MOSAICO_BOOT_BRIGHTNESS_FADE_MS        80U
 
 static void main_prepare_display_brightness_fade(void)
 {
@@ -849,7 +849,9 @@ void app_main(void)
     /* Audio mixer/capture acquire their board devices through the hardware
      * registry. Initialize it before either service attempts a claim. */
     ESP_ERROR_CHECK(claw_hw_registry_init());
+#if !CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     ESP_ERROR_CHECK(mosaico_camera_init());
+#endif
     ESP_ERROR_CHECK(app_fs_init());
 
     if (factory_reset_pending) {
@@ -954,6 +956,7 @@ void app_main(void)
                  "bindings, audio/ASR, capabilities, and agent not started");
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
         ESP_ERROR_CHECK(mosaic_ui_start());
+        ESP_ERROR_CHECK(mosaico_camera_init());
         esp_err_t battery_monitor_err =
             mosaic_settings_platform_start_battery_monitor();
         if (battery_monitor_err != ESP_OK) {
@@ -966,6 +969,10 @@ void app_main(void)
                      esp_err_to_name(button_err));
         }
 #endif
+        esp_err_t recovery_err = app_fs_wait_recovery();
+        if (recovery_err != ESP_OK) {
+            ESP_LOGW(TAG, "DATA recovery incomplete: %s", esp_err_to_name(recovery_err));
+        }
         app_free_runtime_state();
         return;
     }
@@ -1072,6 +1079,23 @@ void app_main(void)
     ESP_ERROR_CHECK(app_cap_system_platform_init(s_app_settings));
     ESP_ERROR_CHECK(app_claw_set_save_config_callback(main_save_claw_config, NULL));
     ESP_ERROR_CHECK(app_claw_set_network_ready_callback(main_network_ready, NULL));
+#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
+    /* Bring up the interactive UI before the heavier Claw runtime initialization. */
+    ESP_ERROR_CHECK(mosaic_ui_start());
+    ESP_ERROR_CHECK(mosaico_camera_init());
+    esp_err_t battery_monitor_err = mosaic_settings_platform_start_battery_monitor();
+    if (battery_monitor_err != ESP_OK) {
+        ESP_LOGW(TAG, "battery monitor unavailable: %s", esp_err_to_name(battery_monitor_err));
+    }
+    esp_err_t button_err = mosaic_button_platform_init();
+    if (button_err != ESP_OK) {
+        ESP_LOGW(TAG, "Mosaic buttons unavailable: %s", esp_err_to_name(button_err));
+    }
+#endif
+    esp_err_t recovery_err = app_fs_wait_recovery();
+    if (recovery_err != ESP_OK) {
+        ESP_LOGW(TAG, "DATA recovery incomplete before Claw start: %s", esp_err_to_name(recovery_err));
+    }
     ESP_ERROR_CHECK(app_claw_start(s_claw_config));
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     ESP_ERROR_CHECK(weather_service_start());
@@ -1089,21 +1113,6 @@ void app_main(void)
 #endif
 #if CONFIG_APP_CLAW_CAP_IM_LOCAL
     ESP_ERROR_CHECK(http_server_webim_bind_im());
-#endif
-
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-    ESP_ERROR_CHECK(mosaic_ui_start());
-    esp_err_t battery_monitor_err =
-        mosaic_settings_platform_start_battery_monitor();
-    if (battery_monitor_err != ESP_OK) {
-        ESP_LOGW(TAG, "battery monitor unavailable: %s",
-                 esp_err_to_name(battery_monitor_err));
-    }
-    esp_err_t button_err = mosaic_button_platform_init();
-    if (button_err != ESP_OK) {
-        ESP_LOGW(TAG, "Mosaic buttons unavailable: %s",
-                 esp_err_to_name(button_err));
-    }
 #endif
 
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE

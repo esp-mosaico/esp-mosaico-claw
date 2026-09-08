@@ -773,7 +773,7 @@ def _build_about(objs, page):
                     value_x=180, value_w=256)
     _web_static_row(objs, page, 264, "Display", "2.16 in · 480×480",
                     value_x=180, value_w=256)
-    _web_static_row(objs, page, 364, "Serial Number", "MSC-0427-8831",
+    _web_static_row(objs, page, 364, "Serial Number", "--",
                     value_x=180, value_w=256)
 
 

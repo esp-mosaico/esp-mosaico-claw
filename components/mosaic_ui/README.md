@@ -39,6 +39,6 @@ Notification Center, and Insert Notice. Launcher owns its nested PageFlow.
 AOD and CHRG are two mutually exclusive modes of the top-level `lock_screen`
 visibility group; they are not StackView pages and never participate in
 PageFlow transforms. While visible, the Hub input interceptor consumes every
-pointer sample, with only the demo mode button and tap/swipe-up unlock handled
-locally. Hiding Lock Screen therefore resumes the exact StackView/PageFlow
-state that was present before locking.
+pointer sample, with only the demo mode button and drag-follow swipe-up unlock
+handled locally. Hiding Lock Screen after the exit animation therefore resumes
+the exact StackView/PageFlow state that was present before locking.

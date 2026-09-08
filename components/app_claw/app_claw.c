@@ -13,6 +13,7 @@
 #endif
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,7 @@
 #include "claw_memory.h"
 #endif
 #if CONFIG_APP_CLAW_CAP_SKILL_MGR
+#include "claw_launcher.h"
 #include "claw_skill.h"
 #endif
 #include "esp_check.h"
@@ -52,6 +54,7 @@
 #endif
 
 static const char *TAG = "app_claw";
+
 #if CONFIG_APP_CLAW_CAP_EVENT_ROUTER
 static const char *APP_STARTUP_EVENT_SOURCE_CAP = "app_claw";
 static const char *APP_STARTUP_EVENT_TYPE = "startup";
@@ -104,6 +107,69 @@ static const char *APP_STARTUP_EVENT_KEY = "boot_completed";
 #define APP_CLAW_LAUNCHER_OUTPUT_LEN 128
 #define APP_CLAW_UI_JOBS_OUTPUT_LEN 4096
 #define APP_CLAW_UI_JOB_STOP_WAIT_MS 50
+
+#if CONFIG_APP_CLAW_CAP_CORE && CONFIG_APP_CLAW_CAP_SKILL_MGR
+typedef struct {
+    char *text;
+    size_t length;
+} app_claw_skills_list_builder_t;
+
+static esp_err_t app_claw_append_skill(const claw_skill_catalog_entry_t *entry, void *user_ctx)
+{
+    app_claw_skills_list_builder_t *builder = user_ctx;
+    if (!entry || !builder) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    const char *id = entry->id ? entry->id : "";
+    const char *summary = entry->summary ? entry->summary : "";
+    int added = snprintf(NULL, 0, "- %s: %s\n", id, summary);
+    if (added < 0 || SIZE_MAX - builder->length <= (size_t)added) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    char *grown = realloc(builder->text, builder->length + (size_t)added + 1);
+    if (!grown) {
+        return ESP_ERR_NO_MEM;
+    }
+    builder->text = grown;
+    snprintf(builder->text + builder->length, (size_t)added + 1, "- %s: %s\n", id, summary);
+    builder->length += (size_t)added;
+    return ESP_OK;
+}
+
+static esp_err_t app_claw_skills_list_collect(const claw_core_request_t *request, claw_core_context_t *out_context, void *user_ctx)
+{
+    static const char heading[] = "Available skills:\n";
+    app_claw_skills_list_builder_t builder = {
+        .text = strdup(heading),
+        .length = sizeof(heading) - 1,
+    };
+
+    (void)request;
+    (void)user_ctx;
+    if (!out_context) {
+        free(builder.text);
+        return ESP_ERR_INVALID_ARG;
+    }
+    memset(out_context, 0, sizeof(*out_context));
+    if (!builder.text) {
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t err = claw_skill_foreach_catalog_entry(app_claw_append_skill, &builder);
+    if (err != ESP_OK) {
+        free(builder.text);
+        return err;
+    }
+    out_context->kind = CLAW_CORE_CONTEXT_KIND_SYSTEM_PROMPT;
+    out_context->content = builder.text;
+    return ESP_OK;
+}
+
+static const claw_core_context_provider_t s_app_claw_skills_list_provider = {
+    .name = "Skills List",
+    .collect = app_claw_skills_list_collect,
+};
+#endif
 
 #if CONFIG_APP_CLAW_SYSTEM_UI_ENABLE && CONFIG_APP_CLAW_CAP_LUA
 static char *app_claw_split_job_field(char **cursor)
@@ -603,6 +669,20 @@ static esp_err_t init_memory(const app_claw_config_t *config,
 #endif
 
 #if CONFIG_APP_CLAW_CAP_SKILL_MGR
+#if CONFIG_APP_CLAW_SYSTEM_UI_ENABLE
+static void app_claw_launcher_changed_cb(void *user_ctx)
+{
+    (void)user_ctx;
+    if (!system_ui_is_started()) {
+        return;
+    }
+    esp_err_t err = system_ui_reload_home();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Reload UI after launcher change failed: %s", esp_err_to_name(err));
+    }
+}
+#endif
+
 static esp_err_t init_skills(const app_claw_storage_paths_t *paths)
 {
     ESP_RETURN_ON_ERROR(claw_skill_init(&(claw_skill_config_t) {
@@ -610,10 +690,15 @@ static esp_err_t init_skills(const app_claw_storage_paths_t *paths)
                             .max_file_bytes = 20 * 1024,
                         }),
                         TAG, "Failed to init claw_skill");
-    /* Register scan roots in priority order*/
-    ESP_RETURN_ON_ERROR(claw_skill_add_directory(paths->system_skills_root_dir), TAG, "Failed to add system skills directory");
+    /* Writable skills take priority over firmware-baked skills. */
     ESP_RETURN_ON_ERROR(claw_skill_add_directory(paths->skills_root_dir), TAG, "Failed to add skills directory");
-    return ESP_OK;
+    ESP_RETURN_ON_ERROR(claw_skill_add_directory(paths->system_skills_root_dir), TAG, "Failed to add system skills directory");
+    ESP_RETURN_ON_ERROR(claw_skill_reload_registry(), TAG, "Failed to reload skill registry");
+    ESP_RETURN_ON_ERROR(claw_launcher_init(), TAG, "Failed to init launcher registry");
+#if CONFIG_APP_CLAW_SYSTEM_UI_ENABLE
+    ESP_RETURN_ON_ERROR(claw_launcher_register_changed_cb(app_claw_launcher_changed_cb, NULL), TAG, "Failed to register launcher listener");
+#endif
+    return claw_launcher_reload();
 }
 #endif
 
@@ -797,15 +882,6 @@ esp_err_t app_claw_start(const app_claw_config_t *config)
 #endif
 #if CONFIG_APP_CLAW_CAP_SKILL_MGR
     ESP_RETURN_ON_ERROR(init_skills(&paths), TAG, "Failed to init skills");
-#if CONFIG_APP_CLAW_SYSTEM_UI_ENABLE
-    if (system_ui_is_started()) {
-        /* Skills back the launcher catalog, so refresh the home screen after the registry is ready. */
-        esp_err_t ui_err = system_ui_reload_home();
-        if (ui_err != ESP_OK) {
-            ESP_LOGW(TAG, "Reload UI launcher after skills failed: %s", esp_err_to_name(ui_err));
-        }
-    }
-#endif
 #endif
     ESP_RETURN_ON_ERROR(app_capabilities_init(config, &paths), TAG, "Failed to init capabilities");
 #if CONFIG_APP_CLAW_CAP_IM_QQ
@@ -840,7 +916,9 @@ esp_err_t app_claw_start(const app_claw_config_t *config)
             claw_memory_long_term_lightweight_provider,
 #endif
             claw_memory_session_history_provider,
-            claw_skill_skills_list_provider,
+#if CONFIG_APP_CLAW_CAP_SKILL_MGR
+            s_app_claw_skills_list_provider,
+#endif
         };
         const char *root_agent_id = NULL;
 

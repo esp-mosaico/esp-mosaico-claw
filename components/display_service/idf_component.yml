@@ -2,6 +2,5 @@
 dependencies:
   esp_lvgl_present:
     path: ../esp_lvgl_present
-  espressif/esp_display_present:
-    override_path: ../../../../esp-gsp/components/esp_display_present
+  espressif/esp_display_present: "^1.0.2"
   lvgl/lvgl: ^9.5.0

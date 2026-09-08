@@ -33,7 +33,7 @@ dependencies:
     path: ../../third-party/esp-claw/components/lua_modules/lua_module_vision
   tda-2030/esp_vision_core: "^0.1.0"
   espressif/esp-gsp:
-    version: "1.0.0"
+    version: "1.2.0"
     require: public
   espressif/esp_mmap_assets:
     version: "2.0.1"

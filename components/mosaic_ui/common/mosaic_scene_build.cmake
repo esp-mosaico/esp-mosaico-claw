@@ -26,7 +26,7 @@ function(mosaic_setup_bundle_generation_for_target
 
     execute_process(
         COMMAND "${Python3_EXECUTABLE}" -c
-                "import PIL; print(PIL.__version__)"
+                "import PIL; import gsp.execute; print(PIL.__version__)"
         RESULT_VARIABLE mosaic_python_deps_result
         OUTPUT_VARIABLE mosaic_pillow_version
         OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -51,50 +51,78 @@ function(mosaic_setup_bundle_generation_for_target
         endif()
         execute_process(
             COMMAND "${Python3_EXECUTABLE}" -c
-                    "import PIL; print(PIL.__version__)"
+                    "import PIL; import gsp.execute; print(PIL.__version__)"
             RESULT_VARIABLE mosaic_python_deps_result
             OUTPUT_VARIABLE mosaic_pillow_version
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_VARIABLE mosaic_python_deps_error)
         if(NOT mosaic_python_deps_result EQUAL 0)
             message(FATAL_ERROR
-                "mosaic_ui: Pillow remains unavailable after installation "
-                "in ${Python3_EXECUTABLE}\n${mosaic_python_deps_error}")
+                "mosaic_ui: Pillow or esp-gsp-tools remains unavailable "
+                "after installation in ${Python3_EXECUTABLE}\n"
+                "${mosaic_python_deps_error}")
         endif()
     endif()
     message(STATUS "mosaic_ui: using Pillow ${mosaic_pillow_version}")
 
-    # Scene generators remain Python-owned.  The compiler/packager is supplied
-    # as a prebuilt Rust binary so the application build does not depend on the
-    # Python gspc implementation.
-    set(mosaic_gspc "$ENV{GSPC_EXECUTABLE}")
-    set(mosaic_gspc_downloader
-        "${root}/tools/download_gspc.py")
-    if(mosaic_gspc AND EXISTS "${mosaic_gspc}" AND
-            NOT IS_DIRECTORY "${mosaic_gspc}")
-        get_filename_component(mosaic_gspc "${mosaic_gspc}" ABSOLUTE)
-        message(STATUS "mosaic: using GSPC_EXECUTABLE=${mosaic_gspc}")
+    # Scene generators remain Python-owned.  GSPC is invoked through
+    # esp-gsp-tools, matching ESP-GSP 1.1+/1.2:
+    #   python -m gsp.execute --version <marker> gspc ...
+    set(mosaic_gspc_override "")
+    if(DEFINED GSPC_EXECUTABLE AND NOT "${GSPC_EXECUTABLE}" STREQUAL "")
+        set(mosaic_gspc_override "${GSPC_EXECUTABLE}")
+    elseif(DEFINED ENV{GSPC_EXECUTABLE} AND
+            NOT "$ENV{GSPC_EXECUTABLE}" STREQUAL "")
+        set(mosaic_gspc_override "$ENV{GSPC_EXECUTABLE}")
+    endif()
+
+    set(mosaic_gspc_version_file "")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/.gspc_version")
+        set(mosaic_gspc_version_file "${CMAKE_SOURCE_DIR}/.gspc_version")
+    elseif(EXISTS "${gsp_dir}/.gspc_version")
+        set(mosaic_gspc_version_file "${gsp_dir}/.gspc_version")
+    endif()
+
+    set(mosaic_gspc_version "")
+    if(mosaic_gspc_version_file)
+        file(READ "${mosaic_gspc_version_file}" mosaic_gspc_version)
+        string(STRIP "${mosaic_gspc_version}" mosaic_gspc_version)
+    endif()
+
+    if(mosaic_gspc_override AND EXISTS "${mosaic_gspc_override}" AND
+            NOT IS_DIRECTORY "${mosaic_gspc_override}")
+        get_filename_component(mosaic_gspc_override
+            "${mosaic_gspc_override}" ABSOLUTE)
+        set(mosaic_gspc_cmd "${mosaic_gspc_override}")
+        set(mosaic_gspc_depends "${mosaic_gspc_override}")
+        message(STATUS "mosaic: using GSPC_EXECUTABLE=${mosaic_gspc_override}")
     else()
-        set(mosaic_gspc_cache_dir "${CMAKE_BINARY_DIR}/gspc")
+        if(NOT mosaic_gspc_version)
+            message(FATAL_ERROR
+                "mosaic_ui: no usable .gspc_version found. Create "
+                "${CMAKE_SOURCE_DIR}/.gspc_version, or set GSPC_EXECUTABLE")
+        endif()
+        set(mosaic_gspc_cmd
+            "${Python3_EXECUTABLE}" -m gsp.execute
+            --version "${mosaic_gspc_version}" gspc)
         execute_process(
-            COMMAND "${Python3_EXECUTABLE}" "${mosaic_gspc_downloader}"
-                    --output-dir "${mosaic_gspc_cache_dir}"
-            RESULT_VARIABLE mosaic_gspc_download_result
-            OUTPUT_VARIABLE mosaic_gspc
+            COMMAND ${mosaic_gspc_cmd} --version
+            RESULT_VARIABLE mosaic_gspc_probe_result
+            OUTPUT_VARIABLE mosaic_gspc_probe_output
+            ERROR_VARIABLE mosaic_gspc_probe_error
             OUTPUT_STRIP_TRAILING_WHITESPACE
-            ERROR_VARIABLE mosaic_gspc_download_error)
-        if(NOT mosaic_gspc_download_result EQUAL 0)
+            ERROR_STRIP_TRAILING_WHITESPACE)
+        if(NOT mosaic_gspc_probe_result EQUAL 0)
             message(FATAL_ERROR
-                "mosaic_ui: unable to prepare prebuilt GSPC: "
-                "${mosaic_gspc_download_error}")
+                "mosaic_ui: esp-gsp-tools could not execute GSPC "
+                "${mosaic_gspc_version}: ${mosaic_gspc_probe_error} "
+                "${mosaic_gspc_probe_output}. Install it with "
+                "'python -m pip install -U esp-gsp-tools'")
         endif()
-        if(NOT mosaic_gspc OR NOT EXISTS "${mosaic_gspc}" OR
-                IS_DIRECTORY "${mosaic_gspc}")
-            message(FATAL_ERROR
-                "mosaic_ui: GSPC downloader returned an invalid executable: "
-                "${mosaic_gspc}")
-        endif()
-        message(STATUS "mosaic: using cached GSPC ${mosaic_gspc}")
+        set(mosaic_gspc_depends "${mosaic_gspc_version_file}")
+        message(STATUS
+            "mosaic: using esp-gsp-tools GSPC ${mosaic_gspc_version} "
+            "(${mosaic_gspc_version_file})")
     endif()
 
     get_filename_component(python_dir "${Python3_EXECUTABLE}" DIRECTORY)
@@ -166,11 +194,14 @@ function(mosaic_setup_bundle_generation_for_target
 
         set(regen_env
             "PATH=${python_dir}:$ENV{PATH}"
-            "PYTHONPATH=${gsp_dir}/tools"
-            "GSPC=${mosaic_gspc}"
-            "GSP_ROOT=${gsp_dir}"
+            "PYTHON=${Python3_EXECUTABLE}"
+            "GSPC_VERSION=${mosaic_gspc_version}"
             "ESP_GSP_ROOT=${gsp_dir}"
             "MOSAIC_GENERATED_DIR=${out_dir}")
+        if(mosaic_gspc_override)
+            list(APPEND regen_env
+                "GSPC_EXECUTABLE=${mosaic_gspc_override}")
+        endif()
         if(DEFINED MOSAIC_SCENE_PROFILE AND
                 NOT MOSAIC_SCENE_PROFILE STREQUAL "")
             if(NOT EXISTS "${MOSAIC_SCENE_PROFILE}")
@@ -196,8 +227,8 @@ function(mosaic_setup_bundle_generation_for_target
                     "${root}/common/fonts/NotoSans-Regular.ttf"
                     "${root}/common/fonts/DejaVuSans.ttf"
                     "${root}/common/fonts/DejaVuSans-Bold.ttf"
-                    "${mosaic_gspc}"
-                    "${mosaic_gspc_downloader}"
+                    "${root}/common/run_gspc.sh"
+                    ${mosaic_gspc_depends}
             COMMENT "mosaic: building ${bundle_name}.gspb"
             VERBATIM)
         list(APPEND intermediate_bundles "${bundle_out}")
@@ -211,11 +242,10 @@ function(mosaic_setup_bundle_generation_for_target
     add_custom_command(
         OUTPUT ${font_link_outputs}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${linked_dir}"
-        COMMAND ${CMAKE_COMMAND} -E env "GSPC=${mosaic_gspc}"
-                "${mosaic_gspc}" font-link ${intermediate_bundles}
+        COMMAND ${mosaic_gspc_cmd} font-link ${intermediate_bundles}
                 --output-dir "${linked_dir}"
                 --catalog "${font_catalog}"
-        DEPENDS ${intermediate_bundles} "${mosaic_gspc}"
+        DEPENDS ${intermediate_bundles} ${mosaic_gspc_depends}
         COMMENT "mosaic: font-link app bundles"
         VERBATIM)
 

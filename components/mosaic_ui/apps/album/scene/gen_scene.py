@@ -122,9 +122,12 @@ def toolbar_select(objs, root):
 
 
 def grid(objs, root):
+    viewport = len(objs)
+    objs.append(layer(root, 0, 0, CONTENT_W, CONTENT_H,
+                      name="album_grid_layer", bind="album_grid_visible"))
     objs.append({
         "type": "grid",
-        "parent": root,
+        "parent": viewport,
         "name": "album",
         "x": GRID_X,
         "y": GRID_Y,
@@ -169,8 +172,10 @@ def modal(objs, root):
     objs.append(label(card, 24, 22, 344, 30, "Details", size=24, color="#FCFCFF", name="album_modal_title", bind="album_modal_title"))
     objs.append(label(card, 24, 66, 344, 24, "file:", size=16, color="#91919B", name="album_detail_name", bind="album_detail_name"))
     objs.append(label(card, 24, 96, 344, 24, "size:", size=16, color="#91919B", name="album_detail_size", bind="album_detail_size"))
-    objs.append(button(card, 192, 220, 80, 36, "Cancel", bg="#2A2A2C", fg="#FCFCFF", radius=18, size=14, callback="album_cancel_modal"))
-    objs.append(button(card, 284, 220, 84, 36, "Delete", bg="#FF4C01", fg="#FCFCFF", radius=18, size=14, callback="album_confirm_delete"))
+    actions = len(objs)
+    objs.append(layer(card, 0, 0, 392, 272, name="album_delete_actions", bind="album_delete_actions_visible"))
+    objs.append(button(actions, 192, 220, 80, 36, "Cancel", bg="#2A2A2C", fg="#FCFCFF", radius=18, size=14, callback="album_cancel_modal"))
+    objs.append(button(actions, 284, 220, 84, 36, "Delete", bg="#FF4C01", fg="#FCFCFF", radius=18, size=14, callback="album_confirm_delete"))
 
 
 def main():

@@ -1,5 +1,6 @@
 set(MOSAIC_APP_NAME album)
 set(MOSAIC_APP_MODULE_SOURCE album_app.c)
+set(MOSAIC_APP_EXTRA_SOURCES album_media.c album_thumbnail.c)
 set(MOSAIC_APP_MODULE_SYMBOL mosaic_album_app)
 set(MOSAIC_APP_BUNDLE generated/album.gspb)
 set(MOSAIC_APP_SCENE_DIR scene)

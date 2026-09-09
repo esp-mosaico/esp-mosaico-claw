@@ -18,7 +18,6 @@ from scene_common import (  # noqa: E402
     button,
     container,
     explicit_charset,
-    image,
     label,
     layer,
     scene_out_path,
@@ -30,7 +29,8 @@ from scene_common import (  # noqa: E402
 FONT = DEJAVU_SANS
 BOLD = DEJAVU_SANS_BOLD
 ASSETS = "../../../common/assets"
-PLACEHOLDER = f"{ASSETS}/camera_canvas.png"
+# Scalable placeholders use raw storage, so keep the solid-black source small.
+PLACEHOLDER = f"{ASSETS}/black_placeholder.png"
 
 IMAGES = [
     (PLACEHOLDER, 456, 340),
@@ -173,23 +173,6 @@ def modal(objs, root):
     objs.append(button(card, 284, 220, 84, 36, "Delete", bg="#FF4C01", fg="#FCFCFF", radius=18, size=14, callback="album_confirm_delete"))
 
 
-def album_asset_scene(path):
-    # Keep the assets scene as a resource superset of album_480.json; scalable fullscreen fallback requires a raw copy.
-    asset_objects = [container(-1, 0, 0, CONTENT_W, CONTENT_H)]
-    asset_objects.append(image(0, PLACEHOLDER, 0, 0, 456, 340))
-    asset_objects.append({
-        "type": "image",
-        "parent": 0,
-        "x": 0,
-        "y": 120,
-        "w": 456,
-        "h": 340,
-        "image": PLACEHOLDER,
-        "codec": "raw",
-    })
-    write_scene(path, "album_assets", asset_objects, font=FONT)
-
-
 def main():
     objs, content = shared_prefix(IMAGES, FONT_POLICIES, BOLD)
     root = len(objs)
@@ -202,7 +185,6 @@ def main():
     fullscreen(objs, root)
     modal(objs, root)
     write_scene(scene_out_path(HERE, "album_480.json"), "album", objs, font=FONT)
-    album_asset_scene(scene_out_path(HERE, "album_assets_480.json"))
 
 
 if __name__ == "__main__":

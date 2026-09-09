@@ -70,10 +70,9 @@ function(mosaic_setup_bundle_generation_for_target
         get_filename_component(mosaic_gspc "${mosaic_gspc}" ABSOLUTE)
         message(STATUS "mosaic: using GSPC_EXECUTABLE=${mosaic_gspc}")
     else()
-        set(mosaic_gspc_cache_dir "${CMAKE_BINARY_DIR}/gspc")
         execute_process(
             COMMAND "${Python3_EXECUTABLE}" "${mosaic_gspc_downloader}"
-                    --output-dir "${mosaic_gspc_cache_dir}"
+                    --component-dir "${gsp_dir}"
             RESULT_VARIABLE mosaic_gspc_download_result
             OUTPUT_VARIABLE mosaic_gspc
             OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -91,6 +90,13 @@ function(mosaic_setup_bundle_generation_for_target
         endif()
         message(STATUS "mosaic: using cached GSPC ${mosaic_gspc}")
     endif()
+
+    # This project builds its own multi-app bundles instead of calling
+    # gsp_add_bundle(), so enforce the same contract for explicit overrides too.
+    include("${gsp_dir}/cmake/gsp_compatibility_contract.cmake")
+    include("${gsp_dir}/cmake/gsp_compatibility.cmake")
+    esp_gsp_check_gspc_command(mosaic_gspc_version "${mosaic_gspc}")
+    message(STATUS "mosaic: validated ${mosaic_gspc_version}")
 
     get_filename_component(python_dir "${Python3_EXECUTABLE}" DIRECTORY)
     set(gen_root "${binary_dir}/mosaic_gen")

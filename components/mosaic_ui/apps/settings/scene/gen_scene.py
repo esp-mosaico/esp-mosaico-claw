@@ -83,7 +83,7 @@ CHANNEL_ICON_ASSETS = {
     "feishu": ("settings_channel_feishu.png", "settings_channel_feishu_off.png"),
     "telegram": ("settings_channel_telegram.png", "settings_channel_telegram_off.png"),
 }
-ROOT_DYNAMIC_PLACEHOLDER = "settings_root_dynamic_placeholder.png"
+ROOT_DYNAMIC_PLACEHOLDER = "../../../common/assets/black_placeholder.png"
 QR_SIZE = 104
 WLAN_WIFI_ICON = "../../../common/assets/icons/status_wifi.png"
 WLAN_LOCK_ICON = "settings_wlan_lock.png"

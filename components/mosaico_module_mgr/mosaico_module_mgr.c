@@ -50,6 +50,14 @@ typedef struct {
 } manager_context_t;
 
 static manager_context_t s_manager;
+#define MODULE_SUBSCRIBER_COUNT 4
+typedef struct {
+    mosaico_module_mgr_event_callback_t callback;
+    void *user_data;
+} module_subscriber_t;
+
+static portMUX_TYPE s_subscriber_lock = portMUX_INITIALIZER_UNLOCKED;
+static module_subscriber_t s_subscribers[MODULE_SUBSCRIBER_COUNT];
 
 _Static_assert(sizeof(mosaico_module_mgr_eeprom_v1_t) == MOSAICO_MODULE_MGR_EEPROM_IMAGE_SIZE, "module EEPROM V1 layout mismatch");
 
@@ -101,6 +109,8 @@ const char *mosaico_module_mgr_type_to_name(mosaico_board_type_t type)
         return "Relay";
     case MOSAICO_BOARD_TYPE_BUTTON_LED:
         return "Button LED";
+    case MOSAICO_BOARD_TYPE_INTERACT:
+        return "Interaction";
     case MOSAICO_BOARD_TYPE_CORE:
         return "Core";
     case MOSAICO_BOARD_TYPE_POWER:
@@ -129,10 +139,49 @@ esp_err_t mosaico_module_mgr_slot_from_eeprom_addr(uint8_t eeprom_addr, mosaico_
     return ESP_OK;
 }
 
+esp_err_t mosaico_module_mgr_subscribe(mosaico_module_mgr_event_callback_t callback, void *user_data)
+{
+    ESP_RETURN_ON_FALSE(callback != NULL, ESP_ERR_INVALID_ARG, TAG, "null module subscriber");
+    portENTER_CRITICAL(&s_subscriber_lock);
+    for (size_t i = 0; i < MODULE_SUBSCRIBER_COUNT; ++i) {
+        if (s_subscribers[i].callback == callback && s_subscribers[i].user_data == user_data) {
+            portEXIT_CRITICAL(&s_subscriber_lock);
+            return ESP_OK;
+        }
+        if (s_subscribers[i].callback == NULL) {
+            s_subscribers[i] = (module_subscriber_t){callback, user_data};
+            portEXIT_CRITICAL(&s_subscriber_lock);
+            return ESP_OK;
+        }
+    }
+    portEXIT_CRITICAL(&s_subscriber_lock);
+    ESP_LOGE(TAG, "module subscriber table full");
+    return ESP_ERR_NO_MEM;
+}
+
+esp_err_t mosaico_module_mgr_unsubscribe(mosaico_module_mgr_event_callback_t callback)
+{
+    ESP_RETURN_ON_FALSE(callback != NULL, ESP_ERR_INVALID_ARG, TAG, "null module subscriber");
+    portENTER_CRITICAL(&s_subscriber_lock);
+    size_t kept = 0;
+    // Remove every matching callback and keep the remaining entries packed.
+    for (size_t i = 0; i < MODULE_SUBSCRIBER_COUNT; ++i) {
+        if (s_subscribers[i].callback != NULL && s_subscribers[i].callback != callback) s_subscribers[kept++] = s_subscribers[i];
+    }
+    memset(&s_subscribers[kept], 0, (MODULE_SUBSCRIBER_COUNT - kept) * sizeof(s_subscribers[0]));
+    portEXIT_CRITICAL(&s_subscriber_lock);
+    return ESP_OK;
+}
+
 static void emit_event(mosaico_module_mgr_event_t event, const mosaico_module_mgr_info_t *info)
 {
-    if (s_manager.config.event_callback != NULL) {
-        s_manager.config.event_callback(event, info, s_manager.config.event_user_data);
+    module_subscriber_t subscribers[MODULE_SUBSCRIBER_COUNT];
+    portENTER_CRITICAL(&s_subscriber_lock);
+    memcpy(subscribers, s_subscribers, sizeof(subscribers));
+    portEXIT_CRITICAL(&s_subscriber_lock);
+    // Callbacks may claim a module and emit another event, so never hold the lock here.
+    for (size_t i = 0; i < MODULE_SUBSCRIBER_COUNT; ++i) {
+        if (subscribers[i].callback != NULL) subscribers[i].callback(event, info, subscribers[i].user_data);
     }
 }
 

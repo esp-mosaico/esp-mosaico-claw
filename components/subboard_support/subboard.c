@@ -66,6 +66,23 @@ static const bsp_subboard_gpio_pair_t s_gpio_pairs[] = {
 };
 
 static portMUX_TYPE s_resource_lock = portMUX_INITIALIZER_UNLOCKED;
+esp_err_t bsp_subboard_interact_get_config(bsp_subboard_slot_t slot, bsp_subboard_interact_config_t *out)
+{
+    ESP_RETURN_ON_FALSE(out && slot >= BSP_SUBBOARD_SLOT_LEFT && slot < BSP_SUBBOARD_SLOT_COUNT, ESP_ERR_INVALID_ARG, TAG, "invalid interact slot");
+    *out = (bsp_subboard_interact_config_t) {
+        .ldr_io = bsp_subboard_map_gpio(slot, GPIO_NUM_53),
+        .ir_io = bsp_subboard_map_gpio(slot, GPIO_NUM_48),
+        .key_l_io = bsp_subboard_map_gpio(slot, GPIO_NUM_13),
+        .key_r_io = bsp_subboard_map_gpio(slot, GPIO_NUM_12),
+        .pir_io = bsp_subboard_map_gpio(slot, GPIO_NUM_4),
+        .ws2812_io = bsp_subboard_map_gpio(slot, GPIO_NUM_15),
+        .led_count = 6,
+        .eeprom_addr = s_slot_configs[slot].eeprom_addr,
+        .rotated_180 = s_slot_configs[slot].rotated_180,
+    };
+    return ESP_OK;
+}
+
 static bool s_subboard_initialized;
 static bool s_camera_claimed;
 static bool s_camera_flash_initialized;

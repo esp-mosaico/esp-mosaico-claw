@@ -39,6 +39,7 @@ static uint8_t s_charge_candidate_samples;
 static uint8_t s_telemetry_div;
 static uint8_t s_low_shutdown_samples;
 static bool s_low_shutdown_requested;
+static void *s_battery;
 
 static void battery_low_shutdown_task(void *arg)
 {
@@ -111,31 +112,23 @@ static bool read_battery(mosaic_settings_battery_t *out_battery)
         return false;
     }
     memset(out_battery, 0, sizeof(*out_battery));
-    void *battery = NULL;
     if (!esp_board_manager_check_name("battery_monitor")) {
         return false;
     }
-    if (esp_board_manager_get_device_handle("battery_monitor", &battery) !=
-            ESP_OK) {
-        if (esp_board_manager_init_device_by_name("battery_monitor") !=
-                ESP_OK ||
-            esp_board_manager_get_device_handle(
-                "battery_monitor", &battery) != ESP_OK) {
+    if (s_battery == NULL) {
+        if (esp_board_manager_init_device_by_name("battery_monitor") != ESP_OK || esp_board_manager_get_device_handle("battery_monitor", &s_battery) != ESP_OK) {
             return false;
         }
-    }
-    if (battery == NULL) {
-        return false;
     }
 
     battery_status_t status = {0};
     if (bq27220_get_battery_status(
-            (bq27220_handle_t)battery, &status) != ESP_OK) {
+            (bq27220_handle_t)s_battery, &status) != ESP_OK) {
         return false;
     }
 
-    const uint16_t voltage_mv = bq27220_get_voltage(battery);
-    const uint16_t state_of_charge = bq27220_get_state_of_charge(battery);
+    const uint16_t voltage_mv = bq27220_get_voltage(s_battery);
+    const uint16_t state_of_charge = bq27220_get_state_of_charge(s_battery);
     if (voltage_mv < MOSAIC_BATTERY_MIN_VALID_MV ||
             voltage_mv > MOSAIC_BATTERY_MAX_VALID_MV ||
             state_of_charge > 100U) {
@@ -144,8 +137,8 @@ static bool read_battery(mosaic_settings_battery_t *out_battery)
         return false;
     }
 
-    const int16_t current_ma = bq27220_get_current(battery);
-    const int16_t avg_ma = bq27220_get_avgcurrent(battery);
+    const int16_t current_ma = bq27220_get_current(s_battery);
+    const int16_t avg_ma = bq27220_get_avgcurrent(s_battery);
     /* Current is the net current at the cell, not an external-power signal.
      * While USB is connected the running system can consume slightly more
      * than the charger supplies, producing a small negative current even
@@ -189,20 +182,20 @@ static bool read_battery(mosaic_settings_battery_t *out_battery)
      * jitters with display/Wi-Fi load and is unsuitable for a settings row. */
     out_battery->current_ma = avg_ma;
     out_battery->time_to_empty_min = out_battery->charging
-        ? UINT16_MAX : bq27220_get_time_to_empty(battery);
+        ? UINT16_MAX : bq27220_get_time_to_empty(s_battery);
     out_battery->time_to_full_min = out_battery->charging
-        ? bq27220_get_time_to_full(battery) : UINT16_MAX;
-    out_battery->cycle_count = bq27220_get_cycle_count(battery);
-    out_battery->state_of_health = bq27220_get_state_of_health(battery);
+        ? bq27220_get_time_to_full(s_battery) : UINT16_MAX;
+    out_battery->cycle_count = bq27220_get_cycle_count(s_battery);
+    out_battery->state_of_health = bq27220_get_state_of_health(s_battery);
     if (out_battery->state_of_health > 100U) {
         out_battery->state_of_health = UINT16_MAX;
     }
 
     if (++s_telemetry_div >= MOSAIC_BATTERY_TELEMETRY_SAMPLES) {
         s_telemetry_div = 0;
-        const uint16_t rem_mah = bq27220_get_remaining_capacity(battery);
-        const uint16_t full_mah = bq27220_get_full_charge_capacity(battery);
-        const uint16_t design_mah = bq27220_get_design_capacity(battery);
+        const uint16_t rem_mah = bq27220_get_remaining_capacity(s_battery);
+        const uint16_t full_mah = bq27220_get_full_charge_capacity(s_battery);
+        const uint16_t design_mah = bq27220_get_design_capacity(s_battery);
         ESP_LOGD(TAG,
                  "raw V=%umV I=%d/%d mA SoC=%u%% rem=%u full=%u design=%u "
                  "DSG=%d FC=%d latch=%d",

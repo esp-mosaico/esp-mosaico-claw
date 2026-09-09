@@ -120,7 +120,7 @@ STACK_PAGE_COUNT = 3
 
 # Launcher PageFlow tab indices.
 TAB_HOME = 0
-FLOW_PAGE_COUNT = 2
+FLOW_PAGE_COUNT = 3
 
 # Shared app-icon grid (Figma 时钟 bottom / 应用界面). Coords are relative to
 # the PageFlow layer (stage y=56); absolute screen y = 56 + value.
@@ -748,11 +748,11 @@ def build_insert_content(objs, parent):
     objs.append(label(
         parent, 49, 52, 382, 48, 'Environment Sensor', size=36,
         color='#FCFCFF', bind='insert_board_name', name='insert_board_name',
-        font_charset='Environment SensorIMUTOFThermal CameraRelayLED Matrix'))
+        font_charset='Environment SensorIMUTOFThermal CameraRelayLED MatrixInteraction'))
     objs.append(label(
         parent, 49, 102, 382, 36, 'Temp / Humidity / TVOC', size=24,
         color='#91919B', bind='insert_board_cap', name='insert_board_cap',
-        font_charset='Temp / HumidityTVOCMotion orientationDistance rangingThermal imagingSwitch outputsLight controlPhoto Video'))
+        font_charset='Temp / HumidityTVOCMotion orientationDistance rangingThermal imagingSwitch outputsLight controlPhoto VideoLED / Touch / IR / Sensors'))
     objs.append(button(
         parent, 64, 280, 352, 56, 'Open', radius=28, size=24,
         bg='#FF4C01', name='insert_open', callback='insert_open',
@@ -801,6 +801,14 @@ def build_hub_objects():
     objs.append(layer(flow, CONTENT_W, 0, CONTENT_W, CONTENT_H,
                       name='launcher_flow_tab1'))
     build_apps1_content(objs, apps1_main)
+
+    apps2_main = len(objs)
+    objs.append(layer(flow, CONTENT_W * 2, 0, CONTENT_W, CONTENT_H,
+                      name='launcher_flow_tab2'))
+    place_app_grid(objs, apps2_main, (
+        {'name': 'app_interact', 'icon': 'controller', 'text': 'Interaction',
+         'callback': 'app_interact'},
+    ))
 
     # Fixed chrome is authored after PageFlow content so it remains topmost.
     status_bar(objs, launcher_page, ASSETS)

@@ -59,6 +59,7 @@ devices:
   - name: button_boot
     type: button
     sub_type: gpio
+    init_skip: true
     config:
       active_level: 0
     peripherals:
@@ -67,6 +68,7 @@ devices:
   - name: button_power
     type: button
     sub_type: gpio
+    init_skip: true
     config:
       active_level: 0
     peripherals:
@@ -104,6 +106,7 @@ devices:
     chip: es8311
     type: audio_codec
     version: default
+    init_skip: true
     config:
       dac_enabled: true
       dac_max_channel: 1
@@ -124,6 +127,7 @@ devices:
     chip: es8311
     type: audio_codec
     version: default
+    init_skip: true
     config:
       adc_enabled: true
       adc_max_channel: 1
@@ -137,6 +141,7 @@ devices:
   - name: vibration_motor
     type: ledc_ctrl
     version: default
+    init_skip: true
     config:
       default_percent: 0
     peripherals:
@@ -157,6 +162,7 @@ devices:
     chip: bq27220
     type: custom
     version: default
+    init_skip: true
     dependencies:
       espressif/bq27220:
         version: ^0.1.0
@@ -170,6 +176,7 @@ devices:
     chip: bmi270
     type: custom
     version: default
+    init_skip: true
     dependencies:
       espressif2022/bmi270: "^1.1.0"
     config:
@@ -181,6 +188,7 @@ devices:
     chip: bmm150
     type: custom
     version: default
+    init_skip: true
     dependencies:
       tangyumei3535/bmm150_sensorapi:
         version: "^1.0.0"
@@ -193,6 +201,7 @@ devices:
     chip: bmm150
     type: custom
     version: default
+    init_skip: true
     config:
       addr: 0x24
     peripherals:

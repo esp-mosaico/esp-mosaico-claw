@@ -97,19 +97,8 @@ static esp_err_t app_cap_system_vibration_init(void)
     ESP_RETURN_ON_FALSE(
         esp_board_manager_check_name(APP_CAP_SYSTEM_VIBRATION_DEVICE_NAME),
         ESP_ERR_NOT_SUPPORTED, TAG, "vibration device is unavailable");
-    esp_err_t err = esp_board_manager_get_device_handle(
-        APP_CAP_SYSTEM_VIBRATION_DEVICE_NAME, (void **)&s_vibration_ledc);
-    if (err != ESP_OK) {
-        ESP_RETURN_ON_ERROR(
-            esp_board_manager_init_device_by_name(
-                APP_CAP_SYSTEM_VIBRATION_DEVICE_NAME),
-            TAG, "initialize vibration device");
-        ESP_RETURN_ON_ERROR(
-            esp_board_manager_get_device_handle(
-                APP_CAP_SYSTEM_VIBRATION_DEVICE_NAME,
-                (void **)&s_vibration_ledc),
-            TAG, "get vibration device handle");
-    }
+    ESP_RETURN_ON_ERROR(esp_board_manager_init_device_by_name(APP_CAP_SYSTEM_VIBRATION_DEVICE_NAME), TAG, "initialize vibration device");
+    ESP_RETURN_ON_ERROR(esp_board_manager_get_device_handle(APP_CAP_SYSTEM_VIBRATION_DEVICE_NAME, (void **)&s_vibration_ledc), TAG, "get vibration device handle");
     ESP_RETURN_ON_ERROR(
         esp_board_manager_get_device_config(
             APP_CAP_SYSTEM_VIBRATION_DEVICE_NAME,

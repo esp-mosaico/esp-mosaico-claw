@@ -19,7 +19,7 @@ extern "C" {
 #define MOSAICO_MODULE_MGR_EEPROM_MAGIC_LEN 3U
 #define MOSAICO_MODULE_MGR_EEPROM_IMAGE_SIZE 0x86U
 #define MOSAICO_MODULE_MGR_SLOT_AUTO MOSAICO_MODULE_MGR_SLOT_COUNT
-#define MOSAICO_MODULE_MGR_DEFAULT_CONFIG() { .scan_period_ms = 1000, .debounce_count = 3, .event_callback = NULL, .event_user_data = NULL }
+#define MOSAICO_MODULE_MGR_DEFAULT_CONFIG() { .scan_period_ms = 1000, .debounce_count = 3 }
 
 typedef enum {
     MOSAICO_MODULE_MGR_SLOT_LEFT = 0,
@@ -42,6 +42,7 @@ typedef enum {
     MOSAICO_BOARD_TYPE_THERMAL = 0x12,
     MOSAICO_BOARD_TYPE_RELAY = 0x13,
     MOSAICO_BOARD_TYPE_BUTTON_LED = 0x14,
+    MOSAICO_BOARD_TYPE_INTERACT = 0x15,
 } mosaico_board_type_t;
 
 typedef enum {
@@ -93,12 +94,22 @@ typedef void (*mosaico_module_mgr_event_callback_t)(mosaico_module_mgr_event_t e
 typedef struct {
     uint32_t scan_period_ms;
     uint8_t debounce_count;
-    mosaico_module_mgr_event_callback_t event_callback;
-    void *event_user_data;
 } mosaico_module_mgr_config_t;
 
 /** Start the singleton EEPROM module manager. */
 esp_err_t mosaico_module_mgr_init(const mosaico_module_mgr_config_t *config);
+
+/** Subscribe a callback; duplicate pairs succeed. Up to four pairs are supported.
+ * Registration is allowed before init and survives deinit. No past events are replayed.
+ * Callbacks run synchronously outside locks; user_data must outlive all callback invocations.
+ */
+esp_err_t mosaico_module_mgr_subscribe(mosaico_module_mgr_event_callback_t callback, void *user_data);
+
+/** Remove all subscriptions for a callback; an absent callback also succeeds.
+ * Does not wait for callbacks already captured by an event snapshot, including pending calls.
+ * May be called from a callback. Quiesce event producers before freeing callback data.
+ */
+esp_err_t mosaico_module_mgr_unsubscribe(mosaico_module_mgr_event_callback_t callback);
 
 /** Stop the manager when no slot is claimed. */
 esp_err_t mosaico_module_mgr_deinit(void);

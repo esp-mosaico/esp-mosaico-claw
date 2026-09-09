@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mosaico_camera.h"
+#include "mosaico_module_mgr.h"
 #include "mosaic_welcome.h"
 #include "mosaic_hub_actions.h"
 #include "mosaic_hub_app.h"
@@ -262,18 +263,30 @@ esp_err_t mosaic_system_configure(const mosaic_system_ops_t *ops)
     return err;
 }
 
+static void on_module_insert_notice(mosaico_module_mgr_event_t event, const mosaico_module_mgr_info_t *info, void *user_ctx)
+{
+    (void)user_ctx;
+    if (event != MOSAICO_MODULE_MGR_EVENT_INSERTED || info == NULL) return;
+    if (mosaic_loader_app() != mosaic_app_root()) return;
+    static const struct {
+        mosaico_board_type_t type;
+        const char *name, *capability, *app;
+    } notices[] = {
+        {MOSAICO_BOARD_TYPE_CAMERA, "Camera", "Photo / Video", "camera"},
+        {MOSAICO_BOARD_TYPE_INTERACT, "Interaction", "LED / Touch / IR / Sensors", "interact"},
+    };
+    for (size_t i = 0; i < sizeof(notices) / sizeof(notices[0]); ++i) {
+        if (info->eeprom.board_type != notices[i].type) continue;
+        mosaic_hub_request_board_insert(info->slot == MOSAICO_MODULE_MGR_SLOT_RIGHT ? 'R' : 'L',
+                                        notices[i].name, notices[i].capability, notices[i].app);
+        break;
+    }
+}
+
 static void on_camera_availability_notice(char slot, bool available, void *user_ctx)
 {
     (void)user_ctx;
     mosaic_hub_request_quick_slot_camera(slot, available);
-    if (!available) {
-        return;
-    }
-    if (mosaic_loader_app() != mosaic_app_root()) {
-        return;
-    }
-    mosaic_hub_request_board_insert(
-        slot == 'R' ? 'R' : 'L', "Camera", "Photo / Video", "camera");
 }
 
 esp_err_t mosaic_ui_set_ai_create_asr(asr_service_handle_t asr)
@@ -466,6 +479,7 @@ esp_err_t mosaic_ui_start(void)
                             "open initial app %s", initial_app);
     }
 
+    ESP_RETURN_ON_ERROR(mosaico_module_mgr_subscribe(on_module_insert_notice, NULL), TAG, "subscribe to module insertions");
     s_started = true;
     mosaico_camera_set_availability_callback(on_camera_availability_notice, NULL);
     ESP_LOGI(TAG, "mosaic hub live (ported esp-gsp example)");

@@ -30,9 +30,8 @@ static esp_err_t get_button_handle(
 
     ESP_RETURN_ON_FALSE(device_name && out_handle, ESP_ERR_INVALID_ARG, TAG,
                         "invalid button lookup");
-    ESP_RETURN_ON_ERROR(
-        esp_board_device_get_handle(device_name, (void **)&buttons), TAG,
-        "get %s", device_name);
+    ESP_RETURN_ON_ERROR(esp_board_manager_init_device_by_name(device_name), TAG, "init %s", device_name);
+    ESP_RETURN_ON_ERROR(esp_board_manager_get_device_handle(device_name, (void **)&buttons), TAG, "get %s", device_name);
     ESP_RETURN_ON_FALSE(buttons && buttons->num_buttons > 0 &&
                             buttons->button_handles[0],
                         ESP_ERR_NOT_FOUND, TAG, "%s has no button handle",

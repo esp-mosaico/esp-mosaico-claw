@@ -49,26 +49,19 @@ static esp_err_t get_imu_handle(void **out_handle)
         if (!esp_board_manager_check_name("imu_sensor")) {
             return ESP_ERR_NOT_FOUND;
         }
-        if (esp_board_manager_get_device_handle("imu_sensor", &s_imu.device) !=
-                ESP_OK) {
-            esp_err_t err =
-                esp_board_manager_init_device_by_name("imu_sensor");
-            if (err == ESP_OK) {
-                err = esp_board_manager_get_device_handle("imu_sensor",
-                                                          &s_imu.device);
-            }
-            if (err != ESP_OK || s_imu.device == NULL) {
-                s_imu.device = NULL;
-                s_imu.init_error = err != ESP_OK ? err : ESP_ERR_INVALID_STATE;
-                s_imu.next_init_attempt_us =
-                    now_us + IMU_INIT_RETRY_INTERVAL_US;
-                ESP_LOGW(TAG, "BMI270 unavailable; retry in 5 s: %s",
-                         esp_err_to_name(s_imu.init_error));
-                return s_imu.init_error;
-            }
-            s_imu.init_error = ESP_OK;
-            s_imu.next_init_attempt_us = 0;
+        esp_err_t err = esp_board_manager_init_device_by_name("imu_sensor");
+        if (err == ESP_OK) {
+            err = esp_board_manager_get_device_handle("imu_sensor", &s_imu.device);
         }
+        if (err != ESP_OK || s_imu.device == NULL) {
+            s_imu.device = NULL;
+            s_imu.init_error = err != ESP_OK ? err : ESP_ERR_INVALID_STATE;
+            s_imu.next_init_attempt_us = now_us + IMU_INIT_RETRY_INTERVAL_US;
+            ESP_LOGW(TAG, "BMI270 unavailable; retry in 5 s: %s", esp_err_to_name(s_imu.init_error));
+            return s_imu.init_error;
+        }
+        s_imu.init_error = ESP_OK;
+        s_imu.next_init_attempt_us = 0;
     }
     if (s_imu.device == NULL) return ESP_ERR_INVALID_STATE;
     *out_handle = s_imu.device;

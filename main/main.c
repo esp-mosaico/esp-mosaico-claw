@@ -788,7 +788,6 @@ static void main_restore_display_rotation(void)
     }
 }
 
-#if !CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE || !CONFIG_ESP_BOARD_ESP_MOSAICO
 static void main_restore_display_brightness(void)
 {
     esp_err_t err = app_settings_service_restore_brightness(s_app_settings);
@@ -797,23 +796,6 @@ static void main_restore_display_brightness(void)
                  esp_err_to_name(err));
     }
 }
-#endif
-
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE && CONFIG_ESP_BOARD_ESP_MOSAICO
-#define MOSAICO_BOOT_SPLASH_BRIGHTNESS_PERCENT 40U
-#define MOSAICO_BOOT_BRIGHTNESS_FADE_MS        80U
-
-static void main_prepare_display_brightness_fade(void)
-{
-    esp_err_t err = app_settings_service_prepare_brightness_fade(
-        s_app_settings, MOSAICO_BOOT_SPLASH_BRIGHTNESS_PERCENT,
-        MOSAICO_BOOT_BRIGHTNESS_FADE_MS);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Startup display brightness fade was not prepared: %s",
-                 esp_err_to_name(err));
-    }
-}
-#endif
 
 void app_main(void)
 {
@@ -873,9 +855,6 @@ void app_main(void)
                                                   app_fs_get_storage_space,
                                                   NULL));
 
-    if (APP_ENABLE_CLAW_TASKS) {
-        ESP_ERROR_CHECK(wifi_manager_init());
-    }
     ESP_ERROR_CHECK(app_settings_service_create(&s_app_settings));
 
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
@@ -943,11 +922,8 @@ void app_main(void)
      * applies the target brightness once, before rendering can use the LCD
      * SPI bus. */
     main_restore_display_rotation();
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
-    main_prepare_display_brightness_fade();
-#else
     main_restore_display_brightness();
-#endif
+    ESP_ERROR_CHECK(mosaic_ui_start());
 #endif
 
     if (!APP_ENABLE_CLAW_TASKS) {
@@ -955,7 +931,6 @@ void app_main(void)
                  "Claw background services disabled: Wi-Fi, network, HTTP, "
                  "bindings, audio/ASR, capabilities, and agent not started");
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-        ESP_ERROR_CHECK(mosaic_ui_start());
         ESP_ERROR_CHECK(mosaico_camera_init());
         esp_err_t battery_monitor_err =
             mosaic_settings_platform_start_battery_monitor();
@@ -976,6 +951,8 @@ void app_main(void)
         app_free_runtime_state();
         return;
     }
+
+    ESP_ERROR_CHECK(wifi_manager_init());
 
     ESP_ERROR_CHECK(http_server_init(&(http_server_config_t) {
         .storage_base_path = app_fs_storage_base_path(),
@@ -1080,8 +1057,6 @@ void app_main(void)
     ESP_ERROR_CHECK(app_claw_set_save_config_callback(main_save_claw_config, NULL));
     ESP_ERROR_CHECK(app_claw_set_network_ready_callback(main_network_ready, NULL));
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-    /* Bring up the interactive UI before the heavier Claw runtime initialization. */
-    ESP_ERROR_CHECK(mosaic_ui_start());
     ESP_ERROR_CHECK(mosaico_camera_init());
     esp_err_t battery_monitor_err = mosaic_settings_platform_start_battery_monitor();
     if (battery_monitor_err != ESP_OK) {
@@ -1096,6 +1071,10 @@ void app_main(void)
     if (recovery_err != ESP_OK) {
         ESP_LOGW(TAG, "DATA recovery incomplete before Claw start: %s", esp_err_to_name(recovery_err));
     }
+#if CONFIG_ESP_BOARD_ESP_MOSAICO && CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT
+    ESP_ERROR_CHECK(esp_board_manager_init_device_by_name(ESP_BOARD_DEVICE_NAME_AUDIO_DAC));
+    ESP_ERROR_CHECK(esp_board_manager_init_device_by_name(ESP_BOARD_DEVICE_NAME_AUDIO_ADC));
+#endif
     ESP_ERROR_CHECK(app_claw_start(s_claw_config));
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     ESP_ERROR_CHECK(weather_service_start());

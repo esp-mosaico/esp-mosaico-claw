@@ -17,8 +17,6 @@ trap 'rm -rf "$OUT"' EXIT
 
 "$GSPC" build "${STEM}_480.json" --scene-id 0 \
     --profile "$PROFILE" -o "$OUT"
-"$GSPC" build "${STEM}_assets_480.json" --scene-id 1 \
-    --profile "$PROFILE" -o "$OUT"
 
 mkdir -p "$GENERATED_DIR"
 "$GSPC" bundle -o "$GENERATED_DIR/${STEM}.gspb" \

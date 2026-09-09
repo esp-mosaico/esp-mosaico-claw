@@ -365,16 +365,15 @@ static esp_err_t start_ui(mosaic_esp_platform_handle_t platform,
             app->ui = platform->hub_ui;
             return ESP_OK;
         }
-        const esp_gsp_esp_lcd_config_t esp_config = {
-            .presenter = platform->config.presenter,
-            .render_alignment = platform->config.render_alignment,
-            .touch = platform->config.touch,
-            /* esp_mosaico wires CST9217 INT to GPIO6. Let the GSP adapter
-             * own that IRQ and read frames only after an interrupt instead
-             * of issuing an I2C transaction on every UI tick. */
-            .touch_input_mode = ESP_GSP_TOUCH_INPUT_INTERRUPT,
-            .touch_wake_from_isr = mosaic_ui_screen_wake_from_isr,
-        };
+        esp_gsp_esp_lcd_config_t esp_config = ESP_GSP_ESP_LCD_CONFIG_INIT();
+        esp_config.presenter = platform->config.presenter;
+        esp_config.render_alignment = platform->config.render_alignment;
+        esp_config.touch = platform->config.touch;
+        /* esp_mosaico wires CST9217 INT to GPIO6. Let the GSP adapter
+         * own that IRQ and read frames only after an interrupt instead
+         * of issuing an I2C transaction on every UI tick. */
+        esp_config.touch_input_mode = ESP_GSP_TOUCH_INPUT_INTERRUPT;
+        esp_config.touch_wake_from_isr = mosaic_ui_screen_wake_from_isr;
         esp_err_t err = esp_gsp_esp_lcd_start(
             &app_config, &esp_config, &platform->hub_ui);
         if (err == ESP_OK) {

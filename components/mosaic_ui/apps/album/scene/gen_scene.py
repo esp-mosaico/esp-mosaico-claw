@@ -18,7 +18,6 @@ from scene_common import (  # noqa: E402
     button,
     container,
     explicit_charset,
-    image,
     label,
     layer,
     scene_out_path,
@@ -30,7 +29,8 @@ from scene_common import (  # noqa: E402
 FONT = DEJAVU_SANS
 BOLD = DEJAVU_SANS_BOLD
 ASSETS = "../../../common/assets"
-PLACEHOLDER = f"{ASSETS}/camera_canvas.png"
+# Scalable placeholders use raw storage, so keep the solid-black source small.
+PLACEHOLDER = f"{ASSETS}/black_placeholder.png"
 
 IMAGES = [
     (PLACEHOLDER, 456, 340),
@@ -122,9 +122,12 @@ def toolbar_select(objs, root):
 
 
 def grid(objs, root):
+    viewport = len(objs)
+    objs.append(layer(root, 0, 0, CONTENT_W, CONTENT_H,
+                      name="album_grid_layer", bind="album_grid_visible"))
     objs.append({
         "type": "grid",
-        "parent": root,
+        "parent": viewport,
         "name": "album",
         "x": GRID_X,
         "y": GRID_Y,
@@ -169,25 +172,10 @@ def modal(objs, root):
     objs.append(label(card, 24, 22, 344, 30, "Details", size=24, color="#FCFCFF", name="album_modal_title", bind="album_modal_title"))
     objs.append(label(card, 24, 66, 344, 24, "file:", size=16, color="#91919B", name="album_detail_name", bind="album_detail_name"))
     objs.append(label(card, 24, 96, 344, 24, "size:", size=16, color="#91919B", name="album_detail_size", bind="album_detail_size"))
-    objs.append(button(card, 192, 220, 80, 36, "Cancel", bg="#2A2A2C", fg="#FCFCFF", radius=18, size=14, callback="album_cancel_modal"))
-    objs.append(button(card, 284, 220, 84, 36, "Delete", bg="#FF4C01", fg="#FCFCFF", radius=18, size=14, callback="album_confirm_delete"))
-
-
-def album_asset_scene(path):
-    # Keep the assets scene as a resource superset of album_480.json; scalable fullscreen fallback requires a raw copy.
-    asset_objects = [container(-1, 0, 0, CONTENT_W, CONTENT_H)]
-    asset_objects.append(image(0, PLACEHOLDER, 0, 0, 456, 340))
-    asset_objects.append({
-        "type": "image",
-        "parent": 0,
-        "x": 0,
-        "y": 120,
-        "w": 456,
-        "h": 340,
-        "image": PLACEHOLDER,
-        "codec": "raw",
-    })
-    write_scene(path, "album_assets", asset_objects, font=FONT)
+    actions = len(objs)
+    objs.append(layer(card, 0, 0, 392, 272, name="album_delete_actions", bind="album_delete_actions_visible"))
+    objs.append(button(actions, 192, 220, 80, 36, "Cancel", bg="#2A2A2C", fg="#FCFCFF", radius=18, size=14, callback="album_cancel_modal"))
+    objs.append(button(actions, 284, 220, 84, 36, "Delete", bg="#FF4C01", fg="#FCFCFF", radius=18, size=14, callback="album_confirm_delete"))
 
 
 def main():
@@ -202,7 +190,6 @@ def main():
     fullscreen(objs, root)
     modal(objs, root)
     write_scene(scene_out_path(HERE, "album_480.json"), "album", objs, font=FONT)
-    album_asset_scene(scene_out_path(HERE, "album_assets_480.json"))
 
 
 if __name__ == "__main__":

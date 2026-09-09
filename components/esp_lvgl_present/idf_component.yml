@@ -1,7 +1,7 @@
 dependencies:
   espressif/esp_display_present:
     public: true
-    version: 1.0.0
+    version: "^1.0.2"
   espressif/esp_lcd_touch:
     public: true
     version: 1.*

@@ -51,6 +51,7 @@ idf_component_register(
         audio_playback
         esp_timer
         freertos
+        pthread
         espressif__esp_mmap_assets
         georgik__lua
         asr_service

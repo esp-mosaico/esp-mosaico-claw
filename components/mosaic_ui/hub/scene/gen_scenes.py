@@ -835,7 +835,7 @@ def build_hub_objects():
     })
     quick_main = len(objs)
     objs.append(layer(drawer, 0, 0, CONTENT_W, CONTENT_H,
-                      name='quick_main'))
+                      name='quick_main', bind='quick_main_visible'))
     build_quick_content(objs, quick_main)
 
     # Physical insertion prelude. Both strips are authored so the hardware
@@ -855,16 +855,12 @@ def build_hub_objects():
         strip['bind_target'] = 'visible'
         objs.append(strip)
 
-    # Lock Screen is authored last and is therefore above Drawer and all
-    # navigation. Its input interceptor consumes every sample while visible.
+    # Lock content shares the native Drawer with quick controls. Only one
+    # drawer owns the viewport, including frozen drag/settle composition.
     lock_screen = len(objs)
     objs.append(layer(
-        content,
-        {'default': 0, 'min': 0, 'max': 1, 'property': 'x'},
-        {'default': 0, 'min': -CONTENT_H, 'max': 0, 'property': 'y'},
-        CONTENT_W, CONTENT_H,
+        drawer, 0, 0, CONTENT_W, CONTENT_H,
         hidden=True, name='lock_screen', bind='lock_screen_visible',
-        block_scene_swipe=True,
     ))
     lock_aod = len(objs)
     objs.append(layer(

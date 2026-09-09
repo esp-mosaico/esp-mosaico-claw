@@ -28,12 +28,6 @@
 #endif
 
 #define MOSAIC_CLOCK_TICK_MS        1000U
-#define MOSAIC_AOD_SWIPE_UP_MIN_PX  60
-#define MOSAIC_AOD_TAP_SLOP_PX      32
-#define MOSAIC_AOD_DRAG_SLOP_PX       8
-#define MOSAIC_LOCK_TRAVEL_PX        480
-#define MOSAIC_LOCK_UNLOCK_MS        220U
-#define MOSAIC_LOCK_RETURN_MS        160U
 #define MOSAIC_CHARGE_LEVELS         10U
 #define MOSAIC_BATTERY_APPLY_MS      200U
 #define MOSAIC_WIFI_POLL_TICKS       5U   /* 5 * 200 ms ≈ 1 s RSSI refresh */
@@ -66,11 +60,6 @@ typedef struct {
 } mosaic_hub_insert_request_t;
 
 static uint8_t s_charge_percent;
-static bool s_aod_tracking;
-static bool s_aod_drag_failed;
-static int32_t s_aod_x0;
-static int32_t s_aod_y0;
-static int32_t s_aod_drag_y;
 static mosaic_lock_mode_t s_lock_mode;
 static esp_gsp_list_t s_notif_list = ESP_GSP_LIST_NONE;
 static esp_gsp_handle_t s_notif_list_ui;
@@ -78,7 +67,7 @@ static esp_gsp_handle_t s_hub_ui;
 static void* s_clock_timer;
 static void* s_battery_timer;
 static void* s_aod_hint_timer;
-static void* s_lock_anim_timer;
+static void* s_lock_poll_timer;
 static bool s_aod_hint_dim;
 static bool s_pointer_down;
 static bool s_quick_brightness_drag;
@@ -931,65 +920,64 @@ static void mosaic_hub_clock_apply(esp_gsp_handle_t ui)
 #endif
 }
 
+static void mosaic_hub_lock_tick(esp_gsp_handle_t ui, void *user_ctx);
+
 static void mosaic_hub_set_lock_mode(esp_gsp_handle_t ui,
                                      mosaic_lock_mode_t mode)
 {
-    if (ui == NULL || (mode == s_lock_mode &&
-            (mode == MOSAIC_LOCK_HIDDEN || s_lock_anim_timer == NULL))) {
+    if (ui == NULL || mode == s_lock_mode) {
         return;
     }
     if (mode == MOSAIC_LOCK_HIDDEN) {
-        if (s_lock_anim_timer != NULL) {
-            (void)esp_gsp_timer_delete(ui, s_lock_anim_timer);
-            s_lock_anim_timer = NULL;
+        if (s_lock_poll_timer != NULL) {
+            (void)esp_gsp_timer_delete(ui, s_lock_poll_timer);
+            s_lock_poll_timer = NULL;
         }
-        (void)esp_gsp_component_stop_position_animation(
-            ui, GSP_OBJ_KEY_LOCK_SCREEN);
+        /* Called after the native close has settled; restore quick controls
+         * while their shared drawer is offscreen. */
+        (void)esp_gsp_drawer_close(ui, GSP_OBJ_KEY_QUICK_DRAWER, false);
         (void)esp_gsp_set_visible(ui, GSP_BIND_LOCK_SCREEN_VISIBLE, false);
-        (void)esp_gsp_component_set_position(
-            ui, GSP_OBJ_KEY_LOCK_SCREEN, 0, 0);
+        (void)esp_gsp_set_visible(ui, GSP_BIND_QUICK_MAIN_VISIBLE, true);
         s_lock_mode = mode;
-        s_aod_tracking = false;
-        s_aod_drag_failed = false;
-        s_aod_drag_y = 0;
-        printf("mosaic: unlock → resume hub\n");
+        s_pointer_down = false;
         return;
     }
 
-    /* Lock Screen is above Drawer. Closing it also prevents a parked Drawer
-     * settle from becoming visible immediately after unlock. */
-    if (s_lock_anim_timer != NULL) {
-        (void)esp_gsp_timer_delete(ui, s_lock_anim_timer);
-        s_lock_anim_timer = NULL;
-    }
-    (void)esp_gsp_component_stop_position_animation(
-        ui, GSP_OBJ_KEY_LOCK_SCREEN);
-    (void)esp_gsp_component_set_position(
-        ui, GSP_OBJ_KEY_LOCK_SCREEN, 0, 0);
-    (void)esp_gsp_drawer_close(ui, GSP_OBJ_KEY_QUICK_DRAWER, false);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_QUICK_MAIN_VISIBLE, false);
     if (mode == MOSAIC_LOCK_CHARGING) {
-        (void)esp_gsp_set_visible(
-            ui, GSP_BIND_LOCK_SCREEN_CHARGE_VISIBLE, true);
-        (void)esp_gsp_set_visible(
-            ui, GSP_BIND_LOCK_SCREEN_AOD_VISIBLE, false);
+        (void)esp_gsp_set_visible(ui, GSP_BIND_LOCK_SCREEN_CHARGE_VISIBLE, true);
+        (void)esp_gsp_set_visible(ui, GSP_BIND_LOCK_SCREEN_AOD_VISIBLE, false);
         mosaic_hub_charge_refresh(ui);
     } else {
-        (void)esp_gsp_set_visible(
-            ui, GSP_BIND_LOCK_SCREEN_AOD_VISIBLE, true);
-        (void)esp_gsp_set_visible(
-            ui, GSP_BIND_LOCK_SCREEN_CHARGE_VISIBLE, false);
+        (void)esp_gsp_set_visible(ui, GSP_BIND_LOCK_SCREEN_AOD_VISIBLE, true);
+        (void)esp_gsp_set_visible(ui, GSP_BIND_LOCK_SCREEN_CHARGE_VISIBLE, false);
     }
     (void)esp_gsp_set_visible(ui, GSP_BIND_LOCK_SCREEN_VISIBLE, true);
+    esp_gsp_err_t ret = esp_gsp_drawer_open(ui, GSP_OBJ_KEY_QUICK_DRAWER, false);
+    if (ret != ESP_GSP_OK) {
+        ESP_LOGE(TAG, "Open lock drawer failed: %d", (int)ret);
+    }
     s_lock_mode = mode;
-    s_aod_tracking = false;
-    s_aod_drag_failed = false;
-    s_aod_drag_y = 0;
     s_pointer_down = false;
     s_quick_brightness_drag = false;
     s_quick_volume_drag = false;
     s_quick_tap_action = UINT16_MAX;
-    printf("mosaic: lock screen mode=%s\n",
-           mode == MOSAIC_LOCK_CHARGING ? "charging" : "aod");
+    if (s_lock_poll_timer == NULL) {
+        s_lock_poll_timer = esp_gsp_timer_create(ui, 16, mosaic_hub_lock_tick, NULL);
+        if (s_lock_poll_timer == NULL) {
+            ESP_LOGE(TAG, "Create lock completion timer failed");
+        }
+    }
+}
+
+static void mosaic_hub_lock_tick(esp_gsp_handle_t ui, void *user_ctx)
+{
+    (void)user_ctx;
+    bool open = true;
+    if (mosaic_hub_lock_visible() &&
+        esp_gsp_drawer_is_open(ui, GSP_OBJ_KEY_QUICK_DRAWER, &open) == ESP_GSP_OK && !open) {
+        mosaic_hub_set_lock_mode(ui, MOSAIC_LOCK_HIDDEN);
+    }
 }
 
 static void mosaic_hub_enter_lock(esp_gsp_handle_t ui)
@@ -1127,122 +1115,15 @@ static uint16_t mosaic_hub_quick_action_at(int32_t x, int32_t y)
     return UINT16_MAX;
 }
 
-static void mosaic_hub_unlock_timer_cb(esp_gsp_handle_t ui, void *user_ctx)
-{
-    (void)user_ctx;
-    void *timer = s_lock_anim_timer;
-    s_lock_anim_timer = NULL;
-    if (timer != NULL) {
-        (void)esp_gsp_timer_delete(ui, timer);
-    }
-    mosaic_hub_set_lock_mode(ui, MOSAIC_LOCK_HIDDEN);
-}
-
-/* Keep the modal visible until its exit tween has fully exposed the Hub. */
-static void mosaic_hub_start_unlock_animation(esp_gsp_handle_t ui)
-{
-    esp_gsp_err_t err = esp_gsp_component_animate_position_to(
-        ui, GSP_OBJ_KEY_LOCK_SCREEN, 0, -MOSAIC_LOCK_TRAVEL_PX,
-        MOSAIC_LOCK_UNLOCK_MS, ESP_GSP_EASE_OUT);
-    if (err != ESP_GSP_OK) {
-        ESP_LOGW(TAG, "lock screen unlock animation failed: %d", (int)err);
-        mosaic_hub_set_lock_mode(ui, MOSAIC_LOCK_HIDDEN);
-        return;
-    }
-    s_lock_anim_timer = esp_gsp_timer_create(
-        ui, MOSAIC_LOCK_UNLOCK_MS, mosaic_hub_unlock_timer_cb, NULL);
-    if (s_lock_anim_timer == NULL) {
-        ESP_LOGW(TAG, "lock screen unlock timer create failed");
-        mosaic_hub_set_lock_mode(ui, MOSAIC_LOCK_HIDDEN);
-    }
-}
-
-static bool mosaic_hub_intercept_lock_pointer(
-    esp_gsp_handle_t ui, int32_t x, int32_t y, bool pressed)
-{
-    if (s_lock_anim_timer != NULL) {
-        return true;
-    }
-    if (pressed) {
-        if (!s_aod_tracking) {
-            (void)esp_gsp_component_stop_position_animation(
-                ui, GSP_OBJ_KEY_LOCK_SCREEN);
-            (void)esp_gsp_component_set_position(
-                ui, GSP_OBJ_KEY_LOCK_SCREEN, 0, 0);
-            s_aod_tracking = true;
-            s_aod_drag_failed = false;
-            s_aod_x0 = x;
-            s_aod_y0 = y;
-            s_aod_drag_y = 0;
-            return true;
-        }
-
-        const int32_t dy = s_aod_y0 - y;
-        const int32_t dx = x >= s_aod_x0 ? x - s_aod_x0 : s_aod_x0 - x;
-        int32_t drag_y = 0;
-        if (dy > MOSAIC_AOD_DRAG_SLOP_PX && dy > dx) {
-            drag_y = dy >= MOSAIC_LOCK_TRAVEL_PX
-                ? -MOSAIC_LOCK_TRAVEL_PX : -dy;
-        }
-        if (drag_y != s_aod_drag_y && !s_aod_drag_failed) {
-            esp_gsp_err_t err = esp_gsp_component_set_position(
-                ui, GSP_OBJ_KEY_LOCK_SCREEN, 0, drag_y);
-            if (err != ESP_GSP_OK) {
-                s_aod_drag_failed = true;
-                ESP_LOGW(TAG, "lock screen drag update failed: %d", (int)err);
-            } else {
-                s_aod_drag_y = drag_y;
-            }
-        }
-        return true;
-    }
-
-    if (!s_aod_tracking) {
-        return true;
-    }
-    s_aod_tracking = false;
-    const int32_t dy = s_aod_y0 - y;
-    const int32_t dx = x >= s_aod_x0 ? x - s_aod_x0 : s_aod_x0 - x;
-    const bool swipe_up = dy >= MOSAIC_AOD_SWIPE_UP_MIN_PX && dy > dx;
-#if defined(ESP_PLATFORM)
-    const bool mode_button = false;
-#else
-    const int32_t ady = dy >= 0 ? dy : -dy;
-    const bool tap = dx <= MOSAIC_AOD_TAP_SLOP_PX &&
-                     ady <= MOSAIC_AOD_TAP_SLOP_PX;
-    const bool mode_button = s_aod_x0 >= 382 && s_aod_y0 <= 56 &&
-                             x >= 382 && y <= 56 && tap;
-#endif
-    if (mode_button) {
-        mosaic_hub_set_lock_mode(
-            ui, mosaic_hub_is_charging()
-                ? MOSAIC_LOCK_AOD : MOSAIC_LOCK_CHARGING);
-        return true;
-    }
-    if (swipe_up) {
-        mosaic_hub_start_unlock_animation(ui);
-        return true;
-    }
-    if (s_aod_drag_y != 0) {
-        esp_gsp_err_t err = esp_gsp_component_animate_position_to(
-            ui, GSP_OBJ_KEY_LOCK_SCREEN, 0, 0,
-            MOSAIC_LOCK_RETURN_MS, ESP_GSP_EASE_OUT);
-        if (err != ESP_GSP_OK) {
-            ESP_LOGW(TAG, "lock screen return animation failed: %d", (int)err);
-            (void)esp_gsp_component_set_position(
-                ui, GSP_OBJ_KEY_LOCK_SCREEN, 0, 0);
-        }
-    }
-    s_aod_drag_y = 0;
-    return true;
-}
-
 static bool mosaic_hub_intercept_pointer(
     esp_gsp_handle_t ui, int32_t x, int32_t y, bool pressed, void *user_ctx)
 {
     (void)user_ctx;
     if (mosaic_hub_lock_visible()) {
-        return mosaic_hub_intercept_lock_pointer(ui, x, y, pressed);
+        /* Native Drawer owns the entire lock viewport, its gesture kinetics,
+         * and snapshot composition. Do not consume its pointer samples. */
+        s_pointer_down = pressed;
+        return false;
     }
     bool drawer_open = false;
     if (pressed && !s_pointer_down) {
@@ -1318,7 +1199,6 @@ static bool mosaic_hub_intercept_pointer(
     }
     s_pointer_down = pressed;
 
-    s_aod_tracking = false;
     return false;
 }
 
@@ -1423,12 +1303,10 @@ static void mosaic_hub_start_timers(esp_gsp_handle_t ui)
 
 static void mosaic_hub_stop_timers(esp_gsp_handle_t ui)
 {
-    if (s_lock_anim_timer != NULL) {
-        (void)esp_gsp_timer_delete(ui, s_lock_anim_timer);
-        s_lock_anim_timer = NULL;
+    if (s_lock_poll_timer != NULL) {
+        (void)esp_gsp_timer_delete(ui, s_lock_poll_timer);
+        s_lock_poll_timer = NULL;
     }
-    (void)esp_gsp_component_stop_position_animation(
-        ui, GSP_OBJ_KEY_LOCK_SCREEN);
     if (s_quick_feedback_timer != NULL) {
         (void)esp_gsp_timer_delete(ui, s_quick_feedback_timer);
         s_quick_feedback_timer = NULL;
@@ -1480,7 +1358,6 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
 {
     s_hub_ui = ui;
     s_charge_percent = 0;
-    s_aod_tracking = false;
     s_pointer_down = false;
     s_quick_brightness_drag = false;
     s_quick_volume_drag = false;

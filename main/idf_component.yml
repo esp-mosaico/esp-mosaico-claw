@@ -80,16 +80,11 @@ dependencies:
   http_server:
     path: ../components/http_server
 
-  mosaico_camera:
-    path: ../components/mosaico_camera
+  mosaico_camera_service:
+    path: ../components/mosaico_camera_service
 
   settings:
     path: ../third-party/esp-claw/components/common/settings
 
   wifi_manager:
     path: ../components/wifi_manager
-
-  esp_video:
-    path: ../third-party/esp-claw/components/common/esp_video
-    matches:
-    - if: $CONFIG{ESP_BOARD_DEV_CAMERA_SUPPORT} == True

@@ -1,4 +1,0 @@
-version: "0.1.0"
-description: Mosaico interaction board driver
-dependencies:
-  espressif/led_strip: "^3.0.3"

@@ -21,6 +21,8 @@ endif()
 
 include("${CMAKE_SOURCE_DIR}/tools/cmake/flash_partition_defaults.cmake")
 
+list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/third-party/esp-claw/components/common/esp_video")
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 idf_build_set_property(
     BOOTLOADER_EXTRA_COMPONENT_DIRS

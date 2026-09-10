@@ -15,8 +15,8 @@ idf_component_register(
         espressif__bq27220
         espressif2022__bmi270
         gen_bmgr_codes
-        mosaico_camera
-        mosaico_board_variant
+        mosaico_camera_service
+        mosaico_bsp_bmgr_bridge
         mosaico_boot_splash
         nvs_flash
         weather_service

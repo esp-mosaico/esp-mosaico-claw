@@ -1,7 +1,7 @@
 version: 1.0.0
 # Peripherals for ESP32-S31 HMI Series (CO5300 480x480 sub-board), from esp32_s31_hmi BSP.
 peripherals:
-  # Mainboard I2C bus. Runtime board-variant setup remaps v1.0 to GPIO0/GPIO1.
+  # Logical mainboard I2C descriptor. The BSP provider selects the variant pins.
   - name: i2c_master
     type: i2c
     role: master
@@ -11,17 +11,7 @@ peripherals:
         sda: 56
         scl: 3
 
-  # Expansion connector I2C bus. v1.0 aliases I2C0; v1.1 uses I2C1.
-  - name: i2c_subboard
-    type: i2c
-    role: master
-    config:
-      port: 1
-      pins:
-        sda: 0
-        scl: 1
-
-  # CO5300 QSPI LCD bus. Schematic nets: SCL=GPIO3, D0~D3=GPIO36/2/50/51.
+  # CO5300 QSPI LCD bus. SCLK/reset are swapped between board variants.
   - name: spi_display
     type: spi
     role: master
@@ -34,7 +24,7 @@ peripherals:
         data2_io_num: 35
         data3_io_num: 9
         # SPI transport chunk: 480 px * 10 lines * RGB565.
-        max_transfer_sz: 9600
+        max_transfer_sz: 460800
 
   # LCD panel power enable. Schematic net: LCD_EN=GPIO45 (active high).
   - name: gpio_lcd_en

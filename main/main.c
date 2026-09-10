@@ -37,7 +37,7 @@
 #include "time.h"
 #include "nvs_flash.h"
 #include "http_server.h"
-#include "mosaico_camera.h"
+#include "mosaico_camera_service.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -57,7 +57,7 @@
 #include "cap_system_platform.h"
 #include "mosaic_settings_platform.h"
 #if CONFIG_ESP_BOARD_ESP_MOSAICO
-#include "mosaico_board_variant.h"
+#include "mosaico_bsp_bmgr_bridge.h"
 #endif
 #ifdef ESP_MOSAICO_REMOTE_DEBUG
 #include "esp_remote_mosaic_adapter.h"
@@ -823,7 +823,7 @@ void app_main(void)
     app_config_to_claw(s_config, s_claw_config);
     init_timezone(app_config_get_timezone(s_config)); // no need to check error
 #if CONFIG_ESP_BOARD_ESP_MOSAICO
-    ESP_ERROR_CHECK(mosaico_board_variant_prepare());
+    ESP_ERROR_CHECK(mosaico_bsp_bmgr_init());
     ESP_ERROR_CHECK(trial_auth_validate_hmac_efuse_key());
 #endif
     ESP_ERROR_CHECK(trial_auth_init());
@@ -832,7 +832,7 @@ void app_main(void)
      * registry. Initialize it before either service attempts a claim. */
     ESP_ERROR_CHECK(claw_hw_registry_init());
 #if !CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-    ESP_ERROR_CHECK(mosaico_camera_init());
+    ESP_ERROR_CHECK(mosaico_camera_service_init());
 #endif
     ESP_ERROR_CHECK(app_fs_init());
 
@@ -931,7 +931,7 @@ void app_main(void)
                  "Claw background services disabled: Wi-Fi, network, HTTP, "
                  "bindings, audio/ASR, capabilities, and agent not started");
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-        ESP_ERROR_CHECK(mosaico_camera_init());
+        ESP_ERROR_CHECK(mosaico_camera_service_init());
         esp_err_t battery_monitor_err =
             mosaic_settings_platform_start_battery_monitor();
         if (battery_monitor_err != ESP_OK) {
@@ -1057,7 +1057,7 @@ void app_main(void)
     ESP_ERROR_CHECK(app_claw_set_save_config_callback(main_save_claw_config, NULL));
     ESP_ERROR_CHECK(app_claw_set_network_ready_callback(main_network_ready, NULL));
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-    ESP_ERROR_CHECK(mosaico_camera_init());
+    ESP_ERROR_CHECK(mosaico_camera_service_init());
     esp_err_t battery_monitor_err = mosaic_settings_platform_start_battery_monitor();
     if (battery_monitor_err != ESP_OK) {
         ESP_LOGW(TAG, "battery monitor unavailable: %s", esp_err_to_name(battery_monitor_err));

@@ -148,7 +148,8 @@ esp_err_t display_service_target_build(
         staging = "gram-te";
     } else {
         staging = "gram";
-        staging_buffers = DISPLAY_SERVICE_TARGET_BUFFER_COUNT;
+        out_target->drawbuf.te_compose_buffers = 2,
+        staging_buffers = out_target->drawbuf.te_compose_buffers;
     }
     ESP_LOGI(TAG,
              "panel=%s mode=%d te=%d gpio=%d bus=%" PRIu32

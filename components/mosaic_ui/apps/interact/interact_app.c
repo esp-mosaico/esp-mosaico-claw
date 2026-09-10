@@ -13,6 +13,13 @@ static void *s_timer;
 static interact_snapshot_t s_previous;
 static int s_light_text[3], s_status_text, s_ir_text, s_slot_text;
 
+static uint32_t ldr_indicator_color(bool ready, uint8_t light)
+{
+    const uint8_t level = ready ? 40U + (uint8_t)(((uint16_t)light * 200U) / 100U) : 48U;
+    // GSP color bindings use the scene-native RGB565 format.
+    return ((uint32_t)(level & 0xF8U) << 8) | ((uint32_t)(level & 0xFCU) << 3) | (level >> 3);
+}
+
 static void render(esp_gsp_handle_t ui, void *ctx)
 {
     (void)ctx;
@@ -26,13 +33,16 @@ static void render(esp_gsp_handle_t ui, void *ctx)
     esp_gsp_set_visible(ui, GSP_BIND_KEY_L, state.ready && state.key_l);
     esp_gsp_set_visible(ui, GSP_BIND_KEY_R, state.ready && state.key_r);
     esp_gsp_set_visible(ui, GSP_BIND_PIR, state.ready && state.pir);
+    esp_gsp_set_visible(ui, GSP_BIND_MODULE_UNAVAILABLE, state.slot < 0);
+    esp_gsp_set_color(ui, GSP_BIND_LDR_GLOW, ldr_indicator_color(state.ready, state.light));
     char light[16];
     if (state.ready) snprintf(light, sizeof(light), "%u%%", state.light);
     else snprintf(light, sizeof(light), "--%%");
     interact_light_set_text(ui, light, s_light_text);
     interact_status_set_text(ui, state.status, &s_status_text);
-    interact_ir_status_set_text(ui, state.ir_status, &s_ir_text);
-    interact_slot_set_text(ui, state.preferred < 0 ? "AUTO >" : state.preferred == 0 ? "LEFT >" : "RIGHT >", &s_slot_text);
+    const char *ir_status = !state.ir_status[0] ? "OFF" : !strcmp(state.ir_status, "IR sending") ? "SEND" : !strcmp(state.ir_status, "IR sent") ? "SENT" : "FAIL";
+    interact_ir_status_set_text(ui, ir_status, &s_ir_text);
+    interact_slot_set_text(ui, state.preferred < 0 ? "i" : state.preferred == 0 ? "L" : "R", &s_slot_text);
     s_previous = state;
 }
 
@@ -72,7 +82,7 @@ const mosaic_app_descriptor_t mosaic_interact_app = {
     .back_action = MOSAIC_APP_SHELL_BACK_ACTION,
     .name = "interact", .title = "Interaction",
     .directory = &gsp_obj_directory_interact,
-    // Keep the full PCB canvas while retaining the shell's bottom exit gesture.
+    // Keep the full dashboard canvas while retaining the shell's bottom exit gesture.
     .disable_swipe = true, .root_header_in_stack = true, .back_exits_app = true,
     .on_started = started, .on_stopping = stopping, .on_event = event,
 };

@@ -85,6 +85,7 @@ CONFIG_CAMERA_SC101IOT_DVP_DEFAULT_FMT_YUV422_1280X720_25FPS=y
 
 # The native 480x480 Mosaic/GSP UI owns the display on esp_mosaico.
 CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE=y
+CONFIG_BSP_DISPLAY_ENABLE=n
 # Keep image decoding on the render task until the async decoder's
 # app-switch lifetime synchronization is fixed.
 CONFIG_ESP_GSP_ENABLE_ASYNC_DECODE=n

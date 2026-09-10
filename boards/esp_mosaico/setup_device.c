@@ -12,7 +12,7 @@
 #include "esp_lcd_panel_interface.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
-#include "esp_lcd_touch_cst9217.h"
+#include "esp_lcd_touch_cst9220.h"
 #include "esp_log.h"
 #include "mosaico_boot_handoff.h"
 
@@ -168,7 +168,7 @@ esp_err_t lcd_touch_factory_entry_t(esp_lcd_panel_io_handle_t io,
                                     const esp_lcd_touch_config_t *touch_dev_config,
                                     esp_lcd_touch_handle_t *ret_touch)
 {
-    esp_err_t ret = esp_lcd_touch_new_i2c_cst9217(io, touch_dev_config, ret_touch);
+    esp_err_t ret = esp_lcd_touch_new_i2c_cst9220(io, touch_dev_config, ret_touch);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create CST9217 touch driver: %s", esp_err_to_name(ret));
         return ret;

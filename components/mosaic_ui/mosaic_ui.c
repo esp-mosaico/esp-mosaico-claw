@@ -16,7 +16,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "mosaico_camera.h"
+#include "mosaico_camera_service.h"
 #include "mosaico_module_mgr.h"
 #include "mosaic_welcome.h"
 #include "mosaic_hub_actions.h"
@@ -481,7 +481,7 @@ esp_err_t mosaic_ui_start(void)
 
     ESP_RETURN_ON_ERROR(mosaico_module_mgr_subscribe(on_module_insert_notice, NULL), TAG, "subscribe to module insertions");
     s_started = true;
-    mosaico_camera_set_availability_callback(on_camera_availability_notice, NULL);
+    mosaico_camera_service_set_callback(on_camera_availability_notice, NULL);
     ESP_LOGI(TAG, "mosaic hub live (ported esp-gsp example)");
     return ESP_OK;
 }

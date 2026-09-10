@@ -5,15 +5,13 @@
 
 #pragma once
 
-#include <stdbool.h>
 #include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-esp_err_t subboard_platform_i2c_init(void);
-esp_err_t subboard_platform_set_power(bool on);
+esp_err_t mosaico_bsp_bmgr_init(void);
 
 #ifdef __cplusplus
 }

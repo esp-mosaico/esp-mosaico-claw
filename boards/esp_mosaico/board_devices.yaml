@@ -25,9 +25,8 @@ devices:
     type: display_lcd
     sub_type: spi
     version: default
-    power_ctrl_device: lcd_power_ctrl
     dependencies:
-      espressif/esp_lcd_co5300: "^2.0.3"
+      espressif/esp_lcd_co5300: ^2.2
       mosaico_boot_splash:
         path: "${BOARD_PATH}/../../components/mosaico_boot_splash"
     config:
@@ -80,7 +79,7 @@ devices:
     sub_type: i2c
     version: default
     dependencies:
-      waveshare/esp_lcd_touch_cst9217: "^1.0.4"
+      espressif/esp_lcd_touch_cst9220: ^0.1.0
     config:
       io_i2c_config:
         scl_speed_hz: 400000
@@ -155,8 +154,8 @@ devices:
     dependencies:
       espressif/spi_nand_flash: ^1.4.1
       joltwallet/littlefs: ^1.22.0
-      mosaico_board_variant:
-        path: ${BOARD_PATH}/components/mosaico_board_variant
+      mosaico_bsp_bmgr_bridge:
+        path: ${BOARD_PATH}/components/mosaico_bsp_bmgr_bridge
 
   - name: battery_monitor
     chip: bq27220

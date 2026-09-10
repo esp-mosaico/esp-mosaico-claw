@@ -26,7 +26,8 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "linux/videodev2.h"
-#include "mosaico_camera.h"
+#include "mosaico_camera_service.h"
+#include "mosaico_module_camera.h"
 #endif
 
 #define MOSAIC_CAMERA_W 480U
@@ -115,7 +116,7 @@ static bool camera_is_stopping(void)
 
 static bool camera_board_present(void)
 {
-    return mosaico_camera_is_available();
+    return mosaico_camera_service_is_available();
 }
 
 static void camera_set_missing_hint(esp_gsp_handle_t ui, bool visible)
@@ -387,7 +388,7 @@ static void camera_update_recognition_result(esp_gsp_handle_t ui, const camera_v
 static void camera_stop_registered_stream(void)
 {
     mosaico_camera_handle_t camera = NULL;
-    esp_err_t err = mosaico_camera_get_default(&camera);
+    esp_err_t err = mosaico_camera_service_get_default(&camera);
     if (err == ESP_OK) {
         err = mosaico_camera_close(camera);
     }
@@ -497,7 +498,7 @@ static void camera_capture_task(void *ctx)
 
     while (!camera_is_stopping()) {
         mosaico_camera_handle_t camera = NULL;
-        err = mosaico_camera_get_default(&camera);
+        err = mosaico_camera_service_get_default(&camera);
         if (err != ESP_OK) {
             if (!waiting_logged && !camera_is_stopping()) {
                 ESP_LOGI(TAG, "Waiting for CameraBoard insertion");
@@ -526,6 +527,7 @@ static void camera_capture_task(void *ctx)
             err = camera_ensure_preview_buffers(MOSAIC_CAMERA_BUFFERS);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "failed to allocate preview buffers: %s", esp_err_to_name(err));
+                camera_stop_registered_stream();
                 last_camera = NULL;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
@@ -534,6 +536,7 @@ static void camera_capture_task(void *ctx)
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "failed to start camera stream: %s",
                          esp_err_to_name(err));
+                camera_stop_registered_stream();
                 last_camera = NULL;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;
@@ -562,6 +565,7 @@ static void camera_capture_task(void *ctx)
                 if (err != ESP_ERR_TIMEOUT && !camera_is_stopping()) {
                     ESP_LOGE(TAG, "camera warm-up failed: %s",
                              esp_err_to_name(err));
+                    camera_stop_registered_stream();
                     last_camera = NULL;
                 }
                 continue;
@@ -618,6 +622,7 @@ static void camera_capture_task(void *ctx)
             if (err != ESP_ERR_TIMEOUT && !camera_is_stopping()) {
                 ESP_LOGE(TAG, "camera capture failed: %s",
                          esp_err_to_name(err));
+                camera_stop_registered_stream();
                 last_camera = NULL;
             }
             continue;
@@ -788,7 +793,7 @@ esp_err_t mosaic_camera_set_flash_enabled(bool enabled)
     portEXIT_CRITICAL(&s_camera.lock);
 
     mosaico_camera_handle_t camera = NULL;
-    esp_err_t ret = mosaico_camera_get_default(&camera);
+    esp_err_t ret = mosaico_camera_service_get_default(&camera);
     if (ret != ESP_OK) {
         return ret;
     }

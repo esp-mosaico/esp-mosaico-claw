@@ -1,6 +1,6 @@
 ## Mosaic/GSP system UI backed by the shared display_service presenter.
 dependencies:
-  idf: ">=6.0"
+  idf: ">=6.2"
   display_service:
     path: ../display_service
   audio_hub:
@@ -11,10 +11,14 @@ dependencies:
     path: ../asr_service
   cap_im_ai_create:
     path: ../cap_im_ai_create
-  mosaico_camera:
-    path: ../mosaico_camera
-  mosaico_interact:
-    path: ../mosaico_interact
+  mosaico_camera_service:
+    path: ../mosaico_camera_service
+
+  mosaico_module_interact:
+    git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+    version: 80140f478
+    path: components/mosaico_module_interact
+
   weather_service:
     path: ../weather_service
   claw_core:

@@ -3,8 +3,7 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
-#include "mosaico_interact.h"
-#include "subboard_support/subboard.h"
+#include "mosaico_module_interact.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -34,10 +33,9 @@ static void worker(void *arg)
     (void)arg;
     mosaico_interact_handle_t board = NULL;
     interact_snapshot_t state = {.slot = -1, .preferred = s_preferred};
-    unsigned ticks = 0, misses = 0;
+    unsigned ticks = 0;
     uint8_t manual_leds = 0, failed_leds = 0;
     TickType_t ir_until = 0;
-    TickType_t retry_after = 0;
     esp_err_t err = mosaico_module_mgr_init(NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "module manager init: %s", esp_err_to_name(err));
@@ -60,13 +58,12 @@ static void worker(void *arg)
                 board = NULL;
             }
             state = (interact_snapshot_t){.slot = -1, .preferred = preferred};
-            ticks = misses = 0;
+            ticks = 0;
             manual_leds = failed_leds = 0;
-            retry_after = 0;
             toggle = 0;
             ir = false;
         }
-        if (!board && err == ESP_OK && ticks % 20 == 0 && (int32_t)(xTaskGetTickCount() - retry_after) >= 0) {
+        if (!board && err == ESP_OK && ticks % 20 == 0) {
             mosaico_module_mgr_info_t info = {0};
             bool found = false, busy = false;
             for (int slot = 0; slot < 2; ++slot) {
@@ -99,71 +96,51 @@ static void worker(void *arg)
             }
         }
         if (board) {
-            // Interaction wiring leaves EEPROM address selection available.
-            if (ticks % 10 == 0) {
-                mosaico_module_mgr_info_t left;
-                bool camera = mosaico_module_mgr_get_info(MOSAICO_MODULE_MGR_SLOT_LEFT, &left) == ESP_OK && left.state == MOSAICO_MODULE_MGR_STATE_CLAIMED && left.eeprom.board_type == MOSAICO_BOARD_TYPE_CAMERA;
-                if (!camera) {
-                    misses = i2c_master_probe(bsp_subboard_get_i2c_bus(), state.slot == 0 ? 0x50 : 0x51, 30) == ESP_OK ? 0 : misses + 1;
+            manual_leds ^= toggle & ~((state.key_l ? (1U << 5) : 0) | (state.key_r ? (1U << 4) : 0));
+            if (ir && (int32_t)(xTaskGetTickCount() - ir_until) >= 0) {
+                snprintf(state.ir_status, sizeof(state.ir_status), "IR sending");
+                publish(&state);
+                esp_err_t result = mosaico_interact_ir_send_nec(board, 0x00, 0x10);
+                snprintf(state.ir_status, sizeof(state.ir_status), result == ESP_OK ? "IR sent" : "IR failed");
+                if (result != ESP_OK) {
+                    ESP_LOGW(TAG, "IR send: %s", esp_err_to_name(result));
                 }
+                ir_until = xTaskGetTickCount() + pdMS_TO_TICKS(700);
             }
-            if (misses >= 2) {
-                ESP_LOGW(TAG, "slot %d removed", state.slot);
-                mosaico_interact_close(board);
-                board = NULL;
-                state = (interact_snapshot_t){.slot = -1, .preferred = preferred};
-                snprintf(state.status, sizeof(state.status), "Board disconnected");
-                misses = 0;
-                // Allow the manager's three discovery samples to settle.
-                retry_after = xTaskGetTickCount() + pdMS_TO_TICKS(4000);
-                mosaico_module_mgr_request_rescan();
+            mosaico_interact_inputs_t data;
+            esp_err_t result = mosaico_interact_read_inputs(board, &data);
+            if (result == ESP_OK) {
+                if (!state.ready) {
+                    snprintf(state.status, sizeof(state.status), "%s connected", state.slot == 0 ? "Left" : "Right");
+                }
+                state.key_l = data.left_pressed;
+                state.key_r = data.right_pressed;
+                state.pir = data.motion_detected;
+                state.light = data.light_level;
+                state.ready = true;
             } else {
-                manual_leds ^= toggle & ~((state.key_l ? (1U << 5) : 0) | (state.key_r ? (1U << 4) : 0));
-                if (ir && (int32_t)(xTaskGetTickCount() - ir_until) >= 0) {
-                    snprintf(state.ir_status, sizeof(state.ir_status), "IR sending");
-                    publish(&state);
-                    esp_err_t result = mosaico_interact_ir_send_nec(board, 0x00, 0x10);
-                    snprintf(state.ir_status, sizeof(state.ir_status), result == ESP_OK ? "IR sent" : "IR failed");
-                    if (result != ESP_OK) {
-                        ESP_LOGW(TAG, "IR send: %s", esp_err_to_name(result));
-                    }
-                    ir_until = xTaskGetTickCount() + pdMS_TO_TICKS(700);
+                if (state.ready) {
+                    ESP_LOGW(TAG, "read: %s", esp_err_to_name(result));
                 }
-                mosaico_interact_inputs_t data;
-                esp_err_t result = mosaico_interact_read_inputs(board, &data);
+                state.ready = state.key_l = state.key_r = state.pir = false;
+                snprintf(state.status, sizeof(state.status), "Sensor read failed");
+            }
+            // Touch and mechanical presses share inputs; preserve the manual light setting on release.
+            const uint8_t pressed_leds = (state.key_l ? (1U << 5) : 0) | (state.key_r ? (1U << 4) : 0);
+            const uint8_t desired_leds = manual_leds | pressed_leds;
+            for (unsigned i = 0; i < 6; ++i) {
+                const uint8_t bit = 1U << i;
+                if (!(((desired_leds ^ state.leds) | (pressed_leds ^ state.pressed_leds)) & bit)) continue;
+                const mosaico_interact_rgb_t color = (pressed_leds & bit) ? s_pressed_color : (desired_leds & bit) ? s_colors[i] : (mosaico_interact_rgb_t){0};
+                result = mosaico_interact_led_set(board, i, color);
                 if (result == ESP_OK) {
-                    if (!state.ready) {
-                        snprintf(state.status, sizeof(state.status), "%s connected", state.slot == 0 ? "Left" : "Right");
-                    }
-                    state.key_l = data.left_pressed;
-                    state.key_r = data.right_pressed;
-                    state.pir = data.motion_detected;
-                    state.light = data.light_level;
-                    state.ready = true;
+                    state.leds = (state.leds & ~bit) | (desired_leds & bit);
+                    state.pressed_leds = (state.pressed_leds & ~bit) | (pressed_leds & bit);
+                    failed_leds &= ~bit;
                 } else {
-                    if (state.ready) {
-                        ESP_LOGW(TAG, "read: %s", esp_err_to_name(result));
-                    }
-                    state.ready = state.key_l = state.key_r = state.pir = false;
-                    snprintf(state.status, sizeof(state.status), "Sensor read failed");
-                }
-                // Touch and mechanical presses share inputs; preserve the manual light setting on release.
-                const uint8_t pressed_leds = (state.key_l ? (1U << 5) : 0) | (state.key_r ? (1U << 4) : 0);
-                const uint8_t desired_leds = manual_leds | pressed_leds;
-                for (unsigned i = 0; i < 6; ++i) {
-                    const uint8_t bit = 1U << i;
-                    if (!(((desired_leds ^ state.leds) | (pressed_leds ^ state.pressed_leds)) & bit)) continue;
-                    const mosaico_interact_rgb_t color = (pressed_leds & bit) ? s_pressed_color : (desired_leds & bit) ? s_colors[i] : (mosaico_interact_rgb_t){0};
-                    result = mosaico_interact_led_set(board, i, color);
-                    if (result == ESP_OK) {
-                        state.leds = (state.leds & ~bit) | (desired_leds & bit);
-                        state.pressed_leds = (state.pressed_leds & ~bit) | (pressed_leds & bit);
-                        failed_leds &= ~bit;
-                    } else {
-                        if (!(failed_leds & bit)) ESP_LOGW(TAG, "LED %u: %s", i, esp_err_to_name(result));
-                        failed_leds |= bit;
-                        snprintf(state.status, sizeof(state.status), "LED write failed");
-                    }
+                    if (!(failed_leds & bit)) ESP_LOGW(TAG, "LED %u: %s", i, esp_err_to_name(result));
+                    failed_leds |= bit;
+                    snprintf(state.status, sizeof(state.status), "LED write failed");
                 }
             }
         }

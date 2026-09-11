@@ -43,6 +43,11 @@ dependencies:
       - if: $CONFIG{APP_CLAW_CAP_LUA} == True
     path: ../../third-party/esp-claw/components/claw_capabilities/cap_lua
 
+  cap_app_mgr:
+    rules:
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+    path: ../../third-party/esp-claw/components/claw_capabilities/cap_app_mgr
+
   cap_mcp_client:
     rules:
       - if: $CONFIG{APP_CLAW_CAP_MCP_CLIENT} == True
@@ -115,10 +120,10 @@ dependencies:
   claw_skill:
     path: ../../third-party/esp-claw/components/claw_modules/claw_skill
 
-  claw_launcher:
+  app_registry:
     rules:
-      - if: $CONFIG{APP_CLAW_CAP_SKILL_MGR} == True
-    path: ../../third-party/esp-claw/components/claw_modules/claw_launcher
+      - if: $CONFIG{APP_CLAW_CAP_LUA} == True
+    path: ../../third-party/esp-claw/components/common/app_registry
 
   claw_utils:
     path: ../../third-party/esp-claw/components/claw_modules/claw_utils

@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "id": "album_app",
   "entry": "scripts/album_app.lua",
   "display_name": "Album",
   "args": {},

@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "id": "flappybird",
   "entry": "scripts/flappybird.lua",
   "display_name": "Flappy Bird",
   "args": {},

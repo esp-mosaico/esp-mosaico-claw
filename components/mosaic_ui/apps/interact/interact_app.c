@@ -33,7 +33,7 @@ static void render(esp_gsp_handle_t ui, void *ctx)
     esp_gsp_set_visible(ui, GSP_BIND_KEY_L, state.ready && state.key_l);
     esp_gsp_set_visible(ui, GSP_BIND_KEY_R, state.ready && state.key_r);
     esp_gsp_set_visible(ui, GSP_BIND_PIR, state.ready && state.pir);
-    esp_gsp_set_visible(ui, GSP_BIND_MODULE_UNAVAILABLE, state.slot < 0);
+    esp_gsp_set_visible(ui, GSP_BIND_MODULE_UNAVAILABLE, state.checked && state.slot < 0);
     esp_gsp_set_color(ui, GSP_BIND_LDR_GLOW, ldr_indicator_color(state.ready, state.light));
     char light[16];
     if (state.ready) snprintf(light, sizeof(light), "%u%%", state.light);

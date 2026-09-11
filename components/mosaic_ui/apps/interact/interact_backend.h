@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 typedef struct {
-    bool ready, key_l, key_r, pir;
+    bool ready, checked, key_l, key_r, pir;
     uint8_t leds, pressed_leds, light;
     int slot, preferred;
     char status[48], ir_status[24];

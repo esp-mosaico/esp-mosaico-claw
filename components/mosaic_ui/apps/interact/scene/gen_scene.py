@@ -67,12 +67,12 @@ def main():
     objs.append(button(0, 413, 10, 47, 47, "i", size=23, radius=24, callback="slot", name="slot", opacity=0))
     objs[-1]["bind"] = "slot"
 
-    unavailable = layer(0, 78, 188, 324, 116, name="module_unavailable", bind="module_unavailable", bind_target="visible")
+    unavailable = layer(0, 30, 188, 420, 116, name="module_unavailable", bind="module_unavailable", bind_target="visible", hidden=True)
     objs.append(unavailable)
-    objs.append(container(len(objs) - 1, 0, 0, 324, 116, bg="#161616", radius=18, border="#68686C", border_w=2, opacity=245))
+    objs.append(container(len(objs) - 1, 0, 0, 420, 116, bg="#161616", radius=18, border="#68686C", border_w=2, opacity=245))
     objs.append(container(len(objs) - 2, 18, 18, 8, 80, bg="#FF4C01", radius=4))
-    objs.append(label(len(objs) - 3, 42, 22, 258, 34, "MODULE NOT CONNECTED", size=20, color="#F0F0F4", align="center"))
-    objs.append(label(len(objs) - 4, 42, 62, 258, 28, "CONTROLS UNAVAILABLE", size=14, color="#9C9CA4", align="center"))
+    objs.append(label(len(objs) - 3, 42, 22, 354, 34, "MODULE NOT CONNECTED", size=20, color="#F0F0F4", align="center"))
+    objs.append(label(len(objs) - 4, 42, 62, 354, 28, "CONTROLS UNAVAILABLE", size=14, color="#9C9CA4", align="center"))
     for obj in objs:
         if obj["type"] in ("label", "button"):
             obj["font_charset"] = ASCII_PRINTABLE

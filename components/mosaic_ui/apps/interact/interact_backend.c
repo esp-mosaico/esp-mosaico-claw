@@ -95,6 +95,8 @@ static void worker(void *arg)
                 snprintf(state.status, sizeof(state.status), busy ? "Board in use" : "Connect interaction board");
             }
         }
+        // Do not report the initial unknown state as a missing module.
+        state.checked = true;
         if (board) {
             manual_leds ^= toggle & ~((state.key_l ? (1U << 5) : 0) | (state.key_r ? (1U << 4) : 0));
             if (ir && (int32_t)(xTaskGetTickCount() - ir_until) >= 0) {
@@ -169,6 +171,7 @@ void interact_backend_start(void)
     if (!s_lock || !s_done || xTaskCreate(worker, "interact", 6144, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "worker allocation failed");
         snprintf(s_state.status, sizeof(s_state.status), "Out of memory");
+        s_state.checked = true;
         if (s_lock) vSemaphoreDelete(s_lock);
         if (s_done) vSemaphoreDelete(s_done);
         s_lock = s_done = NULL;
@@ -218,7 +221,7 @@ void interact_backend_stop(void) {}
 void interact_backend_command(int command) { (void)command; }
 void interact_backend_snapshot(interact_snapshot_t *out)
 {
-    *out = (interact_snapshot_t){.slot = -1};
+    *out = (interact_snapshot_t){.slot = -1, .checked = true};
     snprintf(out->status, sizeof(out->status), "Preview - no hardware");
 }
 #endif

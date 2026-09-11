@@ -474,6 +474,18 @@ static void camera_restore_after_flash(
     }
 }
 
+static bool camera_restart_after_timeout(mosaico_camera_handle_t camera, uint32_t *skip_frames)
+{
+    ESP_LOGW(TAG, "camera frame timeout; restarting stream");
+    const esp_err_t err = mosaico_camera_restart(camera);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "camera stream restart failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    *skip_frames = MOSAIC_CAMERA_SKIP_FRAMES;
+    return true;
+}
+
 static void camera_capture_task(void *ctx)
 {
     esp_gsp_handle_t ui = ctx;
@@ -562,7 +574,12 @@ static void camera_capture_task(void *ctx)
             mosaico_camera_frame_t frame = {0};
             err = mosaico_camera_get_frame(camera, &frame);
             if (err != ESP_OK) {
-                if (err != ESP_ERR_TIMEOUT && !camera_is_stopping()) {
+                if (err == ESP_ERR_TIMEOUT && !camera_is_stopping()) {
+                    if (!camera_restart_after_timeout(camera, &skip_frames)) {
+                        camera_stop_registered_stream();
+                        last_camera = NULL;
+                    }
+                } else if (!camera_is_stopping()) {
                     ESP_LOGE(TAG, "camera warm-up failed: %s",
                              esp_err_to_name(err));
                     camera_stop_registered_stream();
@@ -619,7 +636,12 @@ static void camera_capture_task(void *ctx)
                 camera_restore_after_flash(camera, &flash_state);
             }
             frame_finish_write((size_t)slot, false);
-            if (err != ESP_ERR_TIMEOUT && !camera_is_stopping()) {
+            if (err == ESP_ERR_TIMEOUT && !camera_is_stopping()) {
+                if (!camera_restart_after_timeout(camera, &skip_frames)) {
+                    camera_stop_registered_stream();
+                    last_camera = NULL;
+                }
+            } else if (!camera_is_stopping()) {
                 ESP_LOGE(TAG, "camera capture failed: %s",
                          esp_err_to_name(err));
                 camera_stop_registered_stream();

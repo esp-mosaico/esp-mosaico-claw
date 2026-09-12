@@ -4,7 +4,6 @@ local dly = require("delay")
 local sys = require("system")
 
 local button_ok, button = pcall(require, "button")
-local touch_ok, lcd_touch = pcall(require, "lcd_touch")
 
 local a = type(args) == "table" and args or {}
 
@@ -154,7 +153,7 @@ local DEFAULT_FZ = clamp(math.floor(H / 12), 14, 24)
 local FZ = clamp(math.floor(type(FONT_SIZE_ARG) == "number" and FONT_SIZE_ARG or DEFAULT_FZ), 12, 40)
 
 local touch_enabled, button_handle = false, nil
-local touch_consumed, button_last_level = false, nil
+local touch_down, button_last_level = false, nil
 local input_sources = {}
 
 local function cleanup()
@@ -176,11 +175,6 @@ end
 
 local function init_touch_input()
     if not ENABLE_TOUCH then return false end
-    if not touch_ok then
-        print("[dino] WARN: require(lcd_touch) failed")
-        return false
-    end
-
     touch_enabled = true
     add_input_source("touch:display")
     return true
@@ -270,19 +264,18 @@ local function reset()
     score, over = 0, false
 end
 
+local function consume_touch_press()
+    local down = #disp.touch.read() > 0
+    local pressed = down and not touch_down
+    touch_down = down
+    return pressed
+end
+
 local function consume_press()
     local pressed = false
 
     if touch_enabled then
-        local polled, info = pcall(lcd_touch.poll_main)
-        if not polled then
-            print("[dino] ERROR: lcd_touch.poll_main failed: " .. tostring(info))
-            return nil
-        end
-        if info then
-            pressed = pressed or (info.just_pressed == true and not touch_consumed)
-            touch_consumed = info.pressed == true
-        end
+        pressed = consume_touch_press()
     end
 
     if button_handle then

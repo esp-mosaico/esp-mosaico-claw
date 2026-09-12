@@ -53,8 +53,8 @@ static esp_err_t display_service_lvgl_touch_read(
     const uint32_t sequence = session->touch_irq_sequence;
     if (sequence == session->touch_irq_consumed) {
         if (session->touch_cached_count > 0) {
-            points[0] = session->touch_cached_point;
-            *count = 1;
+            *count = session->touch_cached_count < max_count ? session->touch_cached_count : max_count;
+            memcpy(points, session->touch_cached_points, *count * sizeof(points[0]));
         }
         return ESP_OK;
     }
@@ -62,11 +62,13 @@ static esp_err_t display_service_lvgl_touch_read(
     err = esp_lcd_touch_read_data(tp);
     if (err != ESP_OK) {
         session->touch_cached_count = 0;
+        display_service_notify_touch_internal(&(display_service_touch_snapshot_t) {0});
         return err;
     }
     err = esp_lcd_touch_get_data(tp, points, count, max_count);
     if (err != ESP_OK) {
         session->touch_cached_count = 0;
+        display_service_notify_touch_internal(&(display_service_touch_snapshot_t) {0});
         return err;
     }
     for (uint8_t i = 0; i < *count; ++i) {
@@ -79,25 +81,25 @@ static esp_err_t display_service_lvgl_touch_read(
         points[i].x = x;
         points[i].y = y;
     }
-    session->touch_cached_count = *count > 0 ? 1 : 0;
-    if (session->touch_cached_count > 0) {
-        session->touch_cached_point = points[0];
-    }
 
-    const display_service_touch_sample_t sample = {
-        .pressed = *count > 0,
-        .x = *count > 0 ? points[0].x : 0,
-        .y = *count > 0 ? points[0].y : 0,
-    };
-    display_service_notify_touch_internal(&sample);
+    display_service_touch_snapshot_t snapshot = {.count = *count};
+    for (uint8_t i = 0; i < *count; ++i) {
+        snapshot.points[i].id = points[i].track_id;
+        snapshot.points[i].x = points[i].x;
+        snapshot.points[i].y = points[i].y;
+    }
 
     const int32_t display_height = session->lvgl_display != NULL ?
         lv_display_get_vertical_resolution(session->lvgl_display) : 0;
     if (display_service_process_exit_gesture_internal(
-            session, &sample, display_height)) {
+            session, &snapshot, display_height)) {
         /* Cancel the active LVGL pointer before requesting session exit. */
         *count = 0;
+        snapshot.count = 0;
     }
+    session->touch_cached_count = *count;
+    memcpy(session->touch_cached_points, points, *count * sizeof(points[0]));
+    display_service_notify_touch_internal(&snapshot);
     return ESP_OK;
 }
 

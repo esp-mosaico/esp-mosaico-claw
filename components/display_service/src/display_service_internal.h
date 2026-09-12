@@ -43,7 +43,7 @@ struct display_service_session_t {
     volatile uint32_t touch_irq_sequence;
     uint32_t touch_irq_consumed;
     volatile bool touch_irq_active;
-    esp_lcd_touch_point_data_t touch_cached_point;
+    esp_lcd_touch_point_data_t touch_cached_points[CONFIG_ESP_LCD_TOUCH_MAX_POINTS];
     uint8_t touch_cached_count;
     /* Short bookkeeping gate: guards raw_in_flight / raw_closing only. */
     SemaphoreHandle_t raw_io_mutex;
@@ -77,10 +77,10 @@ esp_err_t display_service_touch_forward_start_internal(
     struct display_service_session_t *session);
 void display_service_touch_forward_stop_internal(
     struct display_service_session_t *session);
-void display_service_notify_touch_internal(const display_service_touch_sample_t *sample);
+void display_service_notify_touch_internal(const display_service_touch_snapshot_t *snapshot);
 bool display_service_process_exit_gesture_internal(
     struct display_service_session_t *session,
-    const display_service_touch_sample_t *sample,
+    const display_service_touch_snapshot_t *snapshot,
     int32_t display_height);
 esp_err_t display_service_map_touch_internal(int32_t *x, int32_t *y);
 esp_err_t display_service_presenter_acquire_internal(

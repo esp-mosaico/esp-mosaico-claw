@@ -28,7 +28,7 @@ static const char *TAG = "display_service";
 
 typedef struct {
     esp_lcd_touch_handle_t touch;
-    display_service_touch_sample_t touch_sample;
+    display_service_touch_snapshot_t touch_snapshot;
     display_service_touch_observer_cb_t touch_observer_cb;
     void *touch_observer_user_ctx;
     display_service_state_observer_cb_t state_observer_cb;
@@ -137,6 +137,7 @@ esp_err_t display_service_touch_forward_start_internal(
     session->touch_irq_consumed = 0;
     session->touch_cached_count = 0;
     session->touch_irq_active = true;
+    display_service_notify_touch_internal(&(display_service_touch_snapshot_t) {0});
     return ESP_OK;
 }
 
@@ -198,24 +199,26 @@ bool display_service_session_valid_internal(display_service_session_handle_t ses
 
 bool display_service_process_exit_gesture_internal(
     struct display_service_session_t *session,
-    const display_service_touch_sample_t *sample,
+    const display_service_touch_snapshot_t *snapshot,
     int32_t display_height)
 {
-    if (!display_service_session_valid_internal(session) || sample == NULL ||
+    if (!display_service_session_valid_internal(session) || snapshot == NULL ||
             display_height <= 0) {
         return false;
     }
 
-    if (sample->pressed && !session->exit_gesture_tracking) {
+    const bool pressed = snapshot->count > 0;
+    const int32_t y = pressed ? snapshot->points[0].y : 0;
+    if (pressed && !session->exit_gesture_tracking) {
         session->exit_gesture_tracking = true;
         session->exit_gesture_captured = false;
         session->exit_request_sent = false;
-        session->exit_gesture_start_y = sample->y;
+        session->exit_gesture_start_y = y;
     }
-    if (sample->pressed && session->exit_gesture_tracking &&
+    if (pressed && session->exit_gesture_tracking &&
             session->exit_gesture_start_y >=
                 display_height - DISPLAY_SERVICE_EXIT_GESTURE_START_HEIGHT &&
-            session->exit_gesture_start_y - sample->y >=
+            session->exit_gesture_start_y - y >=
                 DISPLAY_SERVICE_EXIT_GESTURE_MIN_DY) {
         session->exit_gesture_captured = true;
     }
@@ -228,7 +231,7 @@ bool display_service_process_exit_gesture_internal(
                  session->owner_name);
         session->exit_request_cb(session, session->cleanup_user_ctx);
     }
-    if (!sample->pressed) {
+    if (!pressed) {
         session->exit_gesture_tracking = false;
         session->exit_gesture_captured = false;
     }
@@ -357,24 +360,27 @@ display_service_session_take_cleanup_internal(
     return cleanup_cb;
 }
 
-void display_service_notify_touch_internal(const display_service_touch_sample_t *sample)
+void display_service_notify_touch_internal(const display_service_touch_snapshot_t *snapshot)
 {
     display_service_touch_observer_cb_t cb = NULL;
     void *user_ctx = NULL;
+    display_service_touch_snapshot_t published;
 
-    if (sample == NULL) {
+    if (snapshot == NULL) {
         return;
     }
     if (s_display.touch_observer_mutex == NULL ||
             xSemaphoreTake(s_display.touch_observer_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
         return;
     }
-    s_display.touch_sample = *sample;
+    published = *snapshot;
+    published.generation = s_display.touch_snapshot.generation + 1;
+    s_display.touch_snapshot = published;
     cb = s_display.touch_observer_cb;
     user_ctx = s_display.touch_observer_user_ctx;
     xSemaphoreGive(s_display.touch_observer_mutex);
     if (cb != NULL) {
-        cb(sample, user_ctx);
+        cb(&published, user_ctx);
     }
 }
 
@@ -1176,21 +1182,27 @@ esp_err_t display_service_set_touch_observer(display_service_touch_observer_cb_t
     return ESP_OK;
 }
 
-esp_err_t display_service_get_main_touch_sample(display_service_touch_sample_t *out_sample)
+esp_err_t display_service_session_get_touch_snapshot(display_service_session_handle_t session,
+                                                     display_service_touch_snapshot_t *snapshot)
 {
-    ESP_RETURN_ON_FALSE(out_sample != NULL, ESP_ERR_INVALID_ARG, TAG,
-                        "touch sample output is NULL");
-    ESP_RETURN_ON_FALSE(display_service_is_started() && s_display.touch != NULL,
-                        ESP_ERR_INVALID_STATE, TAG,
-                        "main touch is unavailable");
+    ESP_RETURN_ON_FALSE(snapshot != NULL, ESP_ERR_INVALID_ARG, TAG,
+                        "touch snapshot output is NULL");
+    ESP_RETURN_ON_FALSE(display_service_session_valid_internal(session), ESP_ERR_INVALID_ARG,
+                        TAG, "invalid display session");
+    ESP_RETURN_ON_FALSE(s_display.touch != NULL, ESP_ERR_NOT_SUPPORTED, TAG,
+                        "display touch is unavailable");
     ESP_RETURN_ON_FALSE(s_display.touch_observer_mutex != NULL,
                         ESP_ERR_INVALID_STATE, TAG,
-                        "touch sample service unavailable");
+                        "touch snapshot service unavailable");
     ESP_RETURN_ON_FALSE(
         xSemaphoreTake(s_display.touch_observer_mutex,
                        pdMS_TO_TICKS(1000)) == pdTRUE,
-        ESP_ERR_TIMEOUT, TAG, "touch sample lock timeout");
-    *out_sample = s_display.touch_sample;
+        ESP_ERR_TIMEOUT, TAG, "touch snapshot lock timeout");
+    if (!display_service_session_valid_internal(session)) {
+        xSemaphoreGive(s_display.touch_observer_mutex);
+        return ESP_ERR_INVALID_ARG;
+    }
+    *snapshot = s_display.touch_snapshot;
     xSemaphoreGive(s_display.touch_observer_mutex);
     return ESP_OK;
 }

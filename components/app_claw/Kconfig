@@ -409,14 +409,6 @@ menu "App Claw Config"
                 Enable the LCD Lua module and keep app_claw's direct dependency
                 on lua_module_lcd when Lua capability is enabled.
 
-        config APP_CLAW_LUA_MODULE_LCD_TOUCH
-            bool "Enable LCD touch Lua module"
-            default y if ESP_BOARD_DEV_LCD_TOUCH_SUPPORT && ESP_BOARD_DEV_LCD_TOUCH_SUB_I2C_SUPPORT
-            default n
-            help
-                Enable the LCD touch Lua module and keep app_claw's direct dependency
-                on lua_module_lcd_touch when Lua capability is enabled.
-
         config APP_CLAW_LUA_MODULE_LEDC
             bool "Enable LEDC Lua module"
             default y

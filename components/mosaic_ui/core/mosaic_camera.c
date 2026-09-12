@@ -38,6 +38,9 @@
 #define MOSAIC_CAMERA_PPA_SCALE_STEPS 16U
 #define MOSAIC_CAMERA_OUTPUT_W 450U
 #define MOSAIC_CAMERA_OUTPUT_X ((MOSAIC_CAMERA_W - MOSAIC_CAMERA_OUTPUT_W) / 2U)
+#define MOSAIC_CAMERA_THUMBNAIL_SIZE 48U
+#define MOSAIC_CAMERA_THUMBNAIL_BUFFERS 2U
+#define MOSAIC_CAMERA_THUMBNAIL_STRIDE (MOSAIC_CAMERA_THUMBNAIL_SIZE * sizeof(uint16_t))
 
 #if defined(ESP_PLATFORM)
 
@@ -84,8 +87,14 @@ typedef struct {
 } mosaic_frame_slot_t;
 
 typedef struct {
+    uint16_t *pixels;
+    bool busy;
+} mosaic_thumbnail_slot_t;
+
+typedef struct {
     portMUX_TYPE lock;
     mosaic_frame_slot_t frames[MOSAIC_CAMERA_BUFFERS];
+    mosaic_thumbnail_slot_t thumbnails[MOSAIC_CAMERA_THUMBNAIL_BUFFERS];
     SemaphoreHandle_t task_done;
     SemaphoreHandle_t submit_lock;
     TaskHandle_t task;
@@ -138,6 +147,128 @@ static uint8_t *camera_alloc_preview_pixels(void)
             MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
     }
     return pixels;
+}
+
+static void camera_thumbnail_released(void *ctx)
+{
+    const size_t slot = (size_t)(uintptr_t)ctx;
+    if (slot >= MOSAIC_CAMERA_THUMBNAIL_BUFFERS) {
+        return;
+    }
+    portENTER_CRITICAL(&s_camera.lock);
+    s_camera.thumbnails[slot].busy = false;
+    portEXIT_CRITICAL(&s_camera.lock);
+}
+
+static void camera_ensure_thumbnail_buffers(void)
+{
+    for (size_t i = 0; i < MOSAIC_CAMERA_THUMBNAIL_BUFFERS; ++i) {
+        if (s_camera.thumbnails[i].pixels != NULL) {
+            continue;
+        }
+        uint16_t *pixels = heap_caps_malloc(MOSAIC_CAMERA_THUMBNAIL_SIZE * MOSAIC_CAMERA_THUMBNAIL_SIZE * sizeof(*pixels),
+                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (pixels == NULL) {
+            pixels = heap_caps_malloc(MOSAIC_CAMERA_THUMBNAIL_SIZE * MOSAIC_CAMERA_THUMBNAIL_SIZE * sizeof(*pixels),
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        }
+        if (pixels == NULL) {
+            ESP_LOGW(TAG, "failed to allocate thumbnail buffer %u", (unsigned)i);
+            continue;
+        }
+        portENTER_CRITICAL(&s_camera.lock);
+        if (s_camera.thumbnails[i].pixels == NULL) {
+            s_camera.thumbnails[i].pixels = pixels;
+            s_camera.thumbnails[i].busy = false;
+            pixels = NULL;
+        }
+        portEXIT_CRITICAL(&s_camera.lock);
+        heap_caps_free(pixels);
+    }
+}
+
+static int camera_thumbnail_acquire(void)
+{
+    int selected = -1;
+    portENTER_CRITICAL(&s_camera.lock);
+    for (size_t i = 0; i < MOSAIC_CAMERA_THUMBNAIL_BUFFERS; ++i) {
+        if (s_camera.thumbnails[i].pixels != NULL && !s_camera.thumbnails[i].busy) {
+            s_camera.thumbnails[i].busy = true;
+            selected = (int)i;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_camera.lock);
+    return selected;
+}
+
+static void camera_fill_thumbnail(uint16_t *thumbnail, const uint8_t *frame)
+{
+    /* Crop the valid preview area to a square without including black borders. */
+    const uint32_t crop_size = MOSAIC_CAMERA_OUTPUT_W < MOSAIC_CAMERA_H ? MOSAIC_CAMERA_OUTPUT_W : MOSAIC_CAMERA_H;
+    const uint32_t crop_left = MOSAIC_CAMERA_OUTPUT_X + (MOSAIC_CAMERA_OUTPUT_W - crop_size) / 2U;
+    const uint32_t crop_top = (MOSAIC_CAMERA_H - crop_size) / 2U;
+    const uint16_t *source = (const uint16_t *)frame;
+    for (uint32_t y = 0; y < MOSAIC_CAMERA_THUMBNAIL_SIZE; ++y) {
+        const uint32_t source_y = crop_top + ((2U * y + 1U) * crop_size) / (2U * MOSAIC_CAMERA_THUMBNAIL_SIZE);
+        for (uint32_t x = 0; x < MOSAIC_CAMERA_THUMBNAIL_SIZE; ++x) {
+            const uint32_t source_x = crop_left + ((2U * x + 1U) * crop_size) / (2U * MOSAIC_CAMERA_THUMBNAIL_SIZE);
+            thumbnail[y * MOSAIC_CAMERA_THUMBNAIL_SIZE + x] = source[source_y * MOSAIC_CAMERA_W + source_x];
+        }
+    }
+}
+
+static void camera_publish_thumbnail(esp_gsp_handle_t ui, const uint8_t *frame)
+{
+    SemaphoreHandle_t submit_lock = s_camera.submit_lock;
+    if (submit_lock == NULL || xSemaphoreTake(submit_lock, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGW(TAG, "thumbnail submit lock unavailable");
+        return;
+    }
+    if (camera_is_stopping()) {
+        xSemaphoreGive(submit_lock);
+        return;
+    }
+    const int slot = camera_thumbnail_acquire();
+    if (slot < 0) {
+        xSemaphoreGive(submit_lock);
+        ESP_LOGW(TAG, "no thumbnail buffer available");
+        return;
+    }
+    camera_fill_thumbnail(s_camera.thumbnails[slot].pixels, frame);
+    const esp_gsp_err_t err = esp_gsp_canvas_push(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL,
+                                                  s_camera.thumbnails[slot].pixels, MOSAIC_CAMERA_THUMBNAIL_STRIDE,
+                                                  camera_thumbnail_released, (void *)(uintptr_t)slot);
+    if (err != ESP_GSP_OK) {
+        camera_thumbnail_released((void *)(uintptr_t)slot);
+        ESP_LOGW(TAG, "thumbnail submission failed: %d", (int)err);
+    } else {
+        const esp_gsp_err_t visible_err = esp_gsp_set_visible(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL_VISIBLE, true);
+        if (visible_err != ESP_GSP_OK) {
+            ESP_LOGW(TAG, "show thumbnail failed: %d", (int)visible_err);
+        }
+    }
+    xSemaphoreGive(submit_lock);
+}
+
+static void camera_release_thumbnail_buffers(void)
+{
+    for (size_t i = 0; i < MOSAIC_CAMERA_THUMBNAIL_BUFFERS; ++i) {
+        uint16_t *pixels = NULL;
+        bool retained = false;
+        portENTER_CRITICAL(&s_camera.lock);
+        if (!s_camera.thumbnails[i].busy) {
+            pixels = s_camera.thumbnails[i].pixels;
+            s_camera.thumbnails[i].pixels = NULL;
+        } else {
+            retained = s_camera.thumbnails[i].pixels != NULL;
+        }
+        portEXIT_CRITICAL(&s_camera.lock);
+        heap_caps_free(pixels);
+        if (retained) {
+            ESP_LOGW(TAG, "thumbnail buffer %u still in use", (unsigned)i);
+        }
+    }
 }
 
 static void camera_clear_preview_borders(uint8_t *pixels)
@@ -663,8 +794,10 @@ static void camera_capture_task(void *ctx)
                      esp_err_to_name(release_err));
         }
         if (err == ESP_OK && capture_requested) {
-            (void)camera_save_jpeg(
-                capture_path, s_camera.frames[slot].pixels);
+            const esp_err_t save_err = camera_save_jpeg(capture_path, s_camera.frames[slot].pixels);
+            if (save_err == ESP_OK) {
+                camera_publish_thumbnail(ui, s_camera.frames[slot].pixels);
+            }
         }
         if (capture_requested && use_flash) {
             (void)mosaico_camera_flash_stop(camera);
@@ -748,6 +881,8 @@ esp_err_t mosaic_camera_start(esp_gsp_handle_t ui)
         goto fail;
     }
 
+    camera_ensure_thumbnail_buffers();
+
     if (xTaskCreatePinnedToCore(camera_capture_task, "mosaic_cam",
                     MOSAIC_CAMERA_TASK_STACK, ui,
                     MOSAIC_CAMERA_TASK_PRIORITY, &s_camera.task, 1) != pdPASS) {
@@ -757,6 +892,7 @@ esp_err_t mosaic_camera_start(esp_gsp_handle_t ui)
     return ESP_OK;
 
 fail:
+    camera_release_thumbnail_buffers();
     if (s_camera.submit_lock != NULL) {
         vSemaphoreDelete(s_camera.submit_lock);
         s_camera.submit_lock = NULL;
@@ -939,6 +1075,7 @@ void mosaic_camera_stop(esp_gsp_handle_t ui)
     portEXIT_CRITICAL(&s_camera.lock);
 
     (void)esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_CANVAS);
+    (void)esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL);
     if (submit_lock != NULL) {
         xSemaphoreGive(submit_lock);
     }
@@ -959,6 +1096,11 @@ void mosaic_camera_stop(esp_gsp_handle_t ui)
         vSemaphoreDelete(s_camera.submit_lock);
         s_camera.submit_lock = NULL;
     }
+    const esp_gsp_err_t flush_err = esp_gsp_flush(ui, 1000);
+    if (flush_err != ESP_GSP_OK) {
+        ESP_LOGW(TAG, "thumbnail release flush failed: %d", (int)flush_err);
+    }
+    camera_release_thumbnail_buffers();
     s_camera.task = NULL;
     for (size_t i = 0; i < MOSAIC_CAMERA_BUFFERS; ++i) {
         heap_caps_free(s_camera.frames[i].pixels);
@@ -1130,6 +1272,7 @@ esp_err_t mosaic_camera_set_recognition_mode(camera_vision_mode_t mode)
 void mosaic_camera_stop(esp_gsp_handle_t ui)
 {
     stream_close(ui);
+    (void)esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL);
 }
 
 void mosaic_camera_tick(esp_gsp_handle_t ui)

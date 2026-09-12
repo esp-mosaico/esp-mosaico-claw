@@ -4,11 +4,11 @@ dependencies:
   idf: ">=6.2"
   mosaico_module_camera:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
-    version: 80140f478
+    version: e65035c
     path: components/mosaico_module_camera
     public: true
   mosaico_module_mgr:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
-    version: 80140f478
+    version: e65035c
     path: components/mosaico_module_mgr
     public: true

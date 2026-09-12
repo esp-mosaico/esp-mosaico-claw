@@ -162,6 +162,7 @@ static void camera_started(esp_gsp_handle_t ui)
     camera_load_flash_mode();
     s_recognition_mode = CAMERA_VISION_MODE_OFF;
     s_recognition_menu_open = false;
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL_VISIBLE, false);
     camera_render_flash_mode(ui);
     camera_render_recognition(ui);
     const esp_err_t err = mosaic_loader_defer(camera_start_deferred, NULL);
@@ -181,6 +182,7 @@ static void camera_started(esp_gsp_handle_t ui)
     camera_load_flash_mode();
     s_recognition_mode = CAMERA_VISION_MODE_OFF;
     s_recognition_menu_open = false;
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL_VISIBLE, false);
     camera_render_flash_mode(ui);
     camera_render_recognition(ui);
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_MISSING_VISIBLE, false);
@@ -244,6 +246,8 @@ static void camera_capture_photo(void)
     }
     if (err != ESP_OK) {
         printf("mosaic_camera: request photo failed err=%d\n", (int)err);
+    } else {
+        printf("mosaic_camera: photo request queued: %s\n", path);
     }
 }
 

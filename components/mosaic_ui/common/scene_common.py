@@ -415,7 +415,6 @@ def build_settings_quick_shade(objs, parent, *, drawer_name="quick_drawer"):
 
 def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
     app_root_shell(objs, parent, "Camera", name="shell_camera")
-    del assets_prefix
     objs.append(image(
         parent, f"{camera_assets_prefix}/camera_canvas_fullscreen.png",
         0, 0, 480, 480, bind="camera_canvas", name="camera_preview",
@@ -491,6 +490,16 @@ def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
     objs.append(image(
         parent, f"{camera_assets_prefix}/camera_album.png",
         64, 409, 48, 48, name="camera_album", callback="camera_album",
+    ))
+    thumbnail = len(objs)
+    objs.append(layer(
+        parent, 64, 409, 48, 48, hidden=True,
+        name="camera_album_thumbnail_layer", bind="camera_album_thumbnail_visible",
+    ))
+    objs.append(image(
+        thumbnail, f"{assets_prefix}/black_placeholder.png",
+        0, 0, 48, 48, bind="camera_album_thumbnail",
+        name="camera_album_thumbnail", callback="camera_album",
     ))
     objs.append(image(
         parent, f"{camera_assets_prefix}/camera_shutter.png",

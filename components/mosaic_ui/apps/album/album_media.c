@@ -22,7 +22,8 @@
 
 #define MEDIA_PATH_MAX 512U
 #define MEDIA_INPUT_MAX (8U * 1024U * 1024U)
-#define MEDIA_CACHE_BYTES (2U * 1024U * 1024U)
+#define MEDIA_THUMB_CACHE_BYTES (1536U * 1024U)
+#define MEDIA_PREVIEW_CACHE_BYTES (512U * 1024U)
 #define MEDIA_CACHE_ENTRIES 24U
 #define MEDIA_THUMB_ENTRIES 22U
 
@@ -124,10 +125,11 @@ static uint32_t content_key(const uint8_t *data, size_t size)
 static void cache_insert(album_media_t *media, const media_channel_t *request,
                          const struct stat *info, album_image_t *image)
 {
-    if (image->size > MEDIA_CACHE_BYTES) {
+    const size_t budget = request->thumbnail ? MEDIA_THUMB_CACHE_BYTES : MEDIA_PREVIEW_CACHE_BYTES;
+    if (image->size > budget) {
         return;
     }
-    /* Separate 2 MiB budgets: a large preview must never evict grid tiles. */
+    /* Keep preview payloads from evicting visible grid thumbnails. */
     size_t first = request->thumbnail ? 0 : MEDIA_THUMB_ENTRIES;
     size_t end = request->thumbnail ? MEDIA_THUMB_ENTRIES : MEDIA_CACHE_ENTRIES;
     for (;;) {
@@ -145,7 +147,7 @@ static void cache_insert(album_media_t *media, const media_channel_t *request,
                 }
             }
         }
-        if (empty != MEDIA_CACHE_ENTRIES && bytes + image->size <= MEDIA_CACHE_BYTES) {
+        if (empty != MEDIA_CACHE_ENTRIES && bytes + image->size <= budget) {
             media_cache_t *entry = &media->cache[empty];
             memcpy(entry->path, request->path, sizeof(entry->path));
             entry->file_size = info->st_size;

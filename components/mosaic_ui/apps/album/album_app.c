@@ -38,7 +38,7 @@
 #endif
 
 #define ALBUM_MAX_PHOTOS 128U
-#define ALBUM_PATH_MAX 512U
+#define ALBUM_PATH_MAX 128U
 #define ALBUM_SCAN_DEPTH 2
 #define ALBUM_DOUBLE_TAP_US 350000LL
 #define ALBUM_TAP_TIMER_MS 16U
@@ -48,6 +48,7 @@
 #define ALBUM_SCALE_MAX_PERCENT 400U
 #define ALBUM_FULLSCREEN_IMAGE_SLOTS 1U
 #define ALBUM_DYNAMIC_IMAGE_SLOTS (GSP_ALBUM_GRID_IMAGE_SLOTS + ALBUM_FULLSCREEN_IMAGE_SLOTS)
+#define ALBUM_IMAGE_CACHE_BYTES (2U * 1024U * 1024U)
 #define ALBUM_SELECT_MARKER_HIDE_OPACITY 0U
 #define ALBUM_SELECT_MARKER_SHOW_OPACITY 100U
 
@@ -953,7 +954,7 @@ const mosaic_app_descriptor_t mosaic_album_app = {
     .root_header_in_stack = true,
     .instance_slots = GSP_TEMPLATE_ALBUM_CELL_MAX_INSTANCES,
     .dynamic_image_slots = ALBUM_DYNAMIC_IMAGE_SLOTS,
-    .image_cache_bytes = 8U * 1024U * 1024U,
+    .image_cache_bytes = ALBUM_IMAGE_CACHE_BYTES,
     .on_started = album_started,
     .on_stopping = album_stopping,
     .on_event = album_event,

@@ -53,7 +53,7 @@
 #define SETUP_QR_SIZE 256U
 #define SETUP_QR_STRIDE (SETUP_QR_SIZE * 2U)
 #define SETUP_QR_BYTES ((size_t)SETUP_QR_STRIDE * SETUP_QR_SIZE)
-#define SETUP_QR_FRAME_COUNT 3U
+#define SETUP_QR_FRAME_COUNT 2U
 #define SETUP_QR_QUIET_MODULES 4
 #define SETUP_LLM_QR_SIZE 104U
 #define SETUP_LLM_QR_STRIDE (SETUP_LLM_QR_SIZE * 2U)
@@ -324,6 +324,43 @@ static esp_err_t setup_qr_ensure_buffers(void)
         }
     }
     return ESP_OK;
+}
+
+static bool setup_qr_free_buffers(void)
+{
+    uint8_t *frames[SETUP_QR_FRAME_COUNT] = {0};
+    uint8_t *temp = NULL;
+    uint8_t *code = NULL;
+    bool idle = true;
+
+    SETUP_MODEL_LOCK();
+    for (size_t i = 0; i < SETUP_QR_FRAME_COUNT; ++i) {
+        if (s_setup.qr_frames[i].busy) {
+            idle = false;
+            break;
+        }
+    }
+    if (idle) {
+        temp = s_setup.qr_temp;
+        code = s_setup.qr_code;
+        s_setup.qr_temp = NULL;
+        s_setup.qr_code = NULL;
+        for (size_t i = 0; i < SETUP_QR_FRAME_COUNT; ++i) {
+            frames[i] = s_setup.qr_frames[i].pixels;
+            s_setup.qr_frames[i].pixels = NULL;
+        }
+    }
+    SETUP_MODEL_UNLOCK();
+
+    if (!idle) {
+        return false;
+    }
+    free(temp);
+    free(code);
+    for (size_t i = 0; i < SETUP_QR_FRAME_COUNT; ++i) {
+        free(frames[i]);
+    }
+    return true;
 }
 
 static void setup_qr_released(void *user_ctx)
@@ -1984,6 +2021,15 @@ static void setup_center_event(
         setup_network_list_park();
         (void)esp_gsp_canvas_stop(ui, GSP_BIND_SETUP_WECHAT_QR_CANVAS);
         (void)esp_gsp_canvas_stop(ui, GSP_BIND_SETUP_LLM_CONFIG_QR_CANVAS);
+        (void)esp_gsp_canvas_stop(
+            ui, GSP_BIND_SETUP_NETWORK_PHONE_QR_CANVAS);
+        const esp_gsp_err_t qr_flush = esp_gsp_flush(ui, 1000U);
+        if (qr_flush != ESP_GSP_OK) {
+            ESP_LOGW(TAG, "QR shutdown flush failed: %s",
+                esp_err_to_name((esp_err_t)qr_flush));
+        } else if (!setup_qr_free_buffers()) {
+            ESP_LOGW(TAG, "QR buffers still busy after shutdown flush");
+        }
         if (setup_wechat_has_backend() &&
                 (s_setup.wechat_phase == SETUP_WECHAT_BINDING ||
                  s_setup.wechat_phase == SETUP_WECHAT_PROGRESS)) {

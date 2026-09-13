@@ -1444,6 +1444,7 @@ const mosaic_app_descriptor_t mosaic_hub_app = {
     .launch_action = UINT16_MAX,
     .name = "mosaic-hub",
     .directory = &gsp_obj_directory_mosaic_hub,
+    .image_cache_bytes = 1024U * 1024U,
     .disable_swipe = false,
     .on_started = mosaic_hub_started,
     .on_stopping = mosaic_hub_stopping,

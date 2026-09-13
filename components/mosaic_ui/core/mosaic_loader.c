@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 
+#include "esp_gsp_debug.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -23,6 +24,7 @@
 #define MOSAIC_LOADER_STEP_MS 16U
 #define MOSAIC_LOADER_TASK_STACK 12288U
 #define MOSAIC_LOADER_TASK_PRIORITY 5U
+#define MOSAIC_SIMULATED_TOUCH_SAMPLE_MS 32U
 
 typedef enum {
     MOSAIC_LOADER_COMMAND_UI_EVENT = 0,
@@ -30,6 +32,7 @@ typedef enum {
     MOSAIC_LOADER_COMMAND_REQUEST_APP,
     MOSAIC_LOADER_COMMAND_INVALIDATE_APP,
     MOSAIC_LOADER_COMMAND_BACK,
+    MOSAIC_LOADER_COMMAND_SIMULATE_TAP,
     MOSAIC_LOADER_COMMAND_SYSTEM_NOTICE,
 } mosaic_loader_command_type_t;
 
@@ -52,6 +55,10 @@ typedef struct {
             uint32_t revision;
         } invalidate;
         struct {
+            int16_t x;
+            int16_t y;
+        } tap;
+        struct {
             mosaic_system_notice_t notice;
             uint32_t duration_ms;
         } system_notice;
@@ -70,6 +77,18 @@ static bool s_runtime_started;
 static bool s_hub_foreground;
 static bool s_quiesced;
 static uint16_t s_hub_scene;
+
+static esp_gsp_err_t inject_simulated_touch(int16_t x, int16_t y, bool pressed)
+{
+    xSemaphoreTake(s_runtime_lock, portMAX_DELAY);
+    esp_gsp_handle_t ui = !s_quiesced
+        ? mosaic_esp_platform_ui(s_platform) : NULL;
+    const esp_gsp_err_t err = ui != NULL
+        ? esp_gsp_inject_touch(ui, x, y, pressed)
+        : ESP_ERR_INVALID_STATE;
+    xSemaphoreGive(s_runtime_lock);
+    return err;
+}
 
 static bool post_ui_event(
     void* user_ctx, uint32_t generation, const esp_gsp_event_t* event)
@@ -208,6 +227,21 @@ static void process_command(const mosaic_loader_command_t* command)
                 s_runtime, mosaic_app_root()->name);
         }
     }
+    if (command->type == MOSAIC_LOADER_COMMAND_SIMULATE_TAP) {
+        esp_gsp_err_t err = inject_simulated_touch(
+            command->data.tap.x, command->data.tap.y, true);
+        if (err == ESP_GSP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(MOSAIC_SIMULATED_TOUCH_SAMPLE_MS));
+            err = inject_simulated_touch(
+                command->data.tap.x, command->data.tap.y, false);
+        }
+        if (err != ESP_GSP_OK) {
+            printf("mosaic_loader: simulated tap failed at (%d,%d): %s\n",
+                command->data.tap.x, command->data.tap.y,
+                esp_err_to_name((esp_err_t)err));
+        }
+        return;
+    }
     if (command->type == MOSAIC_LOADER_COMMAND_SYSTEM_NOTICE) {
         esp_gsp_handle_t ui = mosaic_esp_platform_ui(s_platform);
         (void)mosaic_app_shell_show_system_notice(
@@ -238,6 +272,12 @@ static void loader_task(void* arg)
         mosaic_loader_command_t command;
         const BaseType_t received = xQueueReceive(
             s_command_queue, &command, pdMS_TO_TICKS(MOSAIC_LOADER_STEP_MS));
+        /* Never hold the runtime mutex between simulated touch samples. */
+        if (received == pdTRUE &&
+                command.type == MOSAIC_LOADER_COMMAND_SIMULATE_TAP) {
+            process_command(&command);
+            continue;
+        }
         xSemaphoreTake(s_runtime_lock, portMAX_DELAY);
         if (s_quiesced) {
             if (received == pdTRUE) {
@@ -384,6 +424,22 @@ esp_err_t mosaic_loader_request_back(void)
     }
     const mosaic_loader_command_t command = {
         .type = MOSAIC_LOADER_COMMAND_BACK,
+    };
+    return xQueueSend(s_command_queue, &command, 0) == pdTRUE
+        ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t mosaic_loader_simulate_tap(int16_t x, int16_t y)
+{
+    if (s_command_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const mosaic_loader_command_t command = {
+        .type = MOSAIC_LOADER_COMMAND_SIMULATE_TAP,
+        .data.tap = {
+            .x = x,
+            .y = y,
+        },
     };
     return xQueueSend(s_command_queue, &command, 0) == pdTRUE
         ? ESP_OK : ESP_ERR_TIMEOUT;

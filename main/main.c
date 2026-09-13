@@ -68,6 +68,7 @@
 #define APP_WEATHER_USER_AGENT \
     "esp-mosaico-claw/1.0 https://github.com/espressif/esp-claw"
 #define APP_UPDATE_USER_AGENT "esp-mosaico-claw/update-check"
+#define APP_ASR_PREBUFFER_MS   3000U
 
 static const char *TAG = "app";
 
@@ -181,6 +182,7 @@ static esp_err_t main_apply_asr_config(const app_config_t *config)
                                  : ASR_SERVICE_DEFAULT_LANGUAGE_HINT,
             .connect_timeout_ms = 30000,
             .send_timeout_ms = 3000,
+            .prebuffer_ms = APP_ASR_PREBUFFER_MS,
         }, &replacement);
         if (err == ESP_OK) {
             err = mosaic_ui_set_ai_create_asr(replacement);

@@ -50,12 +50,50 @@
 #include "cJSON.h"
 #include "esp_console.h"
 #include "esp_log.h"
+#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
+extern esp_err_t mosaic_ui_simulate_tap(int16_t x, int16_t y) __attribute__((weak));
+#endif
 
 static const char *TAG = "app_claw_cli";
 static const size_t CAP_OUTPUT_BUF_SIZE = 1024;
 
 static uint32_t s_next_request_id = 1;
 static char s_current_session_id[64] = "default";
+
+#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
+static bool parse_touch_coordinate(const char *text, int16_t *coordinate)
+{
+    char *end = NULL;
+    long value = strtol(text, &end, 10);
+    if (text == end || *end != '\0' || value < 0 || value >= 480) {
+        return false;
+    }
+    *coordinate = (int16_t)value;
+    return true;
+}
+
+static int cmd_touch(int argc, char **argv)
+{
+    int16_t x = 0;
+    int16_t y = 0;
+    if (argc != 3 || !parse_touch_coordinate(argv[1], &x) || !parse_touch_coordinate(argv[2], &y)) {
+        printf("Usage: touch <x:0-479> <y:0-479>\n");
+        return 1;
+    }
+    if (mosaic_ui_simulate_tap == NULL) {
+        ESP_LOGE(TAG, "Mosaic touch injection is unavailable");
+        return 1;
+    }
+    esp_err_t err = mosaic_ui_simulate_tap(x, y);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to queue touch at (%d,%d): %s", x, y, esp_err_to_name(err));
+        return 1;
+    }
+    printf("Touch queued at (%d,%d)\n", x, y);
+    return 0;
+}
+
+#endif
 
 static char *join_prompt_args(int argc, char **argv)
 {
@@ -753,6 +791,17 @@ esp_err_t app_claw_cli_start(void)
 
     esp_console_register_help_command();
     register_cap_cli_commands();
+
+#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
+    {
+        const esp_console_cmd_t touch_cmd = {
+            .command = "touch",
+            .help = "Simulate one touchscreen tap: touch <x> <y>",
+            .func = cmd_touch,
+        };
+        ESP_ERROR_CHECK(esp_console_cmd_register(&touch_cmd));
+    }
+#endif
 
     {
         esp_console_cmd_t ask_cmd = {

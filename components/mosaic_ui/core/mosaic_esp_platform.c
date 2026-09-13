@@ -29,6 +29,7 @@
 #define MOSAIC_DYNAMIC_FONT_CACHE_GLYPHS 64U
 #define MOSAIC_DYNAMIC_FONT_GLYPH_MAX_PX 40U
 #define MOSAIC_FREETYPE_RENDER_TASK_STACK_SIZE 32768U
+#define MOSAIC_DEFAULT_IMAGE_CACHE_BYTES (512U * 1024U)
 
 typedef struct {
     struct mosaic_esp_platform_t* platform;
@@ -224,7 +225,8 @@ static esp_gsp_config_t app_config_for(
     config.ttf_size = platform->dynamic_font_size;
     config.font_catalog = platform->font_catalog;
     config.disable_swipe = descriptor->disable_swipe;
-    config.image_cache_bytes = descriptor->image_cache_bytes;
+    config.image_cache_bytes = descriptor->image_cache_bytes != 0U
+        ? descriptor->image_cache_bytes : MOSAIC_DEFAULT_IMAGE_CACHE_BYTES;
     config.disable_bundle_crc = CONFIG_MOSAIC_UI_DISABLE_BUNDLE_CRC;
 
     /* The Registry component deliberately hides its engineering Kconfig
@@ -820,7 +822,8 @@ bool mosaic_esp_platform_deliver_pointer(
 
 esp_gsp_handle_t mosaic_esp_platform_ui(mosaic_esp_platform_handle_t platform)
 {
-    return platform != NULL && platform->active != NULL && !platform->paused
+    return platform != NULL && platform->active != NULL && !platform->paused &&
+            platform->screen_pause == NULL
         ? platform->active->ui
         : NULL;
 }

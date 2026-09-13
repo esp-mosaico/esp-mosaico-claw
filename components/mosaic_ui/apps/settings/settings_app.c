@@ -2613,6 +2613,32 @@ static bool settings_qr_prepare(void)
         s_state.qr_frames[1].pixels != NULL;
 }
 
+static bool settings_qr_free_buffers(void)
+{
+    uint8_t *frames[SETTINGS_INTEGRATION_QR_FRAMES] = {0};
+    for (size_t i = 0; i < SETTINGS_INTEGRATION_QR_FRAMES; ++i) {
+        if (atomic_load_explicit(
+                &s_state.qr_frames[i].busy, memory_order_acquire)) {
+            return false;
+        }
+    }
+
+    uint8_t *temp = s_state.qr_temp;
+    uint8_t *code = s_state.qr_code;
+    s_state.qr_temp = NULL;
+    s_state.qr_code = NULL;
+    for (size_t i = 0; i < SETTINGS_INTEGRATION_QR_FRAMES; ++i) {
+        frames[i] = s_state.qr_frames[i].pixels;
+        s_state.qr_frames[i].pixels = NULL;
+    }
+    free(temp);
+    free(code);
+    for (size_t i = 0; i < SETTINGS_INTEGRATION_QR_FRAMES; ++i) {
+        free(frames[i]);
+    }
+    return true;
+}
+
 static void settings_qr_release(void *user_ctx)
 {
     settings_qr_frame_t *frame = user_ctx;
@@ -3628,6 +3654,19 @@ static void settings_event(
         (void)settings_wlan_reconcile_navigation(ui);
         break;
     case MOSAIC_EVENT_STOP:
+        (void)esp_gsp_canvas_stop(
+            ui, GSP_BIND_SETTINGS_WLAN_PHONE_QR_CANVAS);
+        (void)esp_gsp_canvas_stop(
+            ui, GSP_BIND_SETTINGS_INTEGRATIONS_LLM_CONFIG_QR_CANVAS);
+        (void)esp_gsp_canvas_stop(
+            ui, GSP_BIND_SETTINGS_CHANNELS_CONFIG_QR_CANVAS);
+        const esp_gsp_err_t qr_flush = esp_gsp_flush(ui, 1000U);
+        if (qr_flush != ESP_GSP_OK) {
+            ESP_LOGW(TAG, "QR shutdown flush failed: %s",
+                esp_err_to_name((esp_err_t)qr_flush));
+        } else if (!settings_qr_free_buffers()) {
+            ESP_LOGW(TAG, "QR buffers still busy after shutdown flush");
+        }
         if (s_state.display_render_timer != NULL) {
             (void)esp_gsp_timer_delete(
                 ui, s_state.display_render_timer);

@@ -53,7 +53,7 @@ esp_err_t app_fs_get_storage_space(void *ctx,
 esp_err_t app_fs_factory_reset(void);
 
 /**
- * @brief Wait for boot-time recovery of missing DATA files to finish.
+ * @brief Wait for boot-time DATA recovery synchronization to finish.
  *
  * @return Recovery result. A partial recovery is reported without unmounting
  *         the writable filesystem.

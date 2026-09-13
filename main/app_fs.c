@@ -37,6 +37,7 @@
 #define APP_FS_RECOVERY_TASK_STACK      (4096)
 #define APP_FS_RECOVERY_TASK_PRIORITY   (tskIDLE_PRIORITY + 1)
 #define APP_FS_RECOVERY_DONE_BIT        BIT0
+#define APP_FS_RECOVERY_VERSION_SIZE    (32)
 
 static const char *TAG = "app_fs";
 
@@ -44,6 +45,7 @@ static const char *const s_system_base_path = "/system";
 static const char *const s_nand_storage_base_path = "/nand";
 static const char *const s_ramfs_base_path = "/ramfs";
 static const char *const s_recovery_dir_name = ".recovery";
+static const char *const s_recovery_version_file_name = ".recovery.version";
 
 static EXT_RAM_BSS_ATTR char s_storage_base_path[32];
 static EXT_RAM_BSS_ATTR void *s_nand_device_handle;
@@ -77,27 +79,28 @@ static esp_err_t copy_file(const char *src_path, const char *dst_path)
         ESP_GOTO_ON_FALSE(fwrite(buf, 1, n, dst) == n, ESP_FAIL, cleanup, TAG,
                           "write failed: %s (%s)", dst_path, strerror(errno));
     }
+    if (ferror(src)) {
+        ESP_LOGE(TAG, "read failed: %s (%s)", src_path, strerror(errno));
+        ret = ESP_FAIL;
+    }
 
 cleanup:
-    if (dst) {
-        fclose(dst);
+    if (dst && fclose(dst) != 0 && ret == ESP_OK) {
+        ESP_LOGE(TAG, "close failed: %s (%s)", dst_path, strerror(errno));
+        ret = ESP_FAIL;
     }
     free(buf);
     fclose(src);
     return ret;
 }
 
-// Restore files from src_dir (e.g. /system/.recovery) into dst_dir (writable
-// partition), copying only entries that are missing in dst_dir. Existing files
-// are left untouched regardless of whether their content is intact. This
-// seeds a newly flashed partition and patches up partial data loss.
-// Missing source dir is not an error; there is simply nothing to recover.
-static esp_err_t recover_missing_files(const char *src_dir, const char *dst_dir)
+// Copy recovery files recursively and optionally replace existing files.
+static esp_err_t recover_files(const char *src_dir, const char *dst_dir, bool overwrite_existing)
 {
     DIR *dir = opendir(src_dir);
     if (!dir) {
-        ESP_LOGW(TAG, "recovery source unavailable: %s (%s)", src_dir, strerror(errno));
-        return ESP_OK;
+        ESP_LOGE(TAG, "open recovery directory failed: %s (%s)", src_dir, strerror(errno));
+        return ESP_FAIL;
     }
 
     esp_err_t result = ESP_OK;
@@ -141,12 +144,12 @@ static esp_err_t recover_missing_files(const char *src_dir, const char *dst_dir)
                 continue;
             }
             // Recurse so files missing inside an existing directory are restored too.
-            esp_err_t sub_err = recover_missing_files(src_path, dst_path);
+            esp_err_t sub_err = recover_files(src_path, dst_path, overwrite_existing);
             if (sub_err != ESP_OK) {
                 result = sub_err;
             }
         } else if (S_ISREG(st.st_mode)) {
-            if (dst_exists) {
+            if (dst_exists && !overwrite_existing) {
                 continue;  // keep whatever is already there, even if corrupt
             }
             esp_err_t copy_err = copy_file(src_path, dst_path);
@@ -164,11 +167,76 @@ static esp_err_t recover_missing_files(const char *src_dir, const char *dst_dir)
     return result;
 }
 
+static esp_err_t build_named_path(const char *base_path, const char *name, char *path, size_t path_size)
+{
+    int len = snprintf(path, path_size, "%s/%s", base_path, name);
+    ESP_RETURN_ON_FALSE(len > 0 && len < (int)path_size, ESP_ERR_INVALID_SIZE, TAG, "Filesystem path too long");
+    return ESP_OK;
+}
+
+static bool read_recovery_version(const char *base_path, uint8_t version[APP_FS_RECOVERY_VERSION_SIZE])
+{
+    char version_path[64];
+    if (build_named_path(base_path, s_recovery_version_file_name, version_path, sizeof(version_path)) != ESP_OK) {
+        return false;
+    }
+    FILE *version_file = fopen(version_path, "rb");
+    if (version_file == NULL) {
+        if (errno != ENOENT) {
+            ESP_LOGW(TAG, "open recovery version failed: %s (%s)", version_path, strerror(errno));
+        }
+        return false;
+    }
+
+    size_t read_size = fread(version, 1, APP_FS_RECOVERY_VERSION_SIZE, version_file);
+    int trailing = fgetc(version_file);
+    bool valid = read_size == APP_FS_RECOVERY_VERSION_SIZE && trailing == EOF && !ferror(version_file);
+    if (fclose(version_file) != 0) {
+        valid = false;
+    }
+    if (!valid) {
+        ESP_LOGW(TAG, "invalid recovery version: %s", version_path);
+    }
+    return valid;
+}
+
+static esp_err_t save_recovery_version(void)
+{
+    char system_version_path[64];
+    char storage_version_path[64];
+    ESP_RETURN_ON_ERROR(build_named_path(s_system_base_path, s_recovery_version_file_name, system_version_path,
+                                         sizeof(system_version_path)), TAG, "Failed to build system recovery version path");
+    ESP_RETURN_ON_ERROR(build_named_path(s_storage_base_path, s_recovery_version_file_name, storage_version_path,
+                                         sizeof(storage_version_path)), TAG, "Failed to build NAND recovery version path");
+    return copy_file(system_version_path, storage_version_path);
+}
+
 static esp_err_t run_recovery(void)
 {
     char recovery_path[64];
     ESP_RETURN_ON_ERROR(build_recovery_path(recovery_path, sizeof(recovery_path)), TAG, "Failed to build recovery path");
-    return recover_missing_files(recovery_path, s_storage_base_path);
+
+    struct stat recovery_stat;
+    ESP_RETURN_ON_FALSE(stat(recovery_path, &recovery_stat) == 0 && S_ISDIR(recovery_stat.st_mode), ESP_ERR_NOT_FOUND, TAG,
+                        "Recovery directory unavailable: %s", recovery_path);
+
+    uint8_t system_version[APP_FS_RECOVERY_VERSION_SIZE];
+    ESP_RETURN_ON_FALSE(read_recovery_version(s_system_base_path, system_version), ESP_ERR_INVALID_STATE, TAG,
+                        "System recovery version unavailable");
+    uint8_t applied_version[APP_FS_RECOVERY_VERSION_SIZE];
+    bool version_matches = read_recovery_version(s_storage_base_path, applied_version) &&
+                           memcmp(system_version, applied_version, APP_FS_RECOVERY_VERSION_SIZE) == 0;
+    if (!version_matches) {
+        ESP_LOGW(TAG, "Recovery version changed; overwriting recovery files on NAND");
+    }
+
+    ESP_RETURN_ON_ERROR(recover_files(recovery_path, s_storage_base_path, !version_matches), TAG, "Failed to restore recovery files");
+    if (!version_matches) {
+        // Commit the version only after every recovery file is copied.
+        ESP_RETURN_ON_ERROR(save_recovery_version(), TAG, "Failed to save recovery version");
+        ESP_LOGW(TAG, "Recovery files overwritten for the current recovery version");
+    }
+    return ESP_OK;
 }
 
 static void recovery_task(void *arg)
@@ -280,7 +348,7 @@ static esp_err_t app_fs_init_storage(void)
             sizeof(s_storage_base_path));
     ESP_LOGI(TAG, "Using mandatory NAND LittleFS at '%s' as DATA", s_storage_base_path);
 
-    // Restore missing firmware defaults without blocking display startup.
+    // Synchronize firmware defaults without blocking display startup.
     return start_recovery();
 }
 
@@ -326,13 +394,7 @@ esp_err_t app_fs_factory_reset(void)
     ESP_RETURN_ON_ERROR(remove_directory_contents(s_storage_base_path), TAG,
                         "clear NAND data");
 
-    char recovery_path[64];
-    ESP_RETURN_ON_ERROR(
-        build_recovery_path(recovery_path, sizeof(recovery_path)), TAG,
-        "build recovery path");
-    ESP_RETURN_ON_ERROR(
-        recover_missing_files(recovery_path, s_storage_base_path), TAG,
-        "restore factory files");
+    ESP_RETURN_ON_ERROR(run_recovery(), TAG, "restore factory files");
     s_recovery_result = ESP_OK;
     ESP_LOGW(TAG, "NAND user data cleared and factory files restored");
     return ESP_OK;

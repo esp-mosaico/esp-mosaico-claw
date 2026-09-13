@@ -511,8 +511,10 @@ static void camera_update_recognition_result(esp_gsp_handle_t ui, const camera_v
     if (result->mode == CAMERA_VISION_MODE_QRCODE) {
         (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_TEXT,
                                result->qrcodes[0].payload[0] != '\0' ? result->qrcodes[0].payload : "QR code detected");
-    } else {
+    } else if (result->mode == CAMERA_VISION_MODE_COLOR) {
         (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_TEXT, "Green color detected");
+    } else if (result->mode == CAMERA_VISION_MODE_MOTION) {
+        (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_TEXT, "Motion detected");
     }
 }
 
@@ -805,6 +807,7 @@ static void camera_capture_task(void *ctx)
         }
         const camera_vision_mode_t mode = camera_recognition_mode();
         if (mode != previous_mode) {
+            camera_vision_reset(mode);
             memset(&recognition, 0, sizeof(recognition));
             recognition.mode = mode;
             previous_mode = mode;
@@ -976,7 +979,8 @@ esp_err_t mosaic_camera_toggle_flip(bool *out_enabled)
 
 esp_err_t mosaic_camera_set_recognition_mode(camera_vision_mode_t mode)
 {
-    if (mode != CAMERA_VISION_MODE_OFF && mode != CAMERA_VISION_MODE_QRCODE && mode != CAMERA_VISION_MODE_COLOR) {
+    if (mode != CAMERA_VISION_MODE_OFF && mode != CAMERA_VISION_MODE_QRCODE &&
+            mode != CAMERA_VISION_MODE_COLOR && mode != CAMERA_VISION_MODE_MOTION) {
         return ESP_ERR_INVALID_ARG;
     }
     if (mode != CAMERA_VISION_MODE_OFF) {

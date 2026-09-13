@@ -521,26 +521,34 @@ def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
     ))
     menu = len(objs)
     objs.append(layer(
-        parent, 188, 80, 280, 128, hidden=True,
+        parent, 68, 80, 400, 128, hidden=True,
         name="camera_recognition_menu", bind="camera_recognition_menu_visible",
     ))
-    objs.append(container(menu, 0, 0, 280, 128, bg="#181819", radius=20, opacity=240))
+    objs.append(container(menu, 0, 0, 400, 128, bg="#181819", radius=20, opacity=240))
     objs.append(button(menu, 16, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_qrcode_mode"))
-    objs.append(button(menu, 152, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_color_mode"))
+    objs.append(button(menu, 144, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_color_mode"))
+    objs.append(button(menu, 272, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_motion_mode"))
     qrcode_selected = len(objs)
     objs.append(layer(menu, 16, 14, 112, 96, hidden=True,
                       name="camera_qrcode_selected", bind="camera_qrcode_selected_visible"))
     objs.append(container(qrcode_selected, 0, 0, 112, 96, bg="#5A2B1B", radius=16,
                           border="#FF4C01", border_w=2, callback="camera_qrcode_mode"))
     color_selected = len(objs)
-    objs.append(layer(menu, 152, 14, 112, 96, hidden=True,
+    objs.append(layer(menu, 144, 14, 112, 96, hidden=True,
                       name="camera_color_selected", bind="camera_color_selected_visible"))
     objs.append(container(color_selected, 0, 0, 112, 96, bg="#5A2B1B", radius=16,
                           border="#FF4C01", border_w=2, callback="camera_color_mode"))
+    motion_selected = len(objs)
+    objs.append(layer(menu, 272, 14, 112, 96, hidden=True,
+                      name="camera_motion_selected", bind="camera_motion_selected_visible"))
+    objs.append(container(motion_selected, 0, 0, 112, 96, bg="#5A2B1B", radius=16,
+                          border="#FF4C01", border_w=2, callback="camera_motion_mode"))
     objs.append(label(menu, 42, 22, 60, 48, "QR", size=26, color="#FCFCFF", align="center", callback="camera_qrcode_mode"))
-    objs.append(label(menu, 178, 20, 60, 48, "●", size=32, color="#4FD66D", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 170, 20, 60, 48, "●", size=32, color="#4FD66D", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 298, 22, 60, 48, "M", size=26, color="#FCFCFF", align="center", callback="camera_motion_mode"))
     objs.append(label(menu, 24, 76, 96, 24, "QR Code", size=16, color="#D6D6DE", align="center", callback="camera_qrcode_mode"))
-    objs.append(label(menu, 160, 76, 96, 24, "Color", size=16, color="#D6D6DE", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 152, 76, 96, 24, "Color", size=16, color="#D6D6DE", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 280, 76, 96, 24, "Motion", size=16, color="#D6D6DE", align="center", callback="camera_motion_mode"))
 
 
 def build_imu_page(objs, parent):

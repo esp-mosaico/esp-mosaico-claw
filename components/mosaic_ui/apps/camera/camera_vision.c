@@ -10,6 +10,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_vision_core.h"
+#include "motion_detect.h"
 #include "vision_core_runtime.h"
 
 #define CAMERA_VISION_QR_SIZE 240
@@ -22,6 +23,8 @@ static const char *TAG = "camera_vision";
 static uint8_t *s_gray;
 static uint16_t *s_color;
 static esp_vision_blob_t *s_blobs;
+static motion_detect_handle_t s_motion;
+static motion_detect_config_t s_motion_config;
 
 static int scale_floor(int value, int destination_size, int source_size)
 {
@@ -75,7 +78,7 @@ static void resize_gray(const uint16_t *source, uint32_t source_width, uint32_t 
 
 esp_err_t camera_vision_init(void)
 {
-    if (s_gray != NULL && s_color != NULL && s_blobs != NULL) {
+    if (s_gray != NULL && s_color != NULL && s_blobs != NULL && s_motion != NULL) {
         return ESP_OK;
     }
     camera_vision_deinit();
@@ -95,7 +98,18 @@ esp_err_t camera_vision_init(void)
         camera_vision_deinit();
         return ESP_ERR_NO_MEM;
     }
-    const esp_err_t err = lua_vision_core_runtime_init();
+    motion_detect_config_set_defaults(&s_motion_config);
+    s_motion_config.pixel_diff_threshold = 16;
+    s_motion_config.active_pixel_percent = 1;
+    s_motion_config.confirm_frames = 1;
+    s_motion_config.block_hit_pixels = 8;
+    esp_err_t err = motion_detect_create(&s_motion);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "failed to create motion detector: %s", esp_err_to_name(err));
+        camera_vision_deinit();
+        return err;
+    }
+    err = lua_vision_core_runtime_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to initialize vision runtime: %s", esp_err_to_name(err));
         camera_vision_deinit();
@@ -111,6 +125,15 @@ void camera_vision_deinit(void)
     s_color = NULL;
     heap_caps_free(s_blobs);
     s_blobs = NULL;
+    motion_detect_delete(s_motion);
+    s_motion = NULL;
+}
+
+void camera_vision_reset(camera_vision_mode_t mode)
+{
+    if (mode == CAMERA_VISION_MODE_MOTION) {
+        motion_detect_reset(s_motion);
+    }
 }
 
 static esp_err_t detect_qrcodes(const uint16_t *pixels, uint32_t width, uint32_t height, camera_vision_result_t *result)
@@ -204,6 +227,27 @@ static esp_err_t detect_color(const uint16_t *pixels, uint32_t width, uint32_t h
     return ESP_OK;
 }
 
+static esp_err_t detect_motion(const uint16_t *pixels, uint32_t width, uint32_t height, camera_vision_result_t *result)
+{
+    motion_detect_result_t motion = {0};
+    resize_rgb565(pixels, width, height, s_color, CAMERA_VISION_COLOR_SIZE, CAMERA_VISION_COLOR_SIZE);
+    const esp_err_t err = motion_detect_process_rgb565(s_motion, (const uint8_t *)s_color,
+                                                       CAMERA_VISION_COLOR_SIZE * CAMERA_VISION_COLOR_SIZE * sizeof(*s_color),
+                                                       CAMERA_VISION_COLOR_SIZE, CAMERA_VISION_COLOR_SIZE,
+                                                       &s_motion_config, &motion);
+    if (err != ESP_OK || !motion.alert_active || !motion.has_display_box) {
+        return err;
+    }
+    result->motion_box = (camera_vision_box_t) {
+        .left = scale_floor(motion.display_x1, (int)width, CAMERA_VISION_COLOR_SIZE),
+        .top = scale_floor(motion.display_y1, (int)height, CAMERA_VISION_COLOR_SIZE),
+        .right = scale_ceil(motion.display_x2 + 1, (int)width, CAMERA_VISION_COLOR_SIZE) - 1,
+        .bottom = scale_ceil(motion.display_y2 + 1, (int)height, CAMERA_VISION_COLOR_SIZE) - 1,
+    };
+    result->count = 1;
+    return ESP_OK;
+}
+
 esp_err_t camera_vision_detect(camera_vision_mode_t mode, const uint8_t *pixels, uint32_t width, uint32_t height,
                                camera_vision_result_t *out_result)
 {
@@ -220,6 +264,8 @@ esp_err_t camera_vision_detect(camera_vision_mode_t mode, const uint8_t *pixels,
         err = detect_qrcodes((const uint16_t *)pixels, width, height, out_result);
     } else if (mode == CAMERA_VISION_MODE_COLOR) {
         err = detect_color((const uint16_t *)pixels, width, height, out_result);
+    } else if (mode == CAMERA_VISION_MODE_MOTION) {
+        err = detect_motion((const uint16_t *)pixels, width, height, out_result);
     } else {
         err = ESP_ERR_INVALID_ARG;
     }
@@ -269,5 +315,7 @@ void camera_vision_draw_result(uint8_t *pixels, uint32_t width, uint32_t height,
             rgb565[(size_t)center_y * width + x] = CAMERA_VISION_RGB565_GREEN;
             rgb565[(size_t)y * width + center_x] = CAMERA_VISION_RGB565_GREEN;
         }
+    } else if (result->mode == CAMERA_VISION_MODE_MOTION) {
+        draw_rectangle(rgb565, width, height, &result->motion_box);
     }
 }

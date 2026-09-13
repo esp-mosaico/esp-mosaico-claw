@@ -109,9 +109,11 @@ static void camera_render_recognition(esp_gsp_handle_t ui)
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_ACTIVE_VISIBLE, s_recognition_mode != CAMERA_VISION_MODE_OFF);
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_QRCODE_SELECTED_VISIBLE, s_recognition_mode == CAMERA_VISION_MODE_QRCODE);
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_COLOR_SELECTED_VISIBLE, s_recognition_mode == CAMERA_VISION_MODE_COLOR);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_MOTION_SELECTED_VISIBLE, s_recognition_mode == CAMERA_VISION_MODE_MOTION);
     (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_STATUS,
                            s_recognition_mode == CAMERA_VISION_MODE_QRCODE ? "QR scanning" :
-                           s_recognition_mode == CAMERA_VISION_MODE_COLOR ? "Color scanning" : "");
+                           s_recognition_mode == CAMERA_VISION_MODE_COLOR ? "Color scanning" :
+                           s_recognition_mode == CAMERA_VISION_MODE_MOTION ? "Motion scanning" : "");
     if (s_recognition_mode == CAMERA_VISION_MODE_OFF) {
         (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_VISIBLE, false);
     }
@@ -302,6 +304,9 @@ static void camera_event(
         break;
     case GSP_ACT_ID_CAMERA_COLOR_MODE:
         camera_select_recognition_mode(ui, CAMERA_VISION_MODE_COLOR);
+        break;
+    case GSP_ACT_ID_CAMERA_MOTION_MODE:
+        camera_select_recognition_mode(ui, CAMERA_VISION_MODE_MOTION);
         break;
     default:
         break;

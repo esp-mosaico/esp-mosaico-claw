@@ -1241,6 +1241,42 @@ bool display_service_exclusive_allows_system_overlay(void)
             DISPLAY_SERVICE_SESSION_FLAG_ALLOW_SYSTEM_OVERLAY) != 0;
 }
 
+esp_err_t display_service_request_exit(void)
+{
+    struct display_service_session_t *session = &s_display.sessions[0];
+    display_service_session_exit_request_cb_t callback;
+    void *user_ctx;
+    char owner_name[DISPLAY_SERVICE_OWNER_NAME_LEN];
+
+    ESP_RETURN_ON_FALSE(s_display.present_handoff_mutex != NULL,
+                        ESP_ERR_INVALID_STATE, TAG,
+                        "display session service unavailable");
+    ESP_RETURN_ON_FALSE(
+        xSemaphoreTake(s_display.present_handoff_mutex,
+                       pdMS_TO_TICKS(1000)) == pdTRUE,
+        ESP_ERR_TIMEOUT, TAG, "display exit request busy");
+    if (!session->active) {
+        xSemaphoreGive(s_display.present_handoff_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+    if (session->closing) {
+        xSemaphoreGive(s_display.present_handoff_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (session->exit_request_cb == NULL) {
+        xSemaphoreGive(s_display.present_handoff_mutex);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    callback = session->exit_request_cb;
+    user_ctx = session->cleanup_user_ctx;
+    strlcpy(owner_name, session->owner_name, sizeof(owner_name));
+    xSemaphoreGive(s_display.present_handoff_mutex);
+
+    ESP_LOGI(TAG, "display session exit requested: owner=%s", owner_name);
+    callback(session, user_ctx);
+    return ESP_OK;
+}
+
 esp_err_t display_service_start(const display_service_config_t *config)
 {
     (void)config;

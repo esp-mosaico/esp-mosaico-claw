@@ -172,6 +172,8 @@ esp_err_t display_service_set_state_observer(display_service_state_observer_cb_t
                                              void *user_ctx);
 bool display_service_has_exclusive_session(void);
 bool display_service_exclusive_allows_system_overlay(void);
+/** Request the active exclusive session owner to exit; returns ESP_ERR_NOT_FOUND when no session is active. */
+esp_err_t display_service_request_exit(void);
 esp_err_t display_service_lock(void);
 void display_service_unlock(void);
 esp_err_t display_service_set_default_screen(lv_obj_t *screen);

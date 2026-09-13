@@ -311,6 +311,10 @@ esp_err_t mosaic_welcome_open(void)
 
 esp_err_t mosaic_ui_back(void)
 {
+    esp_err_t err = display_service_request_exit();
+    if (err != ESP_ERR_NOT_FOUND) {
+        return err;
+    }
     return mosaic_loader_request_back();
 }
 

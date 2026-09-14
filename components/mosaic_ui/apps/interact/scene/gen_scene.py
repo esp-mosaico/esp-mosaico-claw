@@ -60,12 +60,21 @@ def main():
     ldr_glow["bind_target"] = "color"
     objs.append(ldr_glow)
     objs.append(label(0, 374, 411, 58, 26, "--%", size=17, align="center", bind="light", color="#0A0A0A"))
-    objs.append(label(0, 230, 47, 176, 13, "", size=10, align="right", bind="status", color="#91919B"))
+    objs.append(label(0, 23, 48, 255, 13, "", size=10, bind="status", color="#91919B"))
 
-    # The default auto slot keeps the reference info glyph; L/R appear after selection.
-    objs.append(container(0, 421, 18, 30, 30, bg="#000000", radius=15))
-    objs.append(button(0, 413, 10, 47, 47, "i", size=23, radius=24, callback="slot", name="slot", opacity=0))
-    objs[-1]["bind"] = "slot"
+    # Keep input selection compact beside the hardware title.
+    objs.append({
+        "type": "dropdown", "parent": 0,
+        "x": 292, "y": 11, "w": 116, "h": 40,
+        "name": "input_mode_dropdown",
+        "callback": "input_mode_select",
+        "options": ["BUTTON", "TOUCH"],
+        "selected": 1, "item_height": 38,
+        "font_size": 15, "fg_color": "#E7E7EB",
+        "bg_color": "#222224", "panel_color": "#29292C",
+        "border_color": "#55555A", "border_width": 1,
+        "radius": 10,
+    })
 
     unavailable = layer(0, 30, 188, 420, 116, name="module_unavailable", bind="module_unavailable", bind_target="visible", hidden=True)
     objs.append(unavailable)

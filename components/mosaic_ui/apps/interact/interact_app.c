@@ -11,7 +11,8 @@
 
 static void *s_timer;
 static interact_snapshot_t s_previous;
-static int s_light_text[3], s_status_text, s_ir_text, s_slot_text;
+static int s_light_text[3], s_status_text, s_ir_text;
+static int s_rendered_input_mode;
 
 static uint32_t ldr_indicator_color(bool ready, uint8_t light)
 {
@@ -25,7 +26,13 @@ static void render(esp_gsp_handle_t ui, void *ctx)
     (void)ctx;
     interact_snapshot_t state;
     interact_backend_snapshot(&state);
-    if (!memcmp(&state, &s_previous, sizeof(state))) return;
+    const int input_mode = state.touch_input_selected ? 1 : 0;
+    if (s_rendered_input_mode != input_mode) {
+        uint32_t selected;
+        if (gsp_interact_input_mode_dropdown_get_selected(ui, &selected) == ESP_OK && selected == (uint32_t)input_mode) s_rendered_input_mode = input_mode;
+        else (void)gsp_interact_input_mode_dropdown_set_selected(ui, (uint32_t)input_mode);
+    }
+    if (!memcmp(&state, &s_previous, sizeof(state)) && s_rendered_input_mode == input_mode) return;
     static const uint32_t lamps[] = {GSP_BIND_LED_0, GSP_BIND_LED_1, GSP_BIND_LED_2, GSP_BIND_LED_3, GSP_BIND_LED_4, GSP_BIND_LED_5};
     for (unsigned i = 0; i < 6; ++i) esp_gsp_set_visible(ui, lamps[i], state.ready && (state.leds & (1U << i)));
     esp_gsp_set_visible(ui, GSP_BIND_LED_4_PRESSED, state.ready && (state.pressed_leds & (1U << 4)));
@@ -42,7 +49,6 @@ static void render(esp_gsp_handle_t ui, void *ctx)
     interact_status_set_text(ui, state.status, &s_status_text);
     const char *ir_status = !state.ir_status[0] ? "OFF" : !strcmp(state.ir_status, "IR sending") ? "SEND" : !strcmp(state.ir_status, "IR sent") ? "SENT" : "FAIL";
     interact_ir_status_set_text(ui, ir_status, &s_ir_text);
-    interact_slot_set_text(ui, state.preferred < 0 ? "i" : state.preferred == 0 ? "L" : "R", &s_slot_text);
     s_previous = state;
 }
 
@@ -50,7 +56,8 @@ static void started(esp_gsp_handle_t ui)
 {
     memset(&s_previous, 0xFF, sizeof(s_previous));
     s_light_text[0] = s_light_text[1] = s_light_text[2] = -1;
-    s_status_text = s_ir_text = s_slot_text = -1;
+    s_status_text = s_ir_text = -1;
+    s_rendered_input_mode = -1;
     interact_backend_start();
     render(ui, NULL);
     s_timer = esp_gsp_timer_create(ui, 50, render, NULL);
@@ -67,13 +74,20 @@ static void event(esp_gsp_handle_t ui, const struct mosaic_event *event)
 {
     (void)ui;
     if (event->type != MOSAIC_EVENT_UI_CALL) return;
-    static const uint16_t actions[] = {GSP_ACT_ID_LED_0, GSP_ACT_ID_LED_1, GSP_ACT_ID_LED_2, GSP_ACT_ID_LED_3, GSP_ACT_ID_LED_4, GSP_ACT_ID_LED_5, GSP_ACT_ID_IR_SEND, GSP_ACT_ID_SLOT};
-    for (unsigned i = 0; i < sizeof(actions) / sizeof(actions[0]); ++i) {
-        if (actions[i] == event->data.call.action_id) {
-            interact_backend_command(i);
-            break;
-        }
+    switch (event->data.call.action_id) {
+    case GSP_ACT_ID_LED_0: interact_backend_command(INTERACT_COMMAND_LED_0); return;
+    case GSP_ACT_ID_LED_1: interact_backend_command(INTERACT_COMMAND_LED_1); return;
+    case GSP_ACT_ID_LED_2: interact_backend_command(INTERACT_COMMAND_LED_2); return;
+    case GSP_ACT_ID_LED_3: interact_backend_command(INTERACT_COMMAND_LED_3); return;
+    case GSP_ACT_ID_LED_4: interact_backend_command(INTERACT_COMMAND_LED_4); return;
+    case GSP_ACT_ID_LED_5: interact_backend_command(INTERACT_COMMAND_LED_5); return;
+    case GSP_ACT_ID_IR_SEND: interact_backend_command(INTERACT_COMMAND_IR_SEND); return;
+    case GSP_ACT_ID_INPUT_MODE_SELECT: break;
+    default: return;
     }
+    const uint32_t index = event->data.call.list != ESP_GSP_LIST_NONE ? event->data.call.item : event->data.call.arg;
+    if (index == 0U) interact_backend_select_button_input();
+    else if (index == 1U) interact_backend_select_touch_input();
 }
 
 const mosaic_app_descriptor_t mosaic_interact_app = {

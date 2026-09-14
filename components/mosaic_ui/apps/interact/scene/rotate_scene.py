@@ -14,7 +14,6 @@ def rotate_scene(objects, here, font_path, rotate=True):
     fields = {
         "status": ["", "Connecting...", "Init failed", "Open failed", "Left connected", "Right connected", "Board in use", "Connect interaction board", "Board disconnected", "Sensor read failed", "LED write failed", "Out of memory", "Preview - no hardware"],
         "ir_status": ["OFF", "SEND", "SENT", "FAIL"],
-        "slot": ["i", "L", "R"],
     }
     widths = [obj["w"] for obj in objects]
     rotated = []

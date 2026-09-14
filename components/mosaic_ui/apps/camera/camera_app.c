@@ -109,9 +109,11 @@ static void camera_render_recognition(esp_gsp_handle_t ui)
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_ACTIVE_VISIBLE, s_recognition_mode != CAMERA_VISION_MODE_OFF);
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_QRCODE_SELECTED_VISIBLE, s_recognition_mode == CAMERA_VISION_MODE_QRCODE);
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_COLOR_SELECTED_VISIBLE, s_recognition_mode == CAMERA_VISION_MODE_COLOR);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_MOTION_SELECTED_VISIBLE, s_recognition_mode == CAMERA_VISION_MODE_MOTION);
     (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_STATUS,
                            s_recognition_mode == CAMERA_VISION_MODE_QRCODE ? "QR scanning" :
-                           s_recognition_mode == CAMERA_VISION_MODE_COLOR ? "Color scanning" : "");
+                           s_recognition_mode == CAMERA_VISION_MODE_COLOR ? "Color scanning" :
+                           s_recognition_mode == CAMERA_VISION_MODE_MOTION ? "Motion scanning" : "");
     if (s_recognition_mode == CAMERA_VISION_MODE_OFF) {
         (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_RECOGNITION_RESULT_VISIBLE, false);
     }
@@ -162,6 +164,7 @@ static void camera_started(esp_gsp_handle_t ui)
     camera_load_flash_mode();
     s_recognition_mode = CAMERA_VISION_MODE_OFF;
     s_recognition_menu_open = false;
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL_VISIBLE, false);
     camera_render_flash_mode(ui);
     camera_render_recognition(ui);
     const esp_err_t err = mosaic_loader_defer(camera_start_deferred, NULL);
@@ -181,6 +184,7 @@ static void camera_started(esp_gsp_handle_t ui)
     camera_load_flash_mode();
     s_recognition_mode = CAMERA_VISION_MODE_OFF;
     s_recognition_menu_open = false;
+    (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL_VISIBLE, false);
     camera_render_flash_mode(ui);
     camera_render_recognition(ui);
     (void)esp_gsp_set_visible(ui, GSP_BIND_CAMERA_MISSING_VISIBLE, false);
@@ -244,6 +248,8 @@ static void camera_capture_photo(void)
     }
     if (err != ESP_OK) {
         printf("mosaic_camera: request photo failed err=%d\n", (int)err);
+    } else {
+        printf("mosaic_camera: photo request queued: %s\n", path);
     }
 }
 
@@ -298,6 +304,9 @@ static void camera_event(
         break;
     case GSP_ACT_ID_CAMERA_COLOR_MODE:
         camera_select_recognition_mode(ui, CAMERA_VISION_MODE_COLOR);
+        break;
+    case GSP_ACT_ID_CAMERA_MOTION_MODE:
+        camera_select_recognition_mode(ui, CAMERA_VISION_MODE_MOTION);
         break;
     default:
         break;

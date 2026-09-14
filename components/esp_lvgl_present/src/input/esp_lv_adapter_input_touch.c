@@ -36,16 +36,18 @@ static void lvgl_touch_read(lv_indev_t *indev, lv_indev_data_t *data)
         return;
     }
 
-    esp_lcd_touch_point_data_t touch_data[1] = {0};
+    esp_lcd_touch_point_data_t touch_data[CONFIG_ESP_LCD_TOUCH_MAX_POINTS] = {0};
     uint8_t count = 0;
     esp_err_t ret;
 
     if (touch_ctx->callbacks.custom_touch_read) {
         ret = touch_ctx->callbacks.custom_touch_read(touch_ctx->handle, touch_data, &count,
-                                                     1, touch_ctx->callbacks.user_ctx);
+                                                     CONFIG_ESP_LCD_TOUCH_MAX_POINTS,
+                                                     touch_ctx->callbacks.user_ctx);
     } else {
         esp_lcd_touch_read_data(touch_ctx->handle);
-        ret = esp_lcd_touch_get_data(touch_ctx->handle, touch_data, &count, 1);
+        ret = esp_lcd_touch_get_data(touch_ctx->handle, touch_data, &count,
+                                     CONFIG_ESP_LCD_TOUCH_MAX_POINTS);
     }
 
     if (ret == ESP_OK && count > 0) {

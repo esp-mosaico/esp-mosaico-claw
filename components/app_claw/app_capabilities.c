@@ -38,6 +38,7 @@
 #endif
 #include "cap_llm_config.h"
 #if CONFIG_APP_CLAW_CAP_LUA
+#include "cap_app_mgr.h"
 #include "cap_lua.h"
 #endif
 #if CONFIG_APP_CLAW_CAP_MCP_CLIENT
@@ -620,7 +621,8 @@ static esp_err_t app_cap_register_lua(const app_claw_config_t *config,
 {
     (void)config;
     (void)paths;
-    return cap_lua_register_group();
+    ESP_RETURN_ON_ERROR(cap_lua_register_group(), TAG, "Failed to register Lua group");
+    return cap_app_mgr_register_group();
 }
 #endif
 

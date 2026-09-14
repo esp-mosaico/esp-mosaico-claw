@@ -415,7 +415,6 @@ def build_settings_quick_shade(objs, parent, *, drawer_name="quick_drawer"):
 
 def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
     app_root_shell(objs, parent, "Camera", name="shell_camera")
-    del assets_prefix
     objs.append(image(
         parent, f"{camera_assets_prefix}/camera_canvas_fullscreen.png",
         0, 0, 480, 480, bind="camera_canvas", name="camera_preview",
@@ -492,6 +491,16 @@ def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
         parent, f"{camera_assets_prefix}/camera_album.png",
         64, 409, 48, 48, name="camera_album", callback="camera_album",
     ))
+    thumbnail = len(objs)
+    objs.append(layer(
+        parent, 64, 409, 48, 48, hidden=True,
+        name="camera_album_thumbnail_layer", bind="camera_album_thumbnail_visible",
+    ))
+    objs.append(image(
+        thumbnail, f"{assets_prefix}/black_placeholder.png",
+        0, 0, 48, 48, bind="camera_album_thumbnail",
+        name="camera_album_thumbnail", callback="camera_album",
+    ))
     objs.append(image(
         parent, f"{camera_assets_prefix}/camera_shutter.png",
         210, 401, 60, 60, name="camera_shutter", callback="camera_shutter",
@@ -512,26 +521,34 @@ def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
     ))
     menu = len(objs)
     objs.append(layer(
-        parent, 188, 80, 280, 128, hidden=True,
+        parent, 68, 80, 400, 128, hidden=True,
         name="camera_recognition_menu", bind="camera_recognition_menu_visible",
     ))
-    objs.append(container(menu, 0, 0, 280, 128, bg="#181819", radius=20, opacity=240))
+    objs.append(container(menu, 0, 0, 400, 128, bg="#181819", radius=20, opacity=240))
     objs.append(button(menu, 16, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_qrcode_mode"))
-    objs.append(button(menu, 152, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_color_mode"))
+    objs.append(button(menu, 144, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_color_mode"))
+    objs.append(button(menu, 272, 14, 112, 96, "", bg="#282829", radius=16, callback="camera_motion_mode"))
     qrcode_selected = len(objs)
     objs.append(layer(menu, 16, 14, 112, 96, hidden=True,
                       name="camera_qrcode_selected", bind="camera_qrcode_selected_visible"))
     objs.append(container(qrcode_selected, 0, 0, 112, 96, bg="#5A2B1B", radius=16,
                           border="#FF4C01", border_w=2, callback="camera_qrcode_mode"))
     color_selected = len(objs)
-    objs.append(layer(menu, 152, 14, 112, 96, hidden=True,
+    objs.append(layer(menu, 144, 14, 112, 96, hidden=True,
                       name="camera_color_selected", bind="camera_color_selected_visible"))
     objs.append(container(color_selected, 0, 0, 112, 96, bg="#5A2B1B", radius=16,
                           border="#FF4C01", border_w=2, callback="camera_color_mode"))
+    motion_selected = len(objs)
+    objs.append(layer(menu, 272, 14, 112, 96, hidden=True,
+                      name="camera_motion_selected", bind="camera_motion_selected_visible"))
+    objs.append(container(motion_selected, 0, 0, 112, 96, bg="#5A2B1B", radius=16,
+                          border="#FF4C01", border_w=2, callback="camera_motion_mode"))
     objs.append(label(menu, 42, 22, 60, 48, "QR", size=26, color="#FCFCFF", align="center", callback="camera_qrcode_mode"))
-    objs.append(label(menu, 178, 20, 60, 48, "●", size=32, color="#4FD66D", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 170, 20, 60, 48, "●", size=32, color="#4FD66D", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 298, 22, 60, 48, "M", size=26, color="#FCFCFF", align="center", callback="camera_motion_mode"))
     objs.append(label(menu, 24, 76, 96, 24, "QR Code", size=16, color="#D6D6DE", align="center", callback="camera_qrcode_mode"))
-    objs.append(label(menu, 160, 76, 96, 24, "Color", size=16, color="#D6D6DE", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 152, 76, 96, 24, "Color", size=16, color="#D6D6DE", align="center", callback="camera_color_mode"))
+    objs.append(label(menu, 280, 76, 96, 24, "Motion", size=16, color="#D6D6DE", align="center", callback="camera_motion_mode"))
 
 
 def build_imu_page(objs, parent):

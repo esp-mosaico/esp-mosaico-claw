@@ -15,22 +15,23 @@
 
 Use this skill to create, publish, update, or remove reusable model-invoked skills, including tool-like workflows, project-specific features, and Lua-backed automations.
 
+Do not use this skill for launcher-visible Apps; use `app_creator` instead.
+
 ## Required Flow
 
-1. Define the user-facing behavior, trigger wording, prerequisites, capability groups, bundled files, and whether Lua or a launcher entry is needed.
+1. Define the user-facing behavior, trigger wording, prerequisites, capability groups, bundled files, and whether Lua is needed.
 2. Choose a new `skill_id` based on the behavior and confirm `skills/<skill_id>/` does not already exist unless the user requested an update.
 3. Read only the conditional references required by the task.
 4. Create the complete source files directly; do not use a preparation script or unchanged template.
-5. Validate metadata, paths, Lua invocation documentation, and any launcher references.
+5. Validate metadata, paths, and Lua invocation documentation.
 6. Call `publish_skill` after every required file exists.
-7. Report the published id, launcher inclusion, and any required image rebuild or device restart.
+7. Report the published id and any required image rebuild or device restart.
 
 ## Skill Contract
 
 ```text
 skills/<skill_id>/
 ├── SKILL.md              # required
-├── launcher.json         # required launcher entry
 ├── scripts/*.lua         # optional executable payloads
 ├── references/*          # optional on-demand guidance
 └── assets/*              # optional bundled assets
@@ -41,7 +42,6 @@ skills/<skill_id>/
 - Write a one-sentence `description` of user intent with likely trigger words and critical prerequisites; do not describe only the implementation.
 - Keep every bundled Lua file under `scripts/` and reference it as `{CUR_SKILL_DIR}/scripts/<name>.lua`.
 - Document each Lua script's args, sync or async mode, timeout, exclusive group, and output/error handling.
-- Put `launcher.json` beside `SKILL.md`.
 - Use only skill-local paths in skill files; never embed source-tree or FATFS output paths.
 - Do not create a bare Lua file for an ambiguous feature request.
 
@@ -91,20 +91,19 @@ Replace every placeholder with final behavior. Document the exact args, executio
 ## Conditional References
 
 - For a Lua-backed skill, activate `cap_lua`, then read `{CUR_SKILL_DIR}/references/write_lua.md` and `{CUR_SKILL_DIR}/references/run_lua.md` before writing files.
-- For a launcher-visible skill, read `{CUR_SKILL_DIR}/references/launcher.md` before creating or publishing launcher configuration.
-- For a non-Lua skill without a launcher, do not load the Lua or launcher references.
+- For a non-Lua skill, do not load the Lua references.
 
 ## Publication And Updates
 
-Ensure `skills/<skill_id>/SKILL.md` and all launcher-referenced files exist, then call:
+Ensure `skills/<skill_id>/SKILL.md` and all bundled files exist, then call:
 
 ```json
 {"skill_id":"weather_alerts"}
 ```
 
-Call `publish_skill` with only `skill_id` and treat its result as the source of truth. Confirm launcher metadata when supplied.
+Call `publish_skill` with only `skill_id` and treat its result as the source of truth.
 
-For updates, modify the existing source files and launcher configuration, then call `publish_skill` with the same id. Use `remove_skill` only when the user asks to delete the whole runtime skill.
+For updates, modify the existing source files, then call `publish_skill` with the same id. Use `remove_skill` only when the user asks to delete the whole runtime skill.
 
 ## Failure Handling
 

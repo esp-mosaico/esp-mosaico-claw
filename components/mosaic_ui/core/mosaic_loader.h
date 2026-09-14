@@ -29,6 +29,8 @@ esp_err_t mosaic_loader_start_hub(void);
 esp_err_t mosaic_loader_request(const mosaic_app_descriptor_t* app);
 /** Thread-safe physical/UI Back request. Child StackViews pop before App exit. */
 esp_err_t mosaic_loader_request_back(void);
+/** Queue one simulated tap through the active GSP input pipeline. */
+esp_err_t mosaic_loader_simulate_tap(int16_t x, int16_t y);
 esp_err_t mosaic_loader_invalidate_app(uint16_t app_id, uint32_t revision);
 /** Thread-safe request for a transient notice above the active App. */
 esp_err_t mosaic_loader_show_system_notice(

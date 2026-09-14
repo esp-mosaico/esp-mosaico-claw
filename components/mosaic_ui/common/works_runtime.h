@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define WORKS_RUNTIME_SKILL_ID_MAX 64U
+#define WORKS_RUNTIME_APP_ID_MAX 64U
 #define WORKS_RUNTIME_DISPLAY_NAME_MAX 64U
 #define WORKS_RUNTIME_ERROR_MAX    160U
 #define WORKS_RUNTIME_RECENT_LIMIT 4U
@@ -29,7 +29,7 @@ typedef enum {
 } works_runtime_state_t;
 
 typedef struct {
-    char skill_id[WORKS_RUNTIME_SKILL_ID_MAX];
+    char app_id[WORKS_RUNTIME_APP_ID_MAX];
     char display_name[WORKS_RUNTIME_DISPLAY_NAME_MAX];
     bool builtin;
     works_runtime_state_t state;
@@ -52,7 +52,7 @@ esp_err_t works_runtime_get_item(size_t index,
                                  works_runtime_item_snapshot_t *out_item);
 esp_err_t works_runtime_get_recent(size_t index,
                                    works_runtime_item_snapshot_t *out_item);
-esp_err_t works_runtime_request_toggle(const char *skill_id);
+esp_err_t works_runtime_request_toggle(const char *app_id);
 
 #ifdef __cplusplus
 }

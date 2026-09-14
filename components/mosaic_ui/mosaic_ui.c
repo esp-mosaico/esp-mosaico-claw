@@ -311,6 +311,10 @@ esp_err_t mosaic_welcome_open(void)
 
 esp_err_t mosaic_ui_back(void)
 {
+    esp_err_t err = display_service_request_exit();
+    if (err != ESP_ERR_NOT_FOUND) {
+        return err;
+    }
     return mosaic_loader_request_back();
 }
 
@@ -322,6 +326,43 @@ esp_err_t mosaic_ui_open_ai_create(void)
         return ESP_ERR_NOT_FOUND;
     }
     return mosaic_loader_request(app);
+}
+
+static esp_err_t prepare_simulated_tap(void)
+{
+    bool woke_screen = false;
+    if (atomic_load(&s_screen_asleep) ||
+            !display_service_panel_enabled()) {
+        woke_screen = true;
+        screen_post(SCREEN_CMD_WAKE, false);
+        for (uint32_t elapsed_ms = 0; elapsed_ms < 1500U;
+                elapsed_ms += 10U) {
+            if (!atomic_load(&s_screen_asleep) &&
+                    display_service_panel_enabled()) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        if (atomic_load(&s_screen_asleep) ||
+                !display_service_panel_enabled()) {
+            return ESP_ERR_TIMEOUT;
+        }
+    }
+    /* Let the resumed renderer publish its first frame before input. */
+    if (woke_screen) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    mosaic_ui_note_screen_activity();
+    return ESP_OK;
+}
+
+esp_err_t mosaic_ui_simulate_tap(int16_t x, int16_t y)
+{
+    if (x < 0 || x >= 480 || y < 0 || y >= 480) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    ESP_RETURN_ON_ERROR(prepare_simulated_tap(), TAG, "prepare simulated tap");
+    return mosaic_loader_simulate_tap(x, y);
 }
 
 static esp_err_t present_quiesce(void *ctx, uint32_t timeout_ms)

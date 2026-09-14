@@ -17,6 +17,7 @@ typedef enum {
     CAMERA_VISION_MODE_OFF = 0,
     CAMERA_VISION_MODE_QRCODE,
     CAMERA_VISION_MODE_COLOR,
+    CAMERA_VISION_MODE_MOTION,
 } camera_vision_mode_t;
 
 typedef struct {
@@ -36,10 +37,12 @@ typedef struct {
     size_t count;
     camera_vision_qrcode_t qrcodes[CAMERA_VISION_QR_CAPACITY];
     camera_vision_box_t color_box;
+    camera_vision_box_t motion_box;
 } camera_vision_result_t;
 
 esp_err_t camera_vision_init(void);
 void camera_vision_deinit(void);
+void camera_vision_reset(camera_vision_mode_t mode);
 esp_err_t camera_vision_detect(camera_vision_mode_t mode, const uint8_t *pixels, uint32_t width, uint32_t height,
                                camera_vision_result_t *out_result);
 void camera_vision_draw_result(uint8_t *pixels, uint32_t width, uint32_t height, const camera_vision_result_t *result);

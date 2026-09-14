@@ -210,7 +210,7 @@ static void works_toggle_row(size_t row)
     works_runtime_item_snapshot_t item;
     esp_err_t err = works_item_for_row(row, &item);
     if (err == ESP_OK) {
-        err = works_runtime_request_toggle(item.skill_id);
+        err = works_runtime_request_toggle(item.app_id);
     }
     if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
         ESP_LOGW(TAG, "toggle work failed: %s", esp_err_to_name(err));

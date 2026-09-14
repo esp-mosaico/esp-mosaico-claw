@@ -99,28 +99,37 @@ static void display_service_raw_touch_task(void *arg)
             continue;
         }
         session->touch_irq_consumed = session->touch_irq_sequence;
-        esp_lcd_touch_point_data_t point = {0};
+        esp_lcd_touch_point_data_t points[CONFIG_ESP_LCD_TOUCH_MAX_POINTS] = {0};
         uint8_t point_count = 0;
-        display_service_touch_sample_t sample = {0};
+        display_service_touch_snapshot_t snapshot = {0};
 
-        if (esp_lcd_touch_read_data(display_service_touch_internal()) == ESP_OK &&
-                esp_lcd_touch_get_data(
-                    display_service_touch_internal(), &point, &point_count, 1) == ESP_OK &&
-                point_count > 0) {
-            int32_t x = point.x;
-            int32_t y = point.y;
-            if (display_service_map_touch_internal(&x, &y) == ESP_OK) {
-                sample.pressed = true;
-                sample.x = x;
-                sample.y = y;
+        esp_err_t err = esp_lcd_touch_read_data(display_service_touch_internal());
+        if (err == ESP_OK) {
+            err = esp_lcd_touch_get_data(display_service_touch_internal(), points, &point_count,
+                                         CONFIG_ESP_LCD_TOUCH_MAX_POINTS);
+        }
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "read touch snapshot failed: %s", esp_err_to_name(err));
+        } else {
+            for (uint8_t i = 0; i < point_count; ++i) {
+                int32_t x = points[i].x;
+                int32_t y = points[i].y;
+                if (display_service_map_touch_internal(&x, &y) != ESP_OK) {
+                    ESP_LOGW(TAG, "map touch point failed: id=%u", points[i].track_id);
+                    continue;
+                }
+                display_service_touch_point_t *point = &snapshot.points[snapshot.count++];
+                point->id = points[i].track_id;
+                point->x = x;
+                point->y = y;
             }
         }
         if (display_service_process_exit_gesture_internal(
-                session, &sample, session->raw_height)) {
+                session, &snapshot, session->raw_height)) {
             /* The gesture belongs to the display shell, not the RAW app. */
-            sample.pressed = false;
+            snapshot.count = 0;
         }
-        display_service_notify_touch_internal(&sample);
+        display_service_notify_touch_internal(&snapshot);
     }
     session->raw_touch_task = NULL;
     vTaskDelete(NULL);

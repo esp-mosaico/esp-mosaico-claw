@@ -32,6 +32,8 @@ esp_err_t mosaic_ui_start(void);
 esp_err_t mosaic_ui_back(void);
 /** Queue AI Create as the active App; safe to call from a board-button callback. */
 esp_err_t mosaic_ui_open_ai_create(void);
+/** Queue one simulated tap on the active 480x480 UI. */
+esp_err_t mosaic_ui_simulate_tap(int16_t x, int16_t y);
 
 /** Set Hub inactivity timeout used to lock and turn the panel off (0 = never). */
 void mosaic_ui_set_screen_timeout(uint32_t timeout_ms);

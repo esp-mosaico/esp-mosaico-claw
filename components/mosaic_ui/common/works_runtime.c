@@ -13,7 +13,7 @@
 
 #include "cJSON.h"
 #include "cap_lua.h"
-#include "claw_launcher.h"
+#include "app_registry.h"
 #include "claw_paths.h"
 #include "claw_utils_file.h"
 #include "esp_attr.h"
@@ -58,7 +58,7 @@ typedef enum {
 
 typedef struct {
     works_command_type_t type;
-    char skill_id[WORKS_RUNTIME_SKILL_ID_MAX];
+    char app_id[WORKS_RUNTIME_APP_ID_MAX];
     char job_id[CAP_LUA_JOB_ID_LEN];
 } works_command_t;
 
@@ -148,30 +148,32 @@ static works_item_t *find_item_locked(const char *id)
     return NULL;
 }
 
-static works_item_t *find_entry_locked(const char *path)
+static uint32_t hash_name(const char *text)
 {
-    if (!path) {
+    uint32_t hash = UINT32_C(2166136261);
+    while (text && *text) {
+        hash ^= (uint8_t)*text++;
+        hash *= UINT32_C(16777619);
+    }
+    return hash;
+}
+
+static works_item_t *find_job_locked(const char *name)
+{
+    if (!name || !name[0]) {
         return NULL;
     }
     for (size_t i = 0; i < s_runtime.item_count; ++i) {
-        if (strcmp(s_runtime.items[i].entry, path) == 0) {
+        char item_name[CAP_LUA_JOB_NAME_MAX];
+        snprintf(item_name, sizeof(item_name), "work_%08lx", (unsigned long)hash_name(s_runtime.items[i].id));
+        if (strcmp(item_name, name) == 0) {
             return &s_runtime.items[i];
         }
     }
     return NULL;
 }
 
-static bool path_is_under(const char *path, const char *root)
-{
-    if (!path || !root || !root[0]) {
-        return false;
-    }
-    size_t root_len = strlen(root);
-    return strncmp(path, root, root_len) == 0 &&
-           (path[root_len] == '/' || path[root_len] == '\0');
-}
-
-static esp_err_t collect_catalog(const claw_launcher_entry_t *entry,
+static esp_err_t collect_catalog(const app_registry_entry_t *entry,
                                  void *user_ctx)
 {
     works_catalog_builder_t *builder = user_ctx;
@@ -198,8 +200,8 @@ static esp_err_t collect_catalog(const claw_launcher_entry_t *entry,
     }
 
     works_item_t *item = &builder->items[builder->count];
-    item->id = strdup(entry->skill_id);
-    item->display_name = strdup(entry->display_name ? entry->display_name : entry->skill_id);
+    item->id = strdup(entry->app_id);
+    item->display_name = strdup(entry->display_name ? entry->display_name : entry->app_id);
     item->entry = strdup(entry->entry);
     item->args_json = entry->args_json ? strdup(entry->args_json) : NULL;
     if (!item->id || !item->display_name || !item->entry ||
@@ -208,7 +210,7 @@ static esp_err_t collect_catalog(const claw_launcher_entry_t *entry,
         return ESP_ERR_NO_MEM;
     }
     item->order = entry->order;
-    item->builtin = path_is_under(entry->entry, claw_paths_get(CLAW_PATH_SYSTEM));
+    item->builtin = entry->manage_mode == APP_REGISTRY_MANAGE_MODE_READONLY;
     item->state = WORKS_RUNTIME_STOPPED;
     builder->count++;
     return ESP_OK;
@@ -354,19 +356,19 @@ static void load_recents(void)
     }
     cJSON *root = cJSON_Parse(data);
     free(data);
-    cJSON *skills = root ? cJSON_GetObjectItemCaseSensitive(root, "skills") : NULL;
-    if (cJSON_IsArray(skills)) {
-        cJSON *skill = NULL;
-        cJSON_ArrayForEach(skill, skills) {
+    cJSON *apps = root ? cJSON_GetObjectItemCaseSensitive(root, "apps") : NULL;
+    if (cJSON_IsArray(apps)) {
+        cJSON *app = NULL;
+        cJSON_ArrayForEach(app, apps) {
             if (s_runtime.recent_count == WORKS_RUNTIME_RECENT_LIMIT) {
                 break;
             }
-            if (!cJSON_IsString(skill) || !skill->valuestring ||
-                    !skill->valuestring[0] ||
-                    recent_contains_locked(skill->valuestring)) {
+            if (!cJSON_IsString(app) || !app->valuestring ||
+                    !app->valuestring[0] ||
+                    recent_contains_locked(app->valuestring)) {
                 continue;
             }
-            char *copy = strdup(skill->valuestring);
+            char *copy = strdup(app->valuestring);
             if (!copy) {
                 break;
             }
@@ -382,17 +384,17 @@ esp_err_t works_runtime_flush(void)
         return ESP_ERR_INVALID_STATE;
     }
     cJSON *root = cJSON_CreateObject();
-    cJSON *skills = cJSON_CreateArray();
-    if (!root || !skills) {
+    cJSON *apps = cJSON_CreateArray();
+    if (!root || !apps) {
         cJSON_Delete(root);
-        cJSON_Delete(skills);
+        cJSON_Delete(apps);
         return ESP_ERR_NO_MEM;
     }
     xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
     if (!s_runtime.recent_dirty) {
         xSemaphoreGive(s_runtime.lock);
         cJSON_Delete(root);
-        cJSON_Delete(skills);
+        cJSON_Delete(apps);
         return ESP_OK;
     }
     for (size_t i = 0; i < s_runtime.recent_count; ++i) {
@@ -400,14 +402,14 @@ esp_err_t works_runtime_flush(void)
         if (!id) {
             xSemaphoreGive(s_runtime.lock);
             cJSON_Delete(root);
-            cJSON_Delete(skills);
+            cJSON_Delete(apps);
             return ESP_ERR_NO_MEM;
         }
-        cJSON_AddItemToArray(skills, id);
+        cJSON_AddItemToArray(apps, id);
     }
     s_runtime.recent_dirty = false;
     xSemaphoreGive(s_runtime.lock);
-    cJSON_AddItemToObject(root, "skills", skills);
+    cJSON_AddItemToObject(root, "apps", apps);
     char *rendered = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!rendered) {
@@ -450,9 +452,7 @@ static void reconcile_active_jobs(void)
         }
     }
     for (size_t i = 0; i < count; ++i) {
-        works_item_t *item = jobs[i].skill_id[0]
-            ? find_item_locked(jobs[i].skill_id)
-            : find_entry_locked(jobs[i].path);
+        works_item_t *item = find_job_locked(jobs[i].name);
         if (!item) {
             continue;
         }
@@ -474,9 +474,7 @@ static void job_event(const cap_lua_job_event_t *event, void *user_ctx)
     }
     uint32_t revision = 0;
     xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
-    works_item_t *item = event->skill_id[0]
-        ? find_item_locked(event->skill_id)
-        : find_entry_locked(event->path);
+    works_item_t *item = find_job_locked(event->name);
     if (item) {
         bool same_job = !item->job_id[0] ||
                         strcmp(item->job_id, event->job_id) == 0;
@@ -526,16 +524,6 @@ static void register_job_callback(void)
     }
 }
 
-static uint32_t hash_name(const char *text)
-{
-    uint32_t hash = UINT32_C(2166136261);
-    while (text && *text) {
-        hash ^= (uint8_t)*text++;
-        hash *= UINT32_C(16777619);
-    }
-    return hash;
-}
-
 static void copy_error_locked(works_item_t *item, const char *message)
 {
     strlcpy(item->last_error,
@@ -545,7 +533,6 @@ static void copy_error_locked(works_item_t *item, const char *message)
 
 static void execute_start(const works_command_t *command)
 {
-    cap_lua_async_config_t config = {0};
     char *path = NULL;
     char *args = NULL;
     char name[CAP_LUA_JOB_NAME_MAX];
@@ -553,7 +540,7 @@ static void execute_start(const works_command_t *command)
     bool has_args = false;
 
     xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
-    works_item_t *item = find_item_locked(command->skill_id);
+    works_item_t *item = find_item_locked(command->app_id);
     if (item) {
         found = true;
         has_args = item->args_json != NULL;
@@ -565,11 +552,11 @@ static void execute_start(const works_command_t *command)
         free(path);
         free(args);
         xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
-        item = find_item_locked(command->skill_id);
+        item = find_item_locked(command->app_id);
         uint32_t revision = 0;
         if (item && item->state == WORKS_RUNTIME_QUEUED) {
             item->state = WORKS_RUNTIME_FAILED;
-            copy_error_locked(item, "launcher definition unavailable or out of memory");
+            copy_error_locked(item, "App definition unavailable or out of memory");
             revision = next_revision_locked();
         }
         xSemaphoreGive(s_runtime.lock);
@@ -578,20 +565,14 @@ static void execute_start(const works_command_t *command)
     }
 
     snprintf(name, sizeof(name), "work_%08lx",
-             (unsigned long)hash_name(command->skill_id));
-    config.path = path;
-    config.args_json = args;
-    config.name = name;
-    config.skill_id = command->skill_id;
-    config.timeout_ms = 0;
+             (unsigned long)hash_name(command->app_id));
     char output[WORKS_OUTPUT_BYTES] = {0};
-    esp_err_t err = cap_lua_run_script_async_ex(&config, output, sizeof(output));
+    esp_err_t err = cap_lua_run_script_async(path, args, 0, name, NULL, false, output, sizeof(output));
     if (err != ESP_OK) {
         xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
-        item = find_item_locked(command->skill_id);
+        item = find_item_locked(command->app_id);
         uint32_t revision = 0;
-        /* A very short cooperative stop publishes its terminal event before
-         * run_script_async_ex returns. Do not overwrite that STOPPED state. */
+        /* A short cooperative stop may publish its terminal event before this call returns. */
         if (item && item->state == WORKS_RUNTIME_QUEUED) {
             item->state = WORKS_RUNTIME_FAILED;
             copy_error_locked(item, output[0] ? output : esp_err_to_name(err));
@@ -608,14 +589,14 @@ static void execute_stop(const works_command_t *command)
 {
     char name[CAP_LUA_JOB_NAME_MAX];
     snprintf(name, sizeof(name), "work_%08lx",
-             (unsigned long)hash_name(command->skill_id));
+             (unsigned long)hash_name(command->app_id));
     const char *target = command->job_id[0] ? command->job_id : name;
     char output[WORKS_OUTPUT_BYTES] = {0};
     esp_err_t err = cap_lua_stop_job(target, WORKS_STOP_WAIT_MS,
                                      output, sizeof(output));
     uint32_t revision = 0;
     xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
-    works_item_t *item = find_item_locked(command->skill_id);
+    works_item_t *item = find_item_locked(command->app_id);
     if (item) {
         if (err == ESP_ERR_NOT_FOUND) {
             item->state = WORKS_RUNTIME_STOPPED;
@@ -661,7 +642,7 @@ esp_err_t works_runtime_refresh(void)
     register_job_callback();
 
     works_catalog_builder_t builder = {0};
-    esp_err_t err = claw_launcher_foreach_entry(collect_catalog, &builder);
+    esp_err_t err = app_registry_foreach(collect_catalog, &builder);
     if (err != ESP_OK) {
         catalog_free(builder.items, builder.count);
         return err;
@@ -701,12 +682,12 @@ esp_err_t works_runtime_refresh(void)
     return ESP_OK;
 }
 
-static void works_launcher_changed(void *user_ctx)
+static void works_apps_changed(void *user_ctx)
 {
     (void)user_ctx;
     esp_err_t err = works_runtime_refresh();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "refresh launcher catalog failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "refresh App catalog failed: %s", esp_err_to_name(err));
     }
 }
 
@@ -745,7 +726,7 @@ esp_err_t works_runtime_init(const works_runtime_config_t *config)
     s_runtime.on_changed = config->on_changed;
     s_runtime.on_changed_ctx = config->user_ctx;
     xSemaphoreGive(s_runtime.lock);
-    ESP_RETURN_ON_ERROR(claw_launcher_register_changed_cb(works_launcher_changed, NULL), TAG, "register launcher listener");
+    ESP_RETURN_ON_ERROR(app_registry_register_changed_cb(works_apps_changed, NULL), TAG, "register App listener");
     return works_runtime_refresh();
 }
 
@@ -775,7 +756,7 @@ static void snapshot_item(const works_item_t *item,
                           works_runtime_item_snapshot_t *out)
 {
     memset(out, 0, sizeof(*out));
-    strlcpy(out->skill_id, item->id, sizeof(out->skill_id));
+    strlcpy(out->app_id, item->id, sizeof(out->app_id));
     strlcpy(out->display_name, item->display_name, sizeof(out->display_name));
     out->builtin = item->builtin;
     out->state = item->state;
@@ -819,16 +800,16 @@ esp_err_t works_runtime_get_recent(size_t index,
     return ESP_OK;
 }
 
-esp_err_t works_runtime_request_toggle(const char *skill_id)
+esp_err_t works_runtime_request_toggle(const char *app_id)
 {
-    if (!skill_id || !skill_id[0] || !s_runtime.lock || !s_runtime.commands) {
+    if (!app_id || !app_id[0] || !s_runtime.lock || !s_runtime.commands) {
         return ESP_ERR_INVALID_ARG;
     }
     works_command_t command = {0};
-    strlcpy(command.skill_id, skill_id, sizeof(command.skill_id));
+    strlcpy(command.app_id, app_id, sizeof(command.app_id));
     uint32_t revision = 0;
     xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
-    works_item_t *item = find_item_locked(skill_id);
+    works_item_t *item = find_item_locked(app_id);
     if (!item) {
         xSemaphoreGive(s_runtime.lock);
         return ESP_ERR_NOT_FOUND;
@@ -846,7 +827,7 @@ esp_err_t works_runtime_request_toggle(const char *skill_id)
     xSemaphoreGive(s_runtime.lock);
     if (xQueueSend(s_runtime.commands, &command, 0) != pdTRUE) {
         xSemaphoreTake(s_runtime.lock, portMAX_DELAY);
-        item = find_item_locked(skill_id);
+        item = find_item_locked(app_id);
         if (item) {
             item->state = WORKS_RUNTIME_FAILED;
             copy_error_locked(item, "works command queue is full");

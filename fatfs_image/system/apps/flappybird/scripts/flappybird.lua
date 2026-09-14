@@ -4,7 +4,6 @@ local delay = require("delay")
 local audio_ok, audio = pcall(require, "audio")
 
 local button_ok, button = pcall(require, "button")
-local touch_ok, lcd_touch = pcall(require, "lcd_touch")
 
 local a = type(args) == "table" and args or {}
 local function int_arg(key, default)
@@ -201,7 +200,7 @@ local bird_vy = 0
 local spawn_timer_ms = 0
 local pipes = {}
 local cloud_offsets = {}
-local touch_consumed = false
+local touch_down = false
 local last_gap_top = nil
 
 math.randomseed(os.time() + width * 13 + height * 17)
@@ -469,11 +468,6 @@ end
 
 local function init_input()
     if INPUT_MODE ~= "button" then
-        if not touch_ok then
-            print("[flappybird] ERROR: require(lcd_touch) failed")
-            return false
-        end
-
         input_mode = "display_touch"
         return true
     end
@@ -504,16 +498,9 @@ end
 
 local function consume_input_tap()
     if input_mode == "display_touch" then
-        local polled, info = pcall(lcd_touch.poll_main)
-        if not polled then
-            print("[flappybird] ERROR: lcd_touch.poll_main failed: " .. tostring(info))
-            return nil
-        end
-        if not info then
-            return false
-        end
-        local tapped = info.just_pressed and not touch_consumed
-        touch_consumed = info.pressed
+        local down = #display.touch.read() > 0
+        local tapped = down and not touch_down
+        touch_down = down
         return tapped
     end
 

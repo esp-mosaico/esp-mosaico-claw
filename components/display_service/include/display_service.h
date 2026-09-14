@@ -69,12 +69,18 @@ typedef struct {
 #define DISPLAY_SERVICE_OWNER_NAME_LEN 32
 
 typedef struct {
-    bool pressed;
+    uint8_t id;
     int32_t x;
     int32_t y;
-} display_service_touch_sample_t;
+} display_service_touch_point_t;
 
-typedef void (*display_service_touch_observer_cb_t)(const display_service_touch_sample_t *sample,
+typedef struct {
+    uint8_t count;
+    display_service_touch_point_t points[CONFIG_ESP_LCD_TOUCH_MAX_POINTS];
+    uint32_t generation;
+} display_service_touch_snapshot_t;
+
+typedef void (*display_service_touch_observer_cb_t)(const display_service_touch_snapshot_t *snapshot,
                                                     void *user_ctx);
 
 typedef enum {
@@ -127,6 +133,9 @@ esp_err_t display_service_session_raw_blit(display_service_session_handle_t sess
 esp_err_t display_service_session_get_raw_info(
     display_service_session_handle_t session,
     display_service_raw_info_t *out_info);
+/** Copy the latest touch snapshot for an active display session. */
+esp_err_t display_service_session_get_touch_snapshot(display_service_session_handle_t session,
+                                                     display_service_touch_snapshot_t *snapshot);
 
 bool display_service_is_started(void);
 esp_err_t display_service_start(const display_service_config_t *config);
@@ -152,19 +161,19 @@ esp_err_t display_service_set_panel_enabled(bool enabled);
 bool display_service_panel_enabled(void);
 
 /**
- * Single touch sample sink for RAW/LVGL producers (e.g. Lua display.poll_touch).
+ * Single touch snapshot sink for RAW/LVGL producers.
  * Pass cb=NULL to clear. Replaces any previous observer.
  */
 esp_err_t display_service_set_touch_observer(display_service_touch_observer_cb_t cb,
                                              void *user_ctx);
-/** Copy the latest sample produced by the main display touch path. */
-esp_err_t display_service_get_main_touch_sample(display_service_touch_sample_t *out_sample);
 /** Forward a hardware touch interrupt from the active touch owner. ISR-safe. */
 void display_service_touch_wake_from_isr(void);
 esp_err_t display_service_set_state_observer(display_service_state_observer_cb_t cb,
                                              void *user_ctx);
 bool display_service_has_exclusive_session(void);
 bool display_service_exclusive_allows_system_overlay(void);
+/** Request the active exclusive session owner to exit; returns ESP_ERR_NOT_FOUND when no session is active. */
+esp_err_t display_service_request_exit(void);
 esp_err_t display_service_lock(void);
 void display_service_unlock(void);
 esp_err_t display_service_set_default_screen(lv_obj_t *screen);

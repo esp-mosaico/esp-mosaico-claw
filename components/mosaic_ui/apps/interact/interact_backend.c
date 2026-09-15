@@ -106,9 +106,10 @@ static void worker(void *arg)
             mosaico_module_mgr_info_t info = {0};
             bool found = false, busy = false;
             for (int slot = 0; slot < 2; ++slot) {
-                if (mosaico_module_mgr_get_info(slot, &info) != ESP_OK || info.eeprom.board_type != MOSAICO_BOARD_TYPE_INTERACT) continue;
-                busy |= info.state == MOSAICO_MODULE_MGR_STATE_CLAIMED;
-                if (info.state == MOSAICO_MODULE_MGR_STATE_READY) {
+                if (mosaico_module_mgr_get_info(slot, &info) != ESP_OK || info.presence != MOSAICO_MODULE_PRESENCE_PRESENT ||
+                    info.descriptor_state != MOSAICO_MODULE_DESCRIPTOR_VALID || info.eeprom.board_type != MOSAICO_BOARD_TYPE_INTERACT) continue;
+                busy |= info.owner_state != MOSAICO_MODULE_OWNER_FREE;
+                if (info.owner_state == MOSAICO_MODULE_OWNER_FREE) {
                     found = true;
                     break;
                 }

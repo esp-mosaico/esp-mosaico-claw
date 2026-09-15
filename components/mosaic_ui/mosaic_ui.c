@@ -43,6 +43,7 @@ static bool s_system_flow_ready;
 static bool s_battery_notice_subscribed;
 static bool s_low_battery_notice_issued;
 static bool s_critical_battery_notice_issued;
+static mosaico_module_subscription_t s_module_subscription;
 
 #define MOSAIC_BATTERY_LOW_NOTICE_SOC 10U
 #define MOSAIC_BATTERY_CRITICAL_NOTICE_SOC 2U
@@ -263,10 +264,12 @@ esp_err_t mosaic_system_configure(const mosaic_system_ops_t *ops)
     return err;
 }
 
-static void on_module_insert_notice(mosaico_module_mgr_event_t event, const mosaico_module_mgr_info_t *info, void *user_ctx)
+static void on_module_insert_notice(const mosaico_module_mgr_event_t *event, void *user_ctx)
 {
     (void)user_ctx;
-    if (event != MOSAICO_MODULE_MGR_EVENT_INSERTED || info == NULL) return;
+    if (event == NULL || event->info.presence != MOSAICO_MODULE_PRESENCE_PRESENT ||
+        event->info.descriptor_state != MOSAICO_MODULE_DESCRIPTOR_VALID ||
+        !(event->changes & (MOSAICO_MODULE_CHANGE_PRESENCE | MOSAICO_MODULE_CHANGE_DESCRIPTOR))) return;
     if (mosaic_loader_app() != mosaic_app_root()) return;
     static const struct {
         mosaico_board_type_t type;
@@ -276,8 +279,8 @@ static void on_module_insert_notice(mosaico_module_mgr_event_t event, const mosa
         {MOSAICO_BOARD_TYPE_INTERACT, "Interaction", "LED / Touch / IR / Sensors", "interact"},
     };
     for (size_t i = 0; i < sizeof(notices) / sizeof(notices[0]); ++i) {
-        if (info->eeprom.board_type != notices[i].type) continue;
-        mosaic_hub_request_board_insert(info->slot == MOSAICO_MODULE_MGR_SLOT_RIGHT ? 'R' : 'L',
+        if (event->info.eeprom.board_type != notices[i].type) continue;
+        mosaic_hub_request_board_insert(event->info.slot == MOSAICO_MODULE_MGR_SLOT_RIGHT ? 'R' : 'L',
                                         notices[i].name, notices[i].capability, notices[i].app);
         break;
     }
@@ -520,7 +523,9 @@ esp_err_t mosaic_ui_start(void)
                             "open initial app %s", initial_app);
     }
 
-    ESP_RETURN_ON_ERROR(mosaico_module_mgr_subscribe(on_module_insert_notice, NULL), TAG, "subscribe to module insertions");
+    ESP_RETURN_ON_ERROR(mosaico_module_mgr_init(NULL), TAG, "initialize module manager");
+    ESP_RETURN_ON_ERROR(mosaico_module_mgr_subscribe(on_module_insert_notice, NULL, &s_module_subscription), TAG,
+                        "subscribe to module insertions");
     s_started = true;
     mosaico_camera_service_set_callback(on_camera_availability_notice, NULL);
     ESP_LOGI(TAG, "mosaic hub live (ported esp-gsp example)");

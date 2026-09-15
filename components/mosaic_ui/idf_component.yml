@@ -16,33 +16,26 @@ dependencies:
 
   mosaico_module_interact:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
-    version: e65035c
+    version: b6798bd
     path: components/mosaico_module_interact
 
   weather_service:
     path: ../weather_service
-  claw_core:
-    path: ../../third-party/esp-claw/components/claw_modules/claw_core
   claw_memory:
     path: ../../third-party/esp-claw/components/claw_modules/claw_memory
-  claw_manager:
-    path: ../../third-party/esp-claw/components/claw_modules/claw_manager
   app_registry:
     path: ../../third-party/esp-claw/components/common/app_registry
-  claw_utils:
-    path: ../../third-party/esp-claw/components/claw_modules/claw_utils
+
   cap_lua:
     path: ../../third-party/esp-claw/components/claw_capabilities/cap_lua
   lua_module_vision:
     path: ../../third-party/esp-claw/components/lua_modules/lua_module_vision
   tda-2030/esp_vision_core: "^0.1.0"
+  georgik/lua: "^5.5.0~7"
+  espressif/esp_asrc: "^1.0.0"
   espressif/esp-gsp:
     version: "^1.2.0"
     require: public
-  espressif/esp_mmap_assets:
-    version: "2.0.1"
-  georgik/lua: "^5.5.0~7"
+  espressif/esp_mmap_assets: "2.0.1"
   espressif/esp_new_jpeg: "1.*"
-  espressif/esp_audio_codec: "^2.5.0"
-  espressif/esp_asrc: "^1.0.0"
   espressif/esp_bt_audio: "^1.1.0"

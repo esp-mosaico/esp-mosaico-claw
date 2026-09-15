@@ -46,39 +46,14 @@ idf_component_register(
                  ${MOSAIC_APP_INCLUDE_DIRS}
                  "${CMAKE_CURRENT_BINARY_DIR}/generated"
     REQUIRES
-        display_service
-        audio_hub
-        audio_playback
         esp_timer
         freertos
         pthread
-        espressif__esp_mmap_assets
-        georgik__lua
-        asr_service
-        cap_im_ai_create
-        claw_core
-        claw_memory
-        claw_manager
-        app_registry
-        claw_utils
-        cap_lua
         cjson
         bt
         nvs_flash
-        espressif__esp_audio_codec
-        espressif__esp_asrc
-        espressif__esp_bt_audio
-        mosaico_camera_service
-        mosaico_module_camera
-        mosaico_module_interact
-        mosaico_module_mgr
-        lua_module_vision
-        tda-2030__esp_vision_core
-        weather_service
-        esp_board_manager
         esp_driver_jpeg
         esp_driver_ppa
-        settings
 )
 
 if(CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO)

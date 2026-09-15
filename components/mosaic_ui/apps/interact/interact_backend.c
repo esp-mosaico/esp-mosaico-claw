@@ -8,18 +8,57 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
+
+#define INTERACT_NVS_NAMESPACE "mosaic_interact"
+#define INTERACT_NVS_INPUT_MODE_KEY "input_mode"
 
 static const char *TAG = "interact_app";
 static SemaphoreHandle_t s_lock, s_done;
-static bool s_running, s_stop, s_switch, s_ir;
+static bool s_running, s_stop, s_reconnect, s_ir;
 static uint8_t s_toggle;
-static int s_preferred = -1;
+static mosaico_interact_button_mode_t s_button_mode = MOSAICO_INTERACT_BUTTON_MODE_TOUCH;
 static interact_snapshot_t s_state;
 
 static const mosaico_interact_rgb_t s_colors[] = {
     {255, 64, 64}, {64, 255, 112}, {64, 128, 255}, {192, 96, 255}, {255, 245, 160}, {255, 245, 160},
 };
 static const mosaico_interact_rgb_t s_pressed_color = {76, 255, 133}; // Match the #4CFF85 screen overlay.
+
+static void load_input_mode(void)
+{
+    nvs_handle_t nvs;
+    uint8_t mode = MOSAICO_INTERACT_BUTTON_MODE_TOUCH;
+    s_button_mode = MOSAICO_INTERACT_BUTTON_MODE_TOUCH;
+    esp_err_t err = nvs_open(INTERACT_NVS_NAMESPACE, NVS_READONLY, &nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open input mode: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_get_u8(nvs, INTERACT_NVS_INPUT_MODE_KEY, &mode);
+    nvs_close(nvs);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return;
+    if (err != ESP_OK || (mode != MOSAICO_INTERACT_BUTTON_MODE_GPIO && mode != MOSAICO_INTERACT_BUTTON_MODE_TOUCH)) {
+        ESP_LOGW(TAG, "load input mode: %s, value=%u", esp_err_to_name(err), (unsigned)mode);
+        return;
+    }
+    s_button_mode = (mosaico_interact_button_mode_t)mode;
+}
+
+static void save_input_mode(mosaico_interact_button_mode_t mode)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(INTERACT_NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open input mode for save: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_u8(nvs, INTERACT_NVS_INPUT_MODE_KEY, (uint8_t)mode);
+    if (err == ESP_OK) err = nvs_commit(nvs);
+    nvs_close(nvs);
+    if (err != ESP_OK) ESP_LOGW(TAG, "save input mode: %s", esp_err_to_name(err));
+}
 
 static void publish(const interact_snapshot_t *state)
 {
@@ -32,7 +71,7 @@ static void worker(void *arg)
 {
     (void)arg;
     mosaico_interact_handle_t board = NULL;
-    interact_snapshot_t state = {.slot = -1, .preferred = s_preferred};
+    interact_snapshot_t state = {.slot = -1, .touch_input_selected = s_button_mode == MOSAICO_INTERACT_BUTTON_MODE_TOUCH};
     unsigned ticks = 0;
     uint8_t manual_leds = 0, failed_leds = 0;
     TickType_t ir_until = 0;
@@ -43,21 +82,21 @@ static void worker(void *arg)
     }
     for (;;) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
-        bool stop = s_stop, change = s_switch, ir = s_ir;
+        bool stop = s_stop, reconnect = s_reconnect, ir = s_ir;
         uint8_t toggle = s_toggle;
-        int preferred = s_preferred;
-        s_switch = s_ir = false;
+        mosaico_interact_button_mode_t button_mode = s_button_mode;
+        s_reconnect = s_ir = false;
         s_toggle = 0;
         xSemaphoreGive(s_lock);
         if (stop) {
             break;
         }
-        if (change) {
+        if (reconnect) {
             if (board) {
                 mosaico_interact_close(board);
                 board = NULL;
             }
-            state = (interact_snapshot_t){.slot = -1, .preferred = preferred};
+            state = (interact_snapshot_t){.slot = -1, .touch_input_selected = button_mode == MOSAICO_INTERACT_BUTTON_MODE_TOUCH};
             ticks = 0;
             manual_leds = failed_leds = 0;
             toggle = 0;
@@ -67,10 +106,10 @@ static void worker(void *arg)
             mosaico_module_mgr_info_t info = {0};
             bool found = false, busy = false;
             for (int slot = 0; slot < 2; ++slot) {
-                if (preferred >= 0 && preferred != slot) continue;
-                if (mosaico_module_mgr_get_info(slot, &info) != ESP_OK || info.eeprom.board_type != MOSAICO_BOARD_TYPE_INTERACT) continue;
-                busy |= info.state == MOSAICO_MODULE_MGR_STATE_CLAIMED;
-                if (info.state == MOSAICO_MODULE_MGR_STATE_READY) {
+                if (mosaico_module_mgr_get_info(slot, &info) != ESP_OK || info.presence != MOSAICO_MODULE_PRESENCE_PRESENT ||
+                    info.descriptor_state != MOSAICO_MODULE_DESCRIPTOR_VALID || info.eeprom.board_type != MOSAICO_BOARD_TYPE_INTERACT) continue;
+                busy |= info.owner_state != MOSAICO_MODULE_OWNER_FREE;
+                if (info.owner_state == MOSAICO_MODULE_OWNER_FREE) {
                     found = true;
                     break;
                 }
@@ -78,7 +117,7 @@ static void worker(void *arg)
             if (found) {
                 mosaico_interact_config_t config = MOSAICO_INTERACT_DEFAULT_CONFIG();
                 config.slot = info.slot;
-                config.button_mode = MOSAICO_INTERACT_BUTTON_MODE_TOUCH;
+                config.button_mode = button_mode;
                 esp_err_t result = mosaico_interact_open(&config, &board);
                 if (result != ESP_OK) {
                     ESP_LOGW(TAG, "open slot %d: %s", info.slot, esp_err_to_name(result));
@@ -162,11 +201,12 @@ static void worker(void *arg)
 
 void interact_backend_start(void)
 {
-    s_state = (interact_snapshot_t){.slot = -1, .preferred = s_preferred};
+    load_input_mode();
+    s_state = (interact_snapshot_t){.slot = -1, .touch_input_selected = s_button_mode == MOSAICO_INTERACT_BUTTON_MODE_TOUCH};
     snprintf(s_state.status, sizeof(s_state.status), "Connecting...");
     s_lock = xSemaphoreCreateMutex();
     s_done = xSemaphoreCreateBinary();
-    s_stop = s_switch = s_ir = false;
+    s_stop = s_reconnect = s_ir = false;
     s_toggle = 0;
     if (!s_lock || !s_done || xTaskCreate(worker, "interact", 6144, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "worker allocation failed");
@@ -194,18 +234,40 @@ void interact_backend_stop(void)
     s_running = false;
 }
 
-void interact_backend_command(int command)
+void interact_backend_command(interact_command_t command)
 {
     if (!s_running) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (command == 7) {
-        s_preferred = s_preferred == 1 ? -1 : s_preferred + 1;
-        s_switch = true;
-    } else if (s_state.ready && !s_switch) {
-        if (command >= 0 && command < 6) s_toggle ^= 1U << command;
-        if (command == 6 && !s_ir && !s_state.ir_status[0]) s_ir = true;
+    if (s_state.ready && !s_reconnect) {
+        if (command >= INTERACT_COMMAND_LED_0 && command <= INTERACT_COMMAND_LED_5) s_toggle ^= 1U << command;
+        if (command == INTERACT_COMMAND_IR_SEND && !s_ir && !s_state.ir_status[0]) s_ir = true;
     }
     xSemaphoreGive(s_lock);
+}
+
+static void select_input_mode(mosaico_interact_button_mode_t button_mode)
+{
+    if (!s_running) return;
+    bool changed = false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_button_mode != button_mode) {
+        s_button_mode = button_mode;
+        s_state.touch_input_selected = button_mode == MOSAICO_INTERACT_BUTTON_MODE_TOUCH;
+        s_reconnect = true;
+        changed = true;
+    }
+    xSemaphoreGive(s_lock);
+    if (changed) save_input_mode(button_mode);
+}
+
+void interact_backend_select_button_input(void)
+{
+    select_input_mode(MOSAICO_INTERACT_BUTTON_MODE_GPIO);
+}
+
+void interact_backend_select_touch_input(void)
+{
+    select_input_mode(MOSAICO_INTERACT_BUTTON_MODE_TOUCH);
 }
 
 void interact_backend_snapshot(interact_snapshot_t *out)
@@ -218,10 +280,12 @@ void interact_backend_snapshot(interact_snapshot_t *out)
 // Desktop preview deliberately exposes no fabricated sensor readings.
 void interact_backend_start(void) {}
 void interact_backend_stop(void) {}
-void interact_backend_command(int command) { (void)command; }
+void interact_backend_command(interact_command_t command) { (void)command; }
+void interact_backend_select_button_input(void) {}
+void interact_backend_select_touch_input(void) {}
 void interact_backend_snapshot(interact_snapshot_t *out)
 {
-    *out = (interact_snapshot_t){.slot = -1, .checked = true};
+    *out = (interact_snapshot_t){.slot = -1, .checked = true, .touch_input_selected = true};
     snprintf(out->status, sizeof(out->status), "Preview - no hardware");
 }
 #endif

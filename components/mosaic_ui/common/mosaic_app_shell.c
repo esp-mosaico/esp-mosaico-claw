@@ -224,16 +224,19 @@ static bool intercept_pointer(esp_gsp_handle_t ui, int32_t x, int32_t y,
     const int32_t dx = x > s_x0 ? x - s_x0 : s_x0 - x;
     const bool upward_swipe =
         dy >= EXIT_SWIPE_MIN_PX && dy > dx * EXIT_MAX_DX_RATIO;
-    /* Exit only after a real upward drag from the dedicated bottom band.
-     * A tap/release in the band and gestures that start elsewhere must pass
-     * without navigating. */
-    if (upward_swipe && !s_exit_triggered && s_exit != NULL) {
+    /* Latch a real upward drag from the dedicated bottom band, then switch
+     * Apps only after this touch ends. A tap/release in the band and gestures
+     * that start elsewhere must pass without navigating. */
+    if (upward_swipe) {
         s_exit_triggered = true;
-        s_exit(s_exit_ctx);
     }
     if (!pressed) {
+        const bool should_exit = s_exit_triggered && s_exit != NULL;
         s_tracking = false;
         s_exit_triggered = false;
+        if (should_exit) {
+            s_exit(s_exit_ctx);
+        }
     }
     return true;
 }

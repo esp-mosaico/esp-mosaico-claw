@@ -1,5 +1,10 @@
-local disp = require("display")
-local board_manager = require("board_manager")
+local display = require("display")
+local screen, screen_info
+
+local function center_text(x, y, w, h, text, options)
+    local tw, th = screen:measure_text(text, options)
+    screen:text(x + math.max(0, (w - tw) // 2), y + math.max(0, (h - th) // 2), text, options)
+end
 local dly = require("delay")
 local sys = require("system")
 
@@ -130,23 +135,19 @@ local BUTTON_SHORT_PRESS_MS = math.floor(num_arg("button_short_press_ms", 180))
 local ENABLE_TOUCH = bool_arg("enable_touch", INPUT_MODE ~= "button")
 local ENABLE_BUTTON = bool_arg("enable_button", INPUT_MODE == "button" or INPUT_MODE == "both" or BUTTON_GPIO ~= nil)
 
-local panel_handle, io_handle, lcd_width, lcd_height, panel_if, pixel_format = board_manager.get_display_lcd_params("display_lcd")
-if not panel_handle then
-    print("[dino] ERROR: get_display_lcd_params(display_lcd) failed: " .. tostring(io_handle))
-    return
-end
-
-local display_ok, display_info = pcall(disp.init, panel_handle, io_handle, lcd_width, lcd_height, panel_if, pixel_format)
+local display_ok, display_info = pcall(display.open)
 if not display_ok then
     print("[dino] ERROR: display init failed: " .. tostring(display_info))
     return
 end
+screen = display_info
+screen_info = screen:info()
 
 local ready = true
-local W, H = disp.width, disp.height
+local W, H = screen_info.width, screen_info.height
 if W <= 0 or H <= 0 then
     print("[dino] ERROR: invalid display size after init")
-    pcall(disp.deinit)
+    pcall(screen.close, screen)
     return
 end
 local DEFAULT_FZ = clamp(math.floor(H / 12), 14, 24)
@@ -163,8 +164,7 @@ local function cleanup()
         button_handle = nil
     end
     if ready then
-        pcall(disp.end_frame)
-        pcall(disp.deinit)
+        pcall(screen.close, screen)
         ready = false
     end
 end
@@ -174,7 +174,7 @@ local function add_input_source(name)
 end
 
 local function init_touch_input()
-    if not ENABLE_TOUCH then return false end
+    if not ENABLE_TOUCH or not screen_info.touch_available then return false end
     touch_enabled = true
     add_input_source("touch:display")
     return true
@@ -241,14 +241,13 @@ local obs, gulls, palms, decor, bubbles = {}, {}, {}, {}, {}
 local scroll_px, next_spawn, speed, anim_t
 local score, best, over = 0, 0, false
 
-local function frame_color(r, g, b) return { r = r, g = g, b = b } end
-local function fr(x, y, w, h, r, g, b) disp.fill_rect(x, y, w, h, frame_color(r, g, b)) end
-local function dr(x, y, w, h, r, g, b) disp.draw_rect(x, y, w, h, frame_color(r, g, b)) end
-local function fc(x, y, r, cr, cg, cb) disp.fill_circle(x, y, r, frame_color(cr, cg, cb)) end
-local function frr(x, y, w, h, rd, r, g, b) disp.fill_round_rect(x, y, w, h, rd, frame_color(r, g, b)) end
-local function ft(x1, y1, x2, y2, x3, y3, r, g, b) disp.fill_triangle(x1, y1, x2, y2, x3, y3, frame_color(r, g, b)) end
-local function fa(cx, cy, ir, ro, sd, ed, r, g, b) disp.fill_arc(cx, cy, ir, ro, sd, ed, frame_color(r, g, b)) end
-local function ln(x1, y1, x2, y2, r, g, b) disp.draw_line(x1, y1, x2, y2, frame_color(r, g, b)) end
+local function frame_color(r, g, b) return display.color(r, g, b) end
+local function fr(x, y, w, h, r, g, b) screen:fill_rect(x, y, w, h, frame_color(r, g, b)) end
+local function dr(x, y, w, h, r, g, b) screen:stroke_rect(x, y, w, h, frame_color(r, g, b)) end
+local function fc(x, y, r, cr, cg, cb) screen:fill_circle(x, y, r, frame_color(cr, cg, cb)) end
+local function frr(x, y, w, h, rd, r, g, b) screen:fill_round_rect(x, y, w, h, rd, frame_color(r, g, b)) end
+local function ft(x1, y1, x2, y2, x3, y3, r, g, b) screen:fill_triangle(x1, y1, x2, y2, x3, y3, frame_color(r, g, b)) end
+local function ln(x1, y1, x2, y2, r, g, b) screen:line(x1, y1, x2, y2, frame_color(r, g, b)) end
 local function col(c) return c.r, c.g, c.b end
 
 local function init_decor()
@@ -265,7 +264,7 @@ local function reset()
 end
 
 local function consume_touch_press()
-    local down = #disp.touch.read() > 0
+    local down = #screen:touch().points > 0
     local pressed = down and not touch_down
     touch_down = down
     return pressed
@@ -522,30 +521,27 @@ local function draw_obstacles()
     end
 end
 
-local TXT = { color = frame_color(0, 0, 0), bg = frame_color(255, 255, 255), font_size = FZ }
+local TXT = { color = frame_color(0, 0, 0), font_size = FZ }
 local TXT_C = {
     color = frame_color(0, 0, 0),
-    bg = frame_color(255, 255, 255),
     font_size = FZ,
-    align = "center",
-    valign = "middle",
 }
 
 local function draw_hud()
     local hi = string.format("HI %05d", best)
     local s = string.format("%05d", score)
-    local hi_w = disp.measure_text(hi, { font_size = FZ })
-    local score_w = disp.measure_text(s, { font_size = FZ })
+    local hi_w = screen:measure_text(hi, { font_size = FZ })
+    local score_w = screen:measure_text(s, { font_size = FZ })
     local x = W - hi_w - score_w - 24
-    disp.draw_text(x, TOP_SAFE, hi, TXT)
-    disp.draw_text(x + hi_w + 18, TOP_SAFE, s, TXT)
+    screen:text(x, TOP_SAFE, hi, TXT)
+    screen:text(x + hi_w + 18, TOP_SAFE, s, TXT)
 end
 
 local function overlay_center(lines)
     local lh = FZ + 8
     local max_w = 0
     for _, text in ipairs(lines) do
-        local tw = disp.measure_text(text, { font_size = FZ })
+        local tw = screen:measure_text(text, { font_size = FZ })
         if tw > max_w then max_w = tw end
     end
     local bw = math.min(W - 10, max_w + 40)
@@ -553,7 +549,7 @@ local function overlay_center(lines)
     local bx = (W - bw) // 2
     local by = (H - bh) // 2
     for i, text in ipairs(lines) do
-        disp.draw_text_aligned(bx, by + 6 + (i - 1) * lh, bw, FZ, text, TXT_C)
+        center_text(bx, by + 6 + (i - 1) * lh, bw, FZ, text, TXT_C)
     end
 end
 
@@ -564,14 +560,14 @@ end
 local function draw_game_over()
     local lh = FZ + 7
     local y = math.max(TOP_SAFE + FZ + 4, math.floor(H * 0.14))
-    disp.draw_text_aligned(0, y, W, FZ, "G A M E  O V E R", TXT_C)
-    disp.draw_text_aligned(0, y + lh, W, FZ, string.format("SCORE %d", score), TXT_C)
-    disp.draw_text_aligned(0, y + lh * 2, W, FZ, string.format("HI %d", best), TXT_C)
-    disp.draw_text_aligned(0, math.min(GY - FZ - 4, y + lh * 3), W, FZ, "PRESS TO RESTART", TXT_C)
+    center_text(0, y, W, FZ, "G A M E  O V E R", TXT_C)
+    center_text(0, y + lh, W, FZ, string.format("SCORE %d", score), TXT_C)
+    center_text(0, y + lh * 2, W, FZ, string.format("HI %d", best), TXT_C)
+    center_text(0, math.min(GY - FZ - 4, y + lh * 3), W, FZ, "PRESS TO RESTART", TXT_C)
 end
 
 local function render()
-    disp.begin_frame({ clear = true, color = frame_color(255, 255, 255) })
+    screen:begin({ clear = frame_color(255, 255, 255) })
     draw_bg()
     draw_ground()
     draw_obstacles()
@@ -582,8 +578,7 @@ local function render()
     if over then
         draw_game_over()
     end
-    disp.present()
-    disp.end_frame()
+    screen:present()
 end
 
 if not init_input() then return end

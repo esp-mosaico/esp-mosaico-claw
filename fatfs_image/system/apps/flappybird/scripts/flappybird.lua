@@ -1,5 +1,10 @@
 local display = require("display")
-local board_manager = require("board_manager")
+local screen, screen_info
+
+local function center_text(x, y, w, h, text, options)
+    local tw, th = screen:measure_text(text, options)
+    screen:text(x + math.max(0, (w - tw) // 2), y + math.max(0, (h - th) // 2), text, options)
+end
 local delay = require("delay")
 local audio_ok, audio = pcall(require, "audio")
 
@@ -142,20 +147,16 @@ local function drain_sfx()
 end
 
 local function rgb(r, g, b)
-    return { r = r, g = g, b = b }
+    return display.color(r, g, b)
 end
 
-local panel_handle, io_handle, lcd_width, lcd_height, panel_if, pixel_format = board_manager.get_display_lcd_params("display_lcd")
-if not panel_handle then
-    print("[flappybird] ERROR: get_display_lcd_params(display_lcd) failed: " .. tostring(io_handle))
-    return
-end
-
-local display_ok, display_info = pcall(display.init, panel_handle, io_handle, lcd_width, lcd_height, panel_if, pixel_format)
+local display_ok, display_info = pcall(display.open)
 if not display_ok then
     print("[flappybird] ERROR: display init failed: " .. tostring(display_info))
     return
 end
+screen = display_info
+screen_info = screen:info()
 
 local screen_created = true
 
@@ -172,14 +173,13 @@ local function cleanup()
     end
 
     if screen_created then
-        pcall(display.end_frame)
-        pcall(display.deinit)
+        pcall(screen.close, screen)
         screen_created = false
     end
 end
 
-local width = display.width
-local height = display.height
+local width = screen_info.width
+local height = screen_info.height
 
 if width <= 0 or height <= 0 then
     print("[flappybird] ERROR: invalid display size after init")
@@ -273,15 +273,14 @@ local function flap()
 end
 
 local function draw_cloud(x, y, size)
-    display.fill_circle(x, y, size, rgb(CLOUD_R, CLOUD_G, CLOUD_B))
-    display.fill_circle(x + size, y - 2, math.floor(size * 0.85), rgb(CLOUD_R, CLOUD_G, CLOUD_B))
-    display.fill_circle(x + size * 2 - 2, y, math.floor(size * 0.72), rgb(CLOUD_R, CLOUD_G, CLOUD_B))
-    display.fill_rect(x, y - math.floor(size * 0.5), size * 2, size, rgb(CLOUD_R, CLOUD_G, CLOUD_B))
+    screen:fill_circle(x, y, size, rgb(CLOUD_R, CLOUD_G, CLOUD_B))
+    screen:fill_circle(x + size, y - 2, math.floor(size * 0.85), rgb(CLOUD_R, CLOUD_G, CLOUD_B))
+    screen:fill_circle(x + size * 2 - 2, y, math.floor(size * 0.72), rgb(CLOUD_R, CLOUD_G, CLOUD_B))
+    screen:fill_rect(x, y - math.floor(size * 0.5), size * 2, size, rgb(CLOUD_R, CLOUD_G, CLOUD_B))
 end
 
 local function draw_background()
-    display.clear(rgb(SKY_R, SKY_G, SKY_B))
-    display.fill_circle(width - 34, 28, 18, rgb(SUN_R, SUN_G, SUN_B))
+    screen:fill_circle(width - 34, 28, 18, rgb(SUN_R, SUN_G, SUN_B))
 
     for i = 1, CLOUD_COUNT do
         local cloud = cloud_offsets[i]
@@ -289,13 +288,13 @@ local function draw_background()
         draw_cloud(drift, cloud.y, cloud.size)
     end
 
-    display.fill_rect(0, play_bottom, width, GROUND_HEIGHT, rgb(GROUND_R, GROUND_G, GROUND_B))
-    display.fill_rect(0, play_bottom + GROUND_HEIGHT - 8, width, 8, rgb(DIRT_R, DIRT_G, DIRT_B))
+    screen:fill_rect(0, play_bottom, width, GROUND_HEIGHT, rgb(GROUND_R, GROUND_G, GROUND_B))
+    screen:fill_rect(0, play_bottom + GROUND_HEIGHT - 8, width, 8, rgb(DIRT_R, DIRT_G, DIRT_B))
 
     local stripe_w = 14
     for x = 0, width + stripe_w, stripe_w * 2 do
         local offset = (frame_count * 2) % (stripe_w * 2)
-        display.fill_rect(x - offset, play_bottom, stripe_w, 6, rgb(234, 208, 108))
+        screen:fill_rect(x - offset, play_bottom, stripe_w, 6, rgb(234, 208, 108))
     end
 end
 
@@ -305,13 +304,13 @@ local function draw_pipe(pipe)
     local bottom_y = pipe.gap_bottom
     local bottom_h = play_bottom - bottom_y
 
-    display.fill_rect(x, 0, PIPE_WIDTH, top_h, rgb(PIPE_R, PIPE_G, PIPE_B))
-    display.fill_rect(x + PIPE_WIDTH - 7, 0, 7, top_h, rgb(PIPE_SHADE_R, PIPE_SHADE_G, PIPE_SHADE_B))
-    display.fill_rect(x - 2, top_h - 10, PIPE_WIDTH + 4, 10, rgb(PIPE_CAP_R, PIPE_CAP_G, PIPE_CAP_B))
+    screen:fill_rect(x, 0, PIPE_WIDTH, top_h, rgb(PIPE_R, PIPE_G, PIPE_B))
+    screen:fill_rect(x + PIPE_WIDTH - 7, 0, 7, top_h, rgb(PIPE_SHADE_R, PIPE_SHADE_G, PIPE_SHADE_B))
+    screen:fill_rect(x - 2, top_h - 10, PIPE_WIDTH + 4, 10, rgb(PIPE_CAP_R, PIPE_CAP_G, PIPE_CAP_B))
 
-    display.fill_rect(x, bottom_y, PIPE_WIDTH, bottom_h, rgb(PIPE_R, PIPE_G, PIPE_B))
-    display.fill_rect(x + PIPE_WIDTH - 7, bottom_y, 7, bottom_h, rgb(PIPE_SHADE_R, PIPE_SHADE_G, PIPE_SHADE_B))
-    display.fill_rect(x - 2, bottom_y, PIPE_WIDTH + 4, 10, rgb(PIPE_CAP_R, PIPE_CAP_G, PIPE_CAP_B))
+    screen:fill_rect(x, bottom_y, PIPE_WIDTH, bottom_h, rgb(PIPE_R, PIPE_G, PIPE_B))
+    screen:fill_rect(x + PIPE_WIDTH - 7, bottom_y, 7, bottom_h, rgb(PIPE_SHADE_R, PIPE_SHADE_G, PIPE_SHADE_B))
+    screen:fill_rect(x - 2, bottom_y, PIPE_WIDTH + 4, 10, rgb(PIPE_CAP_R, PIPE_CAP_G, PIPE_CAP_B))
 end
 
 local function draw_bird()
@@ -320,18 +319,18 @@ local function draw_bird()
     local tilt = math.max(-8, math.min(8, math.floor(bird_vy)))
     local leg_y = by + BIRD_RADIUS + 2 + (tilt // 2)
 
-    display.fill_circle(bx, by, BIRD_RADIUS, rgb(BIRD_R, BIRD_G, BIRD_B))
-    display.fill_circle(bx - 2, by + 2, math.floor(BIRD_RADIUS * 0.65), rgb(BIRD_WING_R, BIRD_WING_G, BIRD_WING_B))
-    display.fill_triangle(
+    screen:fill_circle(bx, by, BIRD_RADIUS, rgb(BIRD_R, BIRD_G, BIRD_B))
+    screen:fill_circle(bx - 2, by + 2, math.floor(BIRD_RADIUS * 0.65), rgb(BIRD_WING_R, BIRD_WING_G, BIRD_WING_B))
+    screen:fill_triangle(
         bx + BIRD_RADIUS - 1, by - 2,
         bx + BIRD_RADIUS + 10, by + 1,
         bx + BIRD_RADIUS - 1, by + 5,
         rgb(BEAK_R, BEAK_G, BEAK_B)
     )
-    display.fill_circle(bx + 3, by - 3, 3, "white")
-    display.fill_circle(bx + 4, by - 3, 1, rgb(EYE_R, EYE_G, EYE_B))
-    display.draw_line(bx - 6, by + BIRD_RADIUS - 2, bx - 2, leg_y, rgb(EYE_R, EYE_G, EYE_B))
-    display.draw_line(bx + 1, by + BIRD_RADIUS - 2, bx + 5, leg_y, rgb(EYE_R, EYE_G, EYE_B))
+    screen:fill_circle(bx + 3, by - 3, 3, "#ffffff")
+    screen:fill_circle(bx + 4, by - 3, 1, rgb(EYE_R, EYE_G, EYE_B))
+    screen:line(bx - 6, by + BIRD_RADIUS - 2, bx - 2, leg_y, rgb(EYE_R, EYE_G, EYE_B))
+    screen:line(bx + 1, by + BIRD_RADIUS - 2, bx + 5, leg_y, rgb(EYE_R, EYE_G, EYE_B))
 end
 
 local function draw_scoreboard()
@@ -339,20 +338,18 @@ local function draw_scoreboard()
     local left_x = 8
     local right_x = width - box_w - 8
 
-    display.fill_round_rect(left_x, 8, box_w, 40, 8, rgb(PANEL_R, PANEL_G, PANEL_B))
-    display.draw_round_rect(left_x, 8, box_w, 40, 8, rgb(PANEL_BORDER_R, PANEL_BORDER_G, PANEL_BORDER_B))
-    display.draw_text(left_x + 8, 18, "SCORE " .. tostring(score), {
+    screen:fill_round_rect(left_x, 8, box_w, 40, 8, rgb(PANEL_R, PANEL_G, PANEL_B))
+    screen:stroke_round_rect(left_x, 8, box_w, 40, 8, rgb(PANEL_BORDER_R, PANEL_BORDER_G, PANEL_BORDER_B))
+    screen:text(left_x + 8, 18, "SCORE " .. tostring(score), {
         color = rgb(TEXT_R, TEXT_G, TEXT_B),
         font_size = 14,
-        bg = rgb(PANEL_R, PANEL_G, PANEL_B),
     })
 
-    display.fill_round_rect(right_x, 8, box_w, 40, 8, rgb(PANEL_R, PANEL_G, PANEL_B))
-    display.draw_round_rect(right_x, 8, box_w, 40, 8, rgb(PANEL_BORDER_R, PANEL_BORDER_G, PANEL_BORDER_B))
-    display.draw_text(right_x + 8, 18, "BEST " .. tostring(best_score), {
+    screen:fill_round_rect(right_x, 8, box_w, 40, 8, rgb(PANEL_R, PANEL_G, PANEL_B))
+    screen:stroke_round_rect(right_x, 8, box_w, 40, 8, rgb(PANEL_BORDER_R, PANEL_BORDER_G, PANEL_BORDER_B))
+    screen:text(right_x + 8, 18, "BEST " .. tostring(best_score), {
         color = rgb(TEXT_R, TEXT_G, TEXT_B),
         font_size = 14,
-        bg = rgb(PANEL_R, PANEL_G, PANEL_B),
     })
 end
 
@@ -362,21 +359,15 @@ local function draw_center_panel(title, subtitle, subtitle_color)
     local panel_x = (width - panel_w) // 2
     local panel_y = math.floor(play_height * 0.18)
 
-    display.fill_round_rect(panel_x, panel_y, panel_w, panel_h, 12, rgb(PANEL_R, PANEL_G, PANEL_B))
-    display.draw_round_rect(panel_x, panel_y, panel_w, panel_h, 12, rgb(PANEL_BORDER_R, PANEL_BORDER_G, PANEL_BORDER_B))
-    display.draw_text_aligned(panel_x, panel_y + 8, panel_w, 24, title, {
+    screen:fill_round_rect(panel_x, panel_y, panel_w, panel_h, 12, rgb(PANEL_R, PANEL_G, PANEL_B))
+    screen:stroke_round_rect(panel_x, panel_y, panel_w, panel_h, 12, rgb(PANEL_BORDER_R, PANEL_BORDER_G, PANEL_BORDER_B))
+    center_text(panel_x, panel_y + 8, panel_w, 24, title, {
         color = rgb(TEXT_R, TEXT_G, TEXT_B),
         font_size = 22,
-        bg = rgb(PANEL_R, PANEL_G, PANEL_B),
-        align = "center",
-        valign = "middle",
     })
-    display.draw_text_aligned(panel_x + 12, panel_y + 42, panel_w - 24, 18, subtitle, {
+    center_text(panel_x + 12, panel_y + 42, panel_w - 24, 18, subtitle, {
         color = subtitle_color,
         font_size = 14,
-        bg = rgb(PANEL_R, PANEL_G, PANEL_B),
-        align = "center",
-        valign = "middle",
     })
 end
 
@@ -391,7 +382,7 @@ local function action_label(verb)
 end
 
 local function render()
-    display.begin_frame({ clear = true, color = rgb(SKY_R, SKY_G, SKY_B) })
+    screen:begin({ clear = rgb(SKY_R, SKY_G, SKY_B) })
     draw_background()
 
     for i = 1, #pipes do
@@ -407,8 +398,7 @@ local function render()
         draw_center_panel("Crash", action_label("restart"), { r = DANGER_R, g = DANGER_G, b = DANGER_B })
     end
 
-    display.present()
-    display.end_frame()
+    screen:present()
 end
 
 local function circle_rect_hit(cx, cy, radius, rx, ry, rw, rh)
@@ -467,7 +457,7 @@ local function update_playing()
 end
 
 local function init_input()
-    if INPUT_MODE ~= "button" then
+    if INPUT_MODE ~= "button" and screen_info.touch_available then
         input_mode = "display_touch"
         return true
     end
@@ -498,7 +488,7 @@ end
 
 local function consume_input_tap()
     if input_mode == "display_touch" then
-        local down = #display.touch.read() > 0
+        local down = #screen:touch().points > 0
         local tapped = down and not touch_down
         touch_down = down
         return tapped

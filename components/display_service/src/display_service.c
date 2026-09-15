@@ -48,6 +48,7 @@ typedef struct {
     SemaphoreHandle_t touch_observer_mutex;
     uint32_t width;
     uint32_t height;
+    display_service_info_t info;
     uint8_t brightness_percent;
     uint16_t rotation_degrees;
     bool initial_brightness_configured;
@@ -188,8 +189,10 @@ static void display_service_clear_exclusive_producer(void)
 
 static bool display_service_session_slot_contains(const struct display_service_session_t *session)
 {
-    return session >= &s_display.sessions[0] &&
-           session < &s_display.sessions[DISPLAY_SERVICE_MAX_SESSIONS];
+    for (size_t i = 0; i < DISPLAY_SERVICE_MAX_SESSIONS; ++i) {
+        if (session == &s_display.sessions[i]) return true;
+    }
+    return false;
 }
 
 bool display_service_session_valid_internal(display_service_session_handle_t session)
@@ -374,7 +377,6 @@ void display_service_notify_touch_internal(const display_service_touch_snapshot_
         return;
     }
     published = *snapshot;
-    published.generation = s_display.touch_snapshot.generation + 1;
     s_display.touch_snapshot = published;
     cb = s_display.touch_observer_cb;
     user_ctx = s_display.touch_observer_user_ctx;
@@ -390,6 +392,7 @@ static void display_service_presenter_teardown(void)
     (void)esp_display_presenter_stop(s_display.presenter);
     (void)esp_display_presenter_delete(s_display.presenter);
     s_display.presenter = NULL;
+    memset(&s_display.info, 0, sizeof(s_display.info));
 }
 
 esp_err_t display_service_presenter_start_baseline(
@@ -440,6 +443,17 @@ esp_err_t display_service_presenter_start_baseline(
             (esp_display_present_rotation_t)initial_rotation;
         s_display.width = lcd_cfg->lcd_width;
         s_display.height = lcd_cfg->lcd_height;
+        s_display.info = (display_service_info_t) {
+            .width = lcd_cfg->lcd_width,
+            .height = lcd_cfg->lcd_height,
+            .bits_per_pixel = lcd_cfg->bits_per_pixel,
+            .touch_available = s_display.touch != NULL,
+        };
+        const char *sub_type = lcd_cfg->sub_type ? lcd_cfg->sub_type : "";
+        if (strcmp(sub_type, "dsi") == 0) s_display.info.panel_interface = DISPLAY_SERVICE_PANEL_INTERFACE_DSI;
+        else if (strcmp(sub_type, "rgb") == 0 || strcmp(sub_type, "rgb_3wire_spi") == 0) s_display.info.panel_interface = DISPLAY_SERVICE_PANEL_INTERFACE_RGB;
+        else if (strcmp(sub_type, "i80") == 0) s_display.info.panel_interface = DISPLAY_SERVICE_PANEL_INTERFACE_I80;
+        else if (strcmp(sub_type, "parlio") == 0) s_display.info.panel_interface = DISPLAY_SERVICE_PANEL_INTERFACE_PARLIO;
         s_display.brightness_percent = initial_brightness;
         s_display.rotation_degrees = initial_rotation;
         s_display.panel_enabled = true;
@@ -1141,6 +1155,18 @@ display_service_mode_t display_service_session_mode(display_service_session_hand
 const char *display_service_session_owner_name(display_service_session_handle_t session)
 {
     return display_service_session_is_valid(session) ? session->owner_name : NULL;
+}
+
+esp_err_t display_service_session_get_info(display_service_session_handle_t session, display_service_info_t *info)
+{
+    ESP_RETURN_ON_FALSE(info != NULL, ESP_ERR_INVALID_ARG, TAG, "display info output missing");
+    ESP_RETURN_ON_FALSE(s_display.present_handoff_mutex != NULL, ESP_ERR_INVALID_STATE, TAG, "display service unavailable");
+    ESP_RETURN_ON_FALSE(xSemaphoreTake(s_display.present_handoff_mutex, pdMS_TO_TICKS(1000)) == pdTRUE,
+                        ESP_ERR_TIMEOUT, TAG, "display info lock timeout");
+    esp_err_t ret = display_service_session_valid_internal(session) ? ESP_OK : ESP_ERR_INVALID_ARG;
+    if (ret == ESP_OK) *info = s_display.info;
+    xSemaphoreGive(s_display.present_handoff_mutex);
+    return ret;
 }
 
 esp_err_t display_service_wait_idle(uint32_t timeout_ms)

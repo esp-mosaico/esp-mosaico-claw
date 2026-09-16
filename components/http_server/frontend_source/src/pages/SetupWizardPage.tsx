@@ -225,7 +225,7 @@ const PROVIDER_PRESETS: Record<ProviderKey, ProviderPreset> = {
   },
   trial: {
     llm_backend_type: 'trial',
-    llm_base_url: 'https://as.esp-claw.com',
+    llm_base_url: 'https://mosaico-asr.espressif.com.cn',
     llm_auth_type: 'trial',
     llm_default_image_max_bytes: '524288',
     llm_max_tokens_field: 'max_tokens',

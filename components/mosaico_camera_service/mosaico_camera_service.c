@@ -42,6 +42,64 @@ static void notify_availability(char slot, bool available)
     }
 }
 
+/* OV3640's working mode is 1024x768; SC101IOT does not support it and uses
+ * 1280x720. Probe-open each size because this BSP rejects a format mismatch
+ * instead of falling back to the sensor default. */
+static const uint32_t s_camera_probe_sizes[][2] = {
+    {1024, 768},
+    {1280, 720},
+    {640, 480},
+};
+
+static esp_err_t create_supported_camera(mosaico_module_mgr_slot_t slot,
+                                         mosaico_camera_handle_t *out_camera)
+{
+    esp_err_t last_err = ESP_ERR_NOT_SUPPORTED;
+
+    *out_camera = NULL;
+    for (size_t i = 0; i < sizeof(s_camera_probe_sizes) / sizeof(s_camera_probe_sizes[0]); ++i) {
+        mosaico_camera_config_t config = MOSAICO_CAMERA_DEFAULT_CONFIG();
+        config.slot = slot;
+        config.width = s_camera_probe_sizes[i][0];
+        config.height = s_camera_probe_sizes[i][1];
+        config.buffer_count = 1;
+
+        mosaico_camera_handle_t camera = NULL;
+        esp_err_t ret = mosaico_camera_new(&config, &camera);
+        if (ret == ESP_OK) {
+            ret = mosaico_camera_open(camera);
+            if (ret == ESP_OK) {
+                const esp_err_t close_ret = mosaico_camera_close(camera);
+                if (close_ret != ESP_OK) {
+                    ESP_LOGW(TAG, "Camera format %ux%u probe close failed: %s",
+                             (unsigned)config.width, (unsigned)config.height,
+                             esp_err_to_name(close_ret));
+                }
+                ESP_LOGI(TAG, "Camera format %ux%u accepted",
+                         (unsigned)config.width, (unsigned)config.height);
+                *out_camera = camera;
+                return ESP_OK;
+            }
+        }
+
+        last_err = ret;
+        ESP_LOGW(TAG, "Camera format %ux%u rejected: %s",
+                 (unsigned)config.width, (unsigned)config.height,
+                 esp_err_to_name(ret));
+        if (camera != NULL) {
+            const esp_err_t del_ret = mosaico_camera_del(camera);
+            if (del_ret != ESP_OK) {
+                *out_camera = camera;
+                ESP_LOGE(TAG, "Delete rejected camera failed: %s",
+                         esp_err_to_name(del_ret));
+                return del_ret;
+            }
+        }
+    }
+
+    return last_err;
+}
+
 static esp_err_t retry_pending_cleanup(void)
 {
     xSemaphoreTake(s_service.lock, portMAX_DELAY);
@@ -86,13 +144,8 @@ static esp_err_t activate_camera(const mosaico_module_mgr_info_t *info)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 
-    mosaico_camera_config_t config = MOSAICO_CAMERA_DEFAULT_CONFIG();
-    config.slot = info->slot;
-    config.width = 1280;
-    config.height = 720;
-    config.buffer_count = 1;
     mosaico_camera_handle_t camera = NULL;
-    esp_err_t ret = mosaico_camera_new(&config, &camera);
+    esp_err_t ret = create_supported_camera(info->slot, &camera);
 
     xSemaphoreTake(s_service.lock, portMAX_DELAY);
     if (ret == ESP_OK && s_service.initialized) {

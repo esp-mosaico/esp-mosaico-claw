@@ -202,6 +202,13 @@ static esp_err_t display_service_raw_present_quiesce(
         ESP_LOGE(TAG, "quiesce raw presenter failed: %s", esp_err_to_name(ret));
         return ret;
     }
+    ret = display_service_set_panel_enabled(true);
+    if (ret != ESP_OK) {
+        (void)display_service_raw_set_closing(session, false);
+        (void)display_service_raw_touch_start(session);
+        ESP_LOGE(TAG, "restore panel visibility failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
     session->producer_generation = 0;
     return ESP_OK;
 }

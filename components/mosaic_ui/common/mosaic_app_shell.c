@@ -24,6 +24,7 @@ static bool s_root_override_visible;
 static bool s_bottom_enabled;
 static bool s_input_registration_queued;
 static bool s_overlay_registration_queued;
+static bool s_pointer_down;
 static bool s_tracking;
 static bool s_exit_triggered;
 static int32_t s_x0;
@@ -194,6 +195,8 @@ static bool intercept_pointer(esp_gsp_handle_t ui, int32_t x, int32_t y,
     if (ui != s_ui) {
         return false;
     }
+    const bool new_press = pressed && !s_pointer_down;
+    s_pointer_down = pressed;
     if (!s_bottom_enabled) {
         s_tracking = false;
         s_exit_triggered = false;
@@ -203,7 +206,7 @@ static bool intercept_pointer(esp_gsp_handle_t ui, int32_t x, int32_t y,
      * Resolve ownership before classifying this input sample. */
     sync_app_shell(ui);
     if (pressed) {
-        if (!s_tracking && x >= EXIT_EDGE_X_MIN && x <= EXIT_EDGE_X_MAX &&
+        if (new_press && x >= EXIT_EDGE_X_MIN && x <= EXIT_EDGE_X_MAX &&
                 y >= EXIT_EDGE_Y_MIN) {
             s_tracking = true;
             s_exit_triggered = false;
@@ -221,17 +224,19 @@ static bool intercept_pointer(esp_gsp_handle_t ui, int32_t x, int32_t y,
     const int32_t dx = x > s_x0 ? x - s_x0 : s_x0 - x;
     const bool upward_swipe =
         dy >= EXIT_SWIPE_MIN_PX && dy > dx * EXIT_MAX_DX_RATIO;
-    /* Exit only after a real upward drag from the dedicated bottom band.
-     * A tap/release in the band and gestures that start elsewhere must pass
-     * without navigating. */
-    if (upward_swipe && !s_exit_triggered && s_exit != NULL) {
+    /* Latch a real upward drag from the dedicated bottom band, then switch
+     * Apps only after this touch ends. A tap/release in the band and gestures
+     * that start elsewhere must pass without navigating. */
+    if (upward_swipe) {
         s_exit_triggered = true;
-        s_tracking = false;
-        s_exit(s_exit_ctx);
     }
     if (!pressed) {
+        const bool should_exit = s_exit_triggered && s_exit != NULL;
         s_tracking = false;
         s_exit_triggered = false;
+        if (should_exit) {
+            s_exit(s_exit_ctx);
+        }
     }
     return true;
 }
@@ -261,6 +266,7 @@ void mosaic_app_shell_attach(esp_gsp_handle_t ui, uint32_t root_stack_key,
     s_root_header_enabled = root_header_enabled;
     s_root_visible = root_visible(ui);
     s_bottom_enabled = true;
+    s_pointer_down = false;
     s_tracking = false;
     s_exit_triggered = false;
     s_notice_only = false;
@@ -290,6 +296,7 @@ void mosaic_app_shell_rearm(esp_gsp_handle_t ui)
     if (ui == NULL || ui != s_ui) {
         return;
     }
+    s_pointer_down = false;
     s_tracking = false;
     s_exit_triggered = false;
     s_input_registration_queued =
@@ -386,6 +393,7 @@ void mosaic_app_shell_detach(esp_gsp_handle_t ui)
         s_bottom_enabled = false;
         s_input_registration_queued = false;
         s_overlay_registration_queued = false;
+        s_pointer_down = false;
         s_tracking = false;
         s_exit_triggered = false;
         s_notice_visible = false;

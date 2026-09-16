@@ -75,6 +75,9 @@ esp_err_t display_service_target_build(
     const char *sub_type = lcd_cfg->sub_type ? lcd_cfg->sub_type : "";
     const bool is_rgb = strcmp(sub_type, "rgb") == 0 ||
                         strcmp(sub_type, "rgb_3wire_spi") == 0;
+    const bool is_panel_io = strcmp(sub_type, "spi") == 0 ||
+                             strcmp(sub_type, "i80") == 0 ||
+                             strcmp(sub_type, "parlio") == 0;
     ESP_RETURN_ON_FALSE(is_rgb || lcd_handles->io_handle != NULL,
                         ESP_ERR_INVALID_STATE, TAG, "panel IO missing");
 
@@ -128,7 +131,7 @@ esp_err_t display_service_target_build(
                 ? ESP_DISPLAY_PRESENT_PIXEL_FORMAT_RGB888
                 : ESP_DISPLAY_PRESENT_PIXEL_FORMAT_RGB565,
             .rotation = ESP_DISPLAY_PRESENT_ROTATE_0,
-            .swap_bytes = !is_rgb &&
+            .swap_bytes = is_panel_io && lcd_cfg->bits_per_pixel == 16 &&
                 lcd_cfg->data_endian == LCD_RGB_DATA_ENDIAN_BIG,
             .te_enabled = te_enabled,
             .te_sync = te_sync,

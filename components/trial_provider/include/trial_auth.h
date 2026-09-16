@@ -15,9 +15,9 @@
 extern "C" {
 #endif
 
-#define TRIAL_AUTH_DEFAULT_LLM_BASE_URL "https://as.esp-claw.com"
-#define TRIAL_AUTH_DEFAULT_ASR_BASE_URL "https://as1.esp-claw.com"
-#define TRIAL_AUTH_DEFAULT_ASR_ENDPOINT "wss://as1.esp-claw.com/v1/asr/realtime"
+#define TRIAL_AUTH_DEFAULT_LLM_BASE_URL "https://mosaico-asr.espressif.com.cn"
+#define TRIAL_AUTH_DEFAULT_ASR_BASE_URL "https://mosaico-asr.espressif.com.cn"
+#define TRIAL_AUTH_DEFAULT_ASR_ENDPOINT "wss://mosaico-asr.espressif.com.cn/v1/asr/realtime"
 #define TRIAL_AUTH_FIRMWARE_VERSION_HEADER "X-Firmware-Version"
 
 typedef esp_err_t (*trial_auth_hmac_provider_fn)(uint32_t key_id,

@@ -35,7 +35,6 @@
 #define MOSAIC_CAMERA_STRIDE (MOSAIC_CAMERA_W * 2U)
 #define MOSAIC_CAMERA_FRAME_BYTES ((size_t)MOSAIC_CAMERA_STRIDE * MOSAIC_CAMERA_H)
 #define MOSAIC_CAMERA_BUFFERS 2U
-#define MOSAIC_CAMERA_PPA_SCALE_STEPS 16U
 #define MOSAIC_CAMERA_OUTPUT_W 450U
 #define MOSAIC_CAMERA_OUTPUT_X ((MOSAIC_CAMERA_W - MOSAIC_CAMERA_OUTPUT_W) / 2U)
 #define MOSAIC_CAMERA_THUMBNAIL_SIZE 48U
@@ -59,19 +58,6 @@
 #define MOSAIC_CAMERA_COLOR_INTERVAL_US 50000
 
 static const char *TAG = "mosaic_camera";
-
-typedef struct {
-    uint16_t input_width;
-    uint16_t input_height;
-    uint16_t crop_width;
-    uint16_t crop_height;
-    uint8_t scale;
-} camera_preview_profile_t;
-
-static const camera_preview_profile_t s_preview_profiles[] = {
-    {1280, 720, 768, 720, 10},
-    {640, 480, 512, 480, 15},
-};
 
 typedef enum {
     MOSAIC_FRAME_FREE = 0,
@@ -374,14 +360,36 @@ static ppa_srm_color_mode_t camera_ppa_color_mode(uint32_t pixel_format)
     }
 }
 
-static const camera_preview_profile_t *camera_preview_profile(uint32_t width, uint32_t height)
+static uint32_t camera_align_even(uint32_t value)
 {
-    for (size_t i = 0; i < sizeof(s_preview_profiles) / sizeof(s_preview_profiles[0]); ++i) {
-        if (s_preview_profiles[i].input_width == width && s_preview_profiles[i].input_height == height) {
-            return &s_preview_profiles[i];
+    return value & ~1U;
+}
+
+/* After 90° rotation the preview is 450x480, so the source crop is 16:15. */
+static bool camera_preview_crop(uint32_t width, uint32_t height,
+                                uint32_t *crop_w, uint32_t *crop_h)
+{
+    uint32_t w;
+    uint32_t h;
+    if (width * 15U >= height * 16U) {
+        h = camera_align_even(height);
+        w = camera_align_even((h * 16U) / 15U);
+        if (w > width) {
+            w = camera_align_even(width);
+        }
+    } else {
+        w = camera_align_even(width);
+        h = camera_align_even((w * 15U) / 16U);
+        if (h > height) {
+            h = camera_align_even(height);
         }
     }
-    return NULL;
+    if (w == 0 || h == 0) {
+        return false;
+    }
+    *crop_w = w;
+    *crop_h = h;
+    return true;
 }
 
 static esp_err_t camera_convert_frame(
@@ -393,17 +401,31 @@ static esp_err_t camera_convert_frame(
     if (ppa == NULL || frame == NULL || frame->data == NULL || output == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    const camera_preview_profile_t *profile = camera_preview_profile(frame->width, frame->height);
-    if (profile == NULL) {
-        ESP_LOGE(TAG, "unsupported camera resolution: %ux%u", (unsigned)frame->width, (unsigned)frame->height);
-        return ESP_ERR_NOT_SUPPORTED;
+    if (frame->width == 0 || frame->height == 0) {
+        ESP_LOGE(TAG, "invalid camera resolution: %ux%u",
+                 (unsigned)frame->width, (unsigned)frame->height);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint32_t bytes_per_line = frame->width * 2U;
+    if (frame->bytes_per_line >= frame->width * 2U &&
+            (frame->bytes_per_line % 2U) == 0) {
+        bytes_per_line = frame->bytes_per_line;
     }
     const uint64_t expected_bytes =
-        (uint64_t)frame->width * (uint64_t)frame->height * 2U;
+        (uint64_t)bytes_per_line * (uint64_t)frame->height;
     if (expected_bytes > frame->size) {
         ESP_LOGE(TAG, "camera frame truncated: got=%u expected=%llu",
                  (unsigned)frame->size, (unsigned long long)expected_bytes);
         return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint32_t crop_w = 0;
+    uint32_t crop_h = 0;
+    if (!camera_preview_crop(frame->width, frame->height, &crop_w, &crop_h)) {
+        ESP_LOGE(TAG, "unsupported camera resolution: %ux%u",
+                 (unsigned)frame->width, (unsigned)frame->height);
+        return ESP_ERR_NOT_SUPPORTED;
     }
 
     const ppa_srm_color_mode_t input_mode =
@@ -414,18 +436,17 @@ static esp_err_t camera_convert_frame(
         return ESP_ERR_NOT_SUPPORTED;
     }
 
-    /* Keep both profiles on the same 450x480 preview area after rotation. */
-    const uint32_t source_x = ((frame->width - profile->crop_width) / 2U) & ~1U;
-    const uint32_t source_y = (frame->height - profile->crop_height) / 2U;
-    const float scale = (float)profile->scale / MOSAIC_CAMERA_PPA_SCALE_STEPS;
+    const uint32_t source_x = camera_align_even((frame->width - crop_w) / 2U);
+    const uint32_t source_y = (frame->height - crop_h) / 2U;
+    const float scale = (float)MOSAIC_CAMERA_H / (float)crop_w;
 
     const ppa_srm_oper_config_t operation = {
         .in = {
             .buffer = frame->data,
-            .pic_w = frame->width,
+            .pic_w = bytes_per_line / 2U,
             .pic_h = frame->height,
-            .block_w = profile->crop_width,
-            .block_h = profile->crop_height,
+            .block_w = crop_w,
+            .block_h = crop_h,
             .block_offset_x = source_x,
             .block_offset_y = source_y,
             .srm_cm = input_mode,

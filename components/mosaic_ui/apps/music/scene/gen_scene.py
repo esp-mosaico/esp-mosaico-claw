@@ -142,7 +142,8 @@ def build_library(objs, parent):
     library_row(objs, parent, 164, 1, "Blue Monday", "ESP Lab")
     library_row(objs, parent, 264, 2, "Quiet Circuit", "Claw Ensemble")
     hidden = len(objs)
-    objs.append(layer(parent, 0, 0, 1, 1, hidden=True))
+    objs.append(layer(parent, 0, 0, 1, 1, hidden=True,
+                      name="music_library_hidden_metadata"))
     objs.append(label(
         hidden, 0, 0, 1, 1, "3 songs",
         size=13, color="#000000",

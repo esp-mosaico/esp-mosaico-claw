@@ -29,7 +29,7 @@ idf_build_set_property(
     "${CMAKE_CURRENT_LIST_DIR}/components/mosaico_boot_splash"
     APPEND
 )
-project(edge_agent VERSION 0.2.1)
+project(edge_agent VERSION 0.3.0)
 
 if(COMMAND esp_mosaico_build_profile_finalize)
     esp_mosaico_build_profile_finalize()

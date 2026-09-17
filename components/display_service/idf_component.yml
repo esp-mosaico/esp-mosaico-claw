@@ -4,4 +4,4 @@ dependencies:
     path: ../esp_lvgl_present
   espressif/esp_display_present:
     version: "^1.0.2"
-  lvgl/lvgl: ^9.5.0
+  lvgl/lvgl: ^9.5.0,<9.6.0

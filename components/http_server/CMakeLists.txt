@@ -22,6 +22,7 @@ set(http_server_srcs
     "http_server_files_api.c"
     "http_server_wechat_api.c"
     "http_server_webim_api.c"
+    "http_server_logs_api.c"
     "http_server_json.c"
     "http_server_utils.c"
 )

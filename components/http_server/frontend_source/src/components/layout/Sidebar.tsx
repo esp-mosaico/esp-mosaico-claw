@@ -6,6 +6,7 @@ import {
   Folder,
   MessageSquareCode,
   MessagesSquare,
+  ScrollText,
   Mic,
   Search,
   Settings,
@@ -31,6 +32,7 @@ const IconCaps: Component = () => <Blocks class={iconClass} />;
 const IconSkills: Component = () => <SquareFunction class={iconClass} />;
 const IconFiles: Component = () => <Folder class={iconClass} />;
 const IconWebIm: Component = () => <MessagesSquare class={iconClass} />;
+const IconLogs: Component = () => <ScrollText class={iconClass} />;
 
 export type LeafNode = {
   kind: 'leaf';
@@ -46,7 +48,8 @@ export type LeafNode = {
     | 'navCapabilities'
     | 'navLuaModules'
     | 'navFiles'
-    | 'navWebIm';
+    | 'navWebIm'
+    | 'navLogs';
   icon: Component;
 };
 export type GroupNode = {
@@ -75,6 +78,7 @@ export const NAV_TREE: NavNode[] = [
   },
   { kind: 'leaf', id: 'memory', labelKey: 'navMemory', icon: IconMemory },
   { kind: 'leaf', id: 'webim', labelKey: 'navWebIm', icon: IconWebIm },
+  { kind: 'leaf', id: 'logs', labelKey: 'navLogs', icon: IconLogs },
   { kind: 'leaf', id: 'capabilities', labelKey: 'navCapabilities', icon: IconCaps },
   { kind: 'leaf', id: 'skills', labelKey: 'navLuaModules', icon: IconSkills },
   { kind: 'leaf', id: 'files', labelKey: 'navFiles', icon: IconFiles },

@@ -28,6 +28,14 @@ export const zhCn: Dict = {
   navLuaModules: 'Lua 模块管理',
   navFiles: '文件管理',
   navWebIm: '在线聊天',
+  navLogs: '实时日志',
+
+  logsDesc: '仅显示打开此页面后产生的设备日志，不提供历史记录。',
+  logsConnecting: '连接中…',
+  logsConnected: '实时连接',
+  logsDisconnected: '已断开',
+  logsEmpty: '等待新日志…',
+  logsClear: '清空',
 
   webimDesc: '通过 WebSocket 与 ESP-Claw 实时互动。',
   webimSend: '发送',

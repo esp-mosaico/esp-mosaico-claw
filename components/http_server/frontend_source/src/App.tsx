@@ -39,6 +39,7 @@ const FilesPage = lazy(() =>
 const WebImPage = lazy(() =>
   import('./pages/WebImPage').then((mod) => ({ default: mod.WebImPage })),
 );
+const LogsPage = lazy(() => import('./pages/LogsPage').then((mod) => ({ default: mod.LogsPage })));
 const SetupWizardPage = lazy(() =>
   import('./pages/SetupWizardPage').then((mod) => ({ default: mod.SetupWizardPage })),
 );
@@ -263,6 +264,9 @@ const App: Component = () => {
               </Show>
               <Show when={currentTab() === 'webim'}>
                 <WebImPage />
+              </Show>
+              <Show when={currentTab() === 'logs'}>
+                <LogsPage />
               </Show>
               <Show when={currentTab() === 'capabilities'}>
                 <CapabilitiesPage

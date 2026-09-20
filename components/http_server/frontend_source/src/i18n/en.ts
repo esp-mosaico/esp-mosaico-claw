@@ -26,6 +26,14 @@ export const en = {
   navLuaModules: 'Lua Modules',
   navFiles: 'Files',
   navWebIm: 'Web Chat',
+  navLogs: 'Live Logs',
+
+  logsDesc: 'View new device logs while this page is open. Older logs are not available.',
+  logsConnecting: 'Connecting…',
+  logsConnected: 'Live',
+  logsDisconnected: 'Disconnected',
+  logsEmpty: 'Waiting for new logs…',
+  logsClear: 'Clear',
 
   webimDesc: 'Interact with ESP-Claw in real time via WebSocket.',
   webimSend: 'Send',

@@ -42,12 +42,10 @@ static void notify_availability(char slot, bool available)
     }
 }
 
-/* OV3640's working mode is 1024x768; SC101IOT does not support it and uses
- * 1280x720. Probe-open each size because this BSP rejects a format mismatch
- * instead of falling back to the sensor default. */
+/* Prefer VGA for lower memory usage and keep larger formats as compatibility fallbacks. */
 static const uint32_t s_camera_probe_sizes[][2] = {
-    {1024, 768},
     {1280, 720},
+    {1024, 768},
     {640, 480},
 };
 

@@ -35,5 +35,8 @@ void mosaic_hub_request_board_insert(
     char side, const char *friendly_name, const char *capability,
     const char *open_app_name);
 
-/** Thread-safe request to show or restore the left Quick Settings camera slot. */
+/** Thread-safe request to update the left Quick Settings camera slot. */
 void mosaic_hub_request_quick_slot_camera(char side, bool occupied);
+
+/** Thread-safe request to update a standard module slot. */
+void mosaic_hub_request_quick_slot_module(char side, bool occupied);

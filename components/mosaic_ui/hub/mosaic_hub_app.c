@@ -102,8 +102,9 @@ static char s_insert_open_app_name[MOSAIC_INSERT_APP_NAME_MAX];
 static bool s_lock_charge_known;
 static bool s_lock_was_charging;
 static mosaic_hub_insert_request_t s_insert_request;
-static bool s_quick_slot_l_camera_pending;
-static bool s_quick_slot_l_camera_occupied;
+static uint8_t s_quick_slot_pending;
+static bool s_quick_slot_module[2];
+static bool s_quick_slot_l_camera;
 #if defined(ESP_PLATFORM)
 static portMUX_TYPE s_battery_stage_lock = portMUX_INITIALIZER_UNLOCKED;
 #define MOSAIC_HUB_BATT_LOCK()   portENTER_CRITICAL(&s_battery_stage_lock)
@@ -307,32 +308,48 @@ void mosaic_hub_request_quick_slot_camera(char side, bool occupied)
         return;
     }
     MOSAIC_HUB_INSERT_LOCK();
-    s_quick_slot_l_camera_pending = true;
-    s_quick_slot_l_camera_occupied = occupied;
+    s_quick_slot_l_camera = occupied;
+    s_quick_slot_pending |= 1U;
     MOSAIC_HUB_INSERT_UNLOCK();
 }
 
-static void mosaic_hub_apply_quick_slot_camera(esp_gsp_handle_t ui, bool occupied)
+void mosaic_hub_request_quick_slot_module(char side, bool occupied)
 {
-    if (ui == NULL) {
+    if (side != 'L' && side != 'R') {
         return;
     }
-    (void)esp_gsp_set_visible(
-        ui, GSP_BIND_QUICK_SLOT_L_EMPTY_VISIBLE, !occupied);
-    (void)esp_gsp_set_visible(
-        ui, GSP_BIND_QUICK_SLOT_L_CAMERA_VISIBLE, occupied);
+    const uint8_t index = side == 'R' ? 1U : 0U;
+    MOSAIC_HUB_INSERT_LOCK();
+    s_quick_slot_module[index] = occupied;
+    s_quick_slot_pending |= 1U << index;
+    MOSAIC_HUB_INSERT_UNLOCK();
 }
 
-static bool mosaic_hub_take_quick_slot_camera(bool *out_occupied)
+static void mosaic_hub_apply_quick_slot(esp_gsp_handle_t ui, uint8_t index, bool module_present, bool camera_available)
 {
-    if (out_occupied == NULL) {
-        return false;
+    if (ui == NULL || index > 1U) {
+        return;
     }
+    const bool camera_visible = index == 0U && camera_available;
+    const bool module_visible = module_present && !camera_visible;
+    const uint16_t empty_bind = index == 0U ? GSP_BIND_QUICK_SLOT_L_EMPTY_VISIBLE : GSP_BIND_QUICK_SLOT_R_EMPTY_VISIBLE;
+    const uint16_t module_bind = index == 0U ? GSP_BIND_QUICK_SLOT_L_MODULE_VISIBLE : GSP_BIND_QUICK_SLOT_R_MODULE_VISIBLE;
+    (void)esp_gsp_set_visible(ui, empty_bind, !camera_visible && !module_visible);
+    (void)esp_gsp_set_visible(ui, module_bind, module_visible);
+    if (index == 0U) {
+        (void)esp_gsp_set_visible(ui, GSP_BIND_QUICK_SLOT_L_CAMERA_VISIBLE, camera_visible);
+    }
+}
+
+static uint8_t mosaic_hub_take_quick_slots(bool modules[2], bool *camera_available, bool force)
+{
     MOSAIC_HUB_INSERT_LOCK();
-    const bool pending = s_quick_slot_l_camera_pending;
-    if (pending) {
-        *out_occupied = s_quick_slot_l_camera_occupied;
-        s_quick_slot_l_camera_pending = false;
+    const uint8_t pending = force ? 0x03U : s_quick_slot_pending;
+    if (pending != 0U) {
+        modules[0] = s_quick_slot_module[0];
+        modules[1] = s_quick_slot_module[1];
+        *camera_available = s_quick_slot_l_camera;
+        s_quick_slot_pending &= (uint8_t)~pending;
     }
     MOSAIC_HUB_INSERT_UNLOCK();
     return pending;
@@ -1237,9 +1254,13 @@ static void mosaic_hub_battery_tick(esp_gsp_handle_t ui, void *user_ctx)
                 insert_request.capability, insert_request.open_app_name);
         }
     }
-    bool slot_camera_occupied = false;
-    if (mosaic_hub_take_quick_slot_camera(&slot_camera_occupied)) {
-        mosaic_hub_apply_quick_slot_camera(ui, slot_camera_occupied);
+    bool slot_modules[2] = {false, false};
+    bool camera_available = false;
+    const uint8_t slot_pending = mosaic_hub_take_quick_slots(slot_modules, &camera_available, false);
+    for (uint8_t i = 0; i < 2U; ++i) {
+        if (slot_pending & (1U << i)) {
+            mosaic_hub_apply_quick_slot(ui, i, slot_modules[i], camera_available);
+        }
     }
     mosaic_settings_battery_t battery = {0};
     if (mosaic_hub_battery_take_pending(&battery)) {
@@ -1410,9 +1431,11 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
 #endif
     mosaic_hub_notif_bind(ui);
     mosaic_hub_quick_render(ui);
-    bool slot_camera_occupied = false;
-    if (mosaic_hub_take_quick_slot_camera(&slot_camera_occupied)) {
-        mosaic_hub_apply_quick_slot_camera(ui, slot_camera_occupied);
+    bool slot_modules[2] = {false, false};
+    bool camera_available = false;
+    (void)mosaic_hub_take_quick_slots(slot_modules, &camera_available, true);
+    for (uint8_t i = 0; i < 2U; ++i) {
+        mosaic_hub_apply_quick_slot(ui, i, slot_modules[i], camera_available);
     }
     (void)esp_gsp_set_input_interceptor(
         ui, mosaic_hub_intercept_pointer, NULL);

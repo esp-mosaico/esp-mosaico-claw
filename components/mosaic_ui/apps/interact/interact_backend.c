@@ -67,6 +67,18 @@ static void publish(const interact_snapshot_t *state)
     xSemaphoreGive(s_lock);
 }
 
+static bool close_board(mosaico_interact_handle_t *board)
+{
+    if (!*board) return true;
+    esp_err_t err = mosaico_interact_close(*board);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "close board: %s", esp_err_to_name(err));
+        return false;
+    }
+    *board = NULL;
+    return true;
+}
+
 static void worker(void *arg)
 {
     (void)arg;
@@ -92,15 +104,39 @@ static void worker(void *arg)
             break;
         }
         if (reconnect) {
-            if (board) {
-                mosaico_interact_close(board);
-                board = NULL;
+            if (!close_board(&board)) {
+                xSemaphoreTake(s_lock, portMAX_DELAY);
+                s_reconnect = true;
+                xSemaphoreGive(s_lock);
+                state.ready = state.key_l = state.key_r = state.pir = false;
+                snprintf(state.status, sizeof(state.status), "Board disconnected");
+                publish(&state);
+                vTaskDelay(pdMS_TO_TICKS(250));
+                continue;
             }
             state = (interact_snapshot_t){.slot = -1, .touch_input_selected = button_mode == MOSAICO_INTERACT_BUTTON_MODE_TOUCH};
             ticks = 0;
             manual_leds = failed_leds = 0;
             toggle = 0;
             ir = false;
+        }
+        if (board && ticks % 5 == 0) {
+            mosaico_module_mgr_info_t info = {0};
+            if (mosaico_module_mgr_get_info((mosaico_module_mgr_slot_t)state.slot, &info) == ESP_OK &&
+                info.presence == MOSAICO_MODULE_PRESENCE_ABSENT) {
+                state.ready = state.key_l = state.key_r = state.pir = false;
+                state.leds = state.pressed_leds = 0;
+                snprintf(state.status, sizeof(state.status), "Board disconnected");
+                publish(&state);
+                const bool closed = close_board(&board);
+                if (closed) {
+                    state.slot = -1;
+                    manual_leds = failed_leds = 0;
+                    ticks = 0;
+                }
+                vTaskDelay(pdMS_TO_TICKS(closed ? 50 : 250));
+                continue;
+            }
         }
         if (!board && err == ESP_OK && ticks % 20 == 0) {
             mosaico_module_mgr_info_t info = {0};
@@ -193,7 +229,7 @@ static void worker(void *arg)
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     if (board) {
-        mosaico_interact_close(board);
+        (void)close_board(&board);
     }
     xSemaphoreGive(s_done);
     vTaskDelete(NULL);

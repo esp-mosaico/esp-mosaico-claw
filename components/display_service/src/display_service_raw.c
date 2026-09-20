@@ -395,6 +395,11 @@ static esp_err_t display_service_raw_blit_frame(
             ESP_ERR_INVALID_ARG, TAG, "raw present area invalid");
         const size_t bytes_per_pixel =
             display_service_present_pixel_bytes(session->raw_pixel_format);
+        const size_t row_bytes = (size_t)width * bytes_per_pixel;
+        const size_t source_stride = blit->stride_bytes ? blit->stride_bytes : row_bytes;
+        ESP_RETURN_ON_FALSE(
+            source_stride >= row_bytes && (size_t)(height - 1) <= (SIZE_MAX - row_bytes) / source_stride,
+            ESP_ERR_INVALID_ARG, TAG, "raw source stride invalid");
         const esp_display_present_area_t area = {
             .x1 = blit->x_start,
             .y1 = blit->y_start,
@@ -436,8 +441,7 @@ static esp_err_t display_service_raw_blit_frame(
 
         ret = display_service_raw_fill_area(
             display_service_presenter_internal(), &caps, &area,
-            blit->frame_buffer, (size_t)width * bytes_per_pixel,
-            bytes_per_pixel);
+            blit->frame_buffer, source_stride, bytes_per_pixel);
         if (ret != ESP_OK) {
             return ret;
         }

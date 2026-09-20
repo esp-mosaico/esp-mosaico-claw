@@ -73,6 +73,7 @@ typedef struct {
     int x_end;
     int y_end;
     const void *frame_buffer;
+    size_t stride_bytes; // Zero means tightly packed rows.
     bool wait;
 } display_service_raw_blit_t;
 

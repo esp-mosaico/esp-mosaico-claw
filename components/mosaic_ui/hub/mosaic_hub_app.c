@@ -175,6 +175,22 @@ static uint16_t mosaic_hub_insert_strip_visible(void)
                                 : GSP_BIND_INSERT_FX_RIGHT_VISIBLE;
 }
 
+static void mosaic_hub_insert_reset(esp_gsp_handle_t ui)
+{
+    if (ui == NULL) return;
+    if (s_insert_timer != NULL) {
+        (void)esp_gsp_timer_delete(ui, s_insert_timer);
+        s_insert_timer = NULL;
+    }
+    (void)esp_gsp_component_stop_position_animation(ui, GSP_OBJ_KEY_INSERT_FX_LEFT);
+    (void)esp_gsp_component_stop_position_animation(ui, GSP_OBJ_KEY_INSERT_FX_RIGHT);
+    (void)esp_gsp_component_set_position(ui, GSP_OBJ_KEY_INSERT_FX_LEFT, -16, 80);
+    (void)esp_gsp_component_set_position(ui, GSP_OBJ_KEY_INSERT_FX_RIGHT, 480, 80);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_INSERT_FX_LEFT_VISIBLE, false);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_INSERT_FX_RIGHT_VISIBLE, false);
+    s_insert_phase = 0;
+}
+
 static void mosaic_hub_insert_timer_cb(esp_gsp_handle_t ui, void *user_ctx)
 {
     (void)user_ctx;
@@ -186,8 +202,7 @@ static void mosaic_hub_insert_timer_cb(esp_gsp_handle_t ui, void *user_ctx)
     const gsp_component_key_t strip = mosaic_hub_insert_strip();
     const uint16_t visible = mosaic_hub_insert_strip_visible();
     if (mosaic_hub_lock_visible()) {
-        (void)esp_gsp_set_visible(ui, visible, false);
-        s_insert_phase = 0;
+        mosaic_hub_insert_reset(ui);
         return;
     }
     switch (s_insert_phase++) {
@@ -224,6 +239,10 @@ static void mosaic_hub_insert_schedule(uint32_t delay_ms)
     }
     s_insert_timer = esp_gsp_timer_create(
         s_hub_ui, delay_ms, mosaic_hub_insert_timer_cb, NULL);
+    if (s_insert_timer == NULL) {
+        ESP_LOGE(TAG, "Create insert animation timer failed");
+        mosaic_hub_insert_reset(s_hub_ui);
+    }
 }
 
 void mosaic_hub_show_board_insert(
@@ -237,16 +256,8 @@ void mosaic_hub_show_board_insert(
             mosaic_hub_quick_drawer_open(s_hub_ui)) {
         return;
     }
-    if (s_insert_timer != NULL) {
-        (void)esp_gsp_timer_delete(s_hub_ui, s_insert_timer);
-        s_insert_timer = NULL;
-    }
-    (void)esp_gsp_set_visible(
-        s_hub_ui, GSP_BIND_INSERT_FX_LEFT_VISIBLE, false);
-    (void)esp_gsp_set_visible(
-        s_hub_ui, GSP_BIND_INSERT_FX_RIGHT_VISIBLE, false);
+    mosaic_hub_insert_reset(s_hub_ui);
     s_insert_side = side;
-    s_insert_phase = 0;
     strlcpy(s_insert_open_app_name, open_app_name,
             sizeof(s_insert_open_app_name));
     (void)esp_gsp_set_text(
@@ -257,8 +268,6 @@ void mosaic_hub_show_board_insert(
     (void)esp_gsp_set_text(
         s_hub_ui, GSP_BIND_INSERT_BOARD_CAP, capability);
     const gsp_component_key_t strip = mosaic_hub_insert_strip();
-    (void)esp_gsp_component_set_position(
-        s_hub_ui, strip, side == 'L' ? -16 : 480, 80);
     (void)esp_gsp_set_visible(
         s_hub_ui, mosaic_hub_insert_strip_visible(), true);
     (void)esp_gsp_component_animate_position_to(
@@ -1312,11 +1321,7 @@ static void mosaic_hub_stop_timers(esp_gsp_handle_t ui)
         s_quick_feedback_timer = NULL;
     }
     (void)esp_gsp_set_visible(ui, GSP_BIND_QUICK_FEEDBACK_VISIBLE, false);
-    if (s_insert_timer != NULL) {
-        (void)esp_gsp_timer_delete(ui, s_insert_timer);
-        s_insert_timer = NULL;
-        s_insert_phase = 0;
-    }
+    mosaic_hub_insert_reset(ui);
     if (s_clock_timer != NULL) {
         (void)esp_gsp_timer_delete(ui, s_clock_timer);
         s_clock_timer = NULL;
@@ -1357,6 +1362,7 @@ static void mosaic_hub_notif_bind(esp_gsp_handle_t ui)
 static void mosaic_hub_started(esp_gsp_handle_t ui)
 {
     s_hub_ui = ui;
+    mosaic_hub_insert_reset(ui);
     s_charge_percent = 0;
     s_pointer_down = false;
     s_quick_brightness_drag = false;

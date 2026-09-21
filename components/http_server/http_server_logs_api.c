@@ -18,6 +18,10 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#if !CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+#error "Live logs require CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y"
+#endif
+
 #define LOG_WS_MAX_CLIENTS 2
 #define LOG_QUEUE_DEPTH 8
 #define LOG_LINE_SIZE 384
@@ -246,19 +250,29 @@ void http_server_logs_ws_fd_remove(int fd)
     portEXIT_CRITICAL(&s_lock);
 }
 
-static esp_err_t log_ws_handler(httpd_req_t *req)
+static esp_err_t log_ws_connected(httpd_req_t *req)
 {
     int fd = httpd_req_to_sockfd(req);
+    if (!log_ws_add(fd)) {
+        return ESP_FAIL;
+    }
+    /* A stalled log viewer must not hold the HTTP server task for seconds. */
+    struct timeval send_timeout = { .tv_sec = 0, .tv_usec = 100000 };
+    (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+    /* Exercise the same capture and asynchronous send path as device logs. */
+    ESP_LOGI("http_logs", "Live log client connected (fd=%d)", fd);
+    return ESP_OK;
+}
+
+static esp_err_t log_ws_handler(httpd_req_t *req)
+{
+    /* A plain HTTP GET is not a subscription. IDF completes WS upgrades via
+     * ws_post_handshake_cb without invoking this handler. */
     if (req->method == HTTP_GET) {
-        if (!log_ws_add(fd)) {
-            return ESP_FAIL;
-        }
-        /* A stalled log viewer must not hold the HTTP server task for seconds. */
-        struct timeval send_timeout = { .tv_sec = 0, .tv_usec = 100000 };
-        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
-        return ESP_OK;
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "WebSocket upgrade required");
     }
 
+    int fd = httpd_req_to_sockfd(req);
     httpd_ws_frame_t frame = {0};
     esp_err_t err = httpd_ws_recv_frame(req, &frame, 0);
     if (err != ESP_OK) {
@@ -289,6 +303,7 @@ esp_err_t http_server_register_logs_routes(httpd_handle_t server)
         .method = HTTP_GET,
         .handler = log_ws_handler,
         .is_websocket = true,
+        .ws_post_handshake_cb = log_ws_connected,
     };
     return httpd_register_uri_handler(server, &handler);
 }

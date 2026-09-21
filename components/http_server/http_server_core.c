@@ -63,6 +63,7 @@ static void http_server_close_fn(httpd_handle_t hd, int sockfd)
 {
     (void)hd;
     http_server_webim_ws_fd_remove(sockfd);
+    http_server_logs_ws_fd_remove(sockfd);
     close(sockfd);
 }
 
@@ -103,9 +104,19 @@ esp_err_t http_server_start(void)
 #endif
     ESP_RETURN_ON_ERROR(http_server_register_wechat_routes(s_ctx.server), TAG, "Failed to register WeChat routes");
     ESP_RETURN_ON_ERROR(http_server_register_webim_routes(s_ctx.server), TAG, "Failed to register Web IM routes");
+    ESP_RETURN_ON_ERROR(http_server_register_logs_routes(s_ctx.server), TAG, "Failed to register log routes");
     ESP_RETURN_ON_ERROR(httpd_register_err_handler(s_ctx.server, HTTPD_404_NOT_FOUND, http_server_captive_404_handler),
                         TAG, "Failed to register captive 404 handler");
 
+    esp_err_t err = http_server_logs_start(s_ctx.server);
+    if (err != ESP_OK) {
+        /* The HTTPD has already been started, so do not leave a half-running
+         * server behind when the log streaming worker cannot be created. */
+        http_server_logs_stop();
+        esp_err_t stop_err = httpd_stop(s_ctx.server);
+        s_ctx.server = NULL;
+        return stop_err == ESP_OK ? err : stop_err;
+    }
     return ESP_OK;
 }
 
@@ -115,6 +126,7 @@ esp_err_t http_server_stop(void)
         return ESP_OK;
     }
 
+    http_server_logs_stop();
     esp_err_t err = httpd_stop(s_ctx.server);
     if (err == ESP_OK) {
         s_ctx.server = NULL;

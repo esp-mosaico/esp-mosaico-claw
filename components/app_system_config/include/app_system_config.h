@@ -28,6 +28,7 @@ typedef struct {
     uint32_t screen_timeout_ms;
     bool vibration_enabled;
     bool wifi_enabled;
+    bool web_logs_enabled;
 } app_system_config_t;
 
 void app_system_config_defaults(app_system_config_t *config);

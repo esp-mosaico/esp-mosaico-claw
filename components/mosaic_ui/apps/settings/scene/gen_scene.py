@@ -58,7 +58,8 @@ PAGE_INTEGRATIONS_CHANNELS = 10
 PAGE_SOUND = 11
 PAGE_SECURITY = 12
 PAGE_UPDATE = 13
-PAGE_COUNT = 14
+PAGE_DEBUG = 14
+PAGE_COUNT = 15
 STACK_CAPACITY = 8
 
 # Mock scan results for the settings WLAN list (prototype SYS_NETWORKS + extras).
@@ -251,7 +252,7 @@ def _build_root(objs, page):
         "x": 0, "y": 64, "w": 480, "h": 400,
         "name": "settings_root_list",
         "item_height": 100,
-        "item_count": 11,
+        "item_count": 9,
         "row_template": "settings_root_row",
         "scroll_snapshot": True,
         "snap_to_item": False,
@@ -383,6 +384,41 @@ def _build_sound(objs, page):
     _toggle(objs, page, 358, 279, "settings_notification_sound",
             True)
     objs.append(container(page, 0, 357, 480, 1, bg="#3B3C3D"))
+def _build_debug(objs, page):
+    _nav_header(objs, page, "Debug", name="nav_debug")
+    objs.append(label(page, 12, 80, 334, 48,
+                      "Live Logs in WebUI", size=28))
+    # GSP 1.4's draggable toggle consumes the gesture without emitting the
+    # authored CALL. Use button hit areas with switch visuals; the application
+    # selects the visible state only after the setting has been saved.
+    for enabled in (False, True):
+        # Button visibility only gates its own draw commands. A layer gates
+        # the entire state, including the knob and the button hit area.
+        state = len(objs)
+        objs.append(layer(
+            page, 358, 80, 110, 48,
+            name=f"settings_web_logs_{'on' if enabled else 'off'}",
+            bind=f"settings_web_logs_{'on' if enabled else 'off'}_visible",
+            bind_target="visible", hidden=enabled))
+        switch = len(objs)
+        visual = button(state, 0, 0, 110, 48, "",
+                        bg=ACCENT if enabled else "#3B3C3D", radius=24,
+                        events=[{
+                            "event": "click", "action": "call",
+                            "target_name": "settings_web_logs_toggle",
+                            "arg": 0 if enabled else 1,
+                        }])
+        objs.append(visual)
+        objs.append(container(switch, 68 if enabled else 6, 6, 36, 36,
+                              bg=FG, radius=18))
+    objs.append(label(page, 12, 156, 456, 32,
+                      "Allow network access to device logs.",
+                      size=22, color=MUTED))
+    objs.append(label(page, 12, 192, 456, 32,
+                      "Logs may contain private information.",
+                      size=22, color=MUTED))
+
+
 def _wlan_nav_row(objs, parent, y, title, page):
     events = [{
         "event": "click",
@@ -1232,6 +1268,8 @@ def build_settings_ui(objs, content):
     _build_security(objs, page)
     page = _page(objs, stack, PAGE_UPDATE)
     _build_update(objs, page)
+    page = _page(objs, stack, PAGE_DEBUG)
+    _build_debug(objs, page)
 
     # Notifications belong to the App stage rather than an individual
     # StackView page. Connection failures arrive after the password page has

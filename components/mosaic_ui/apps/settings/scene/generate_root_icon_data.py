@@ -19,6 +19,7 @@ ICONS = {
     "sound": HERE / "settings_root_sound.png",
     "security": HERE / "settings_root_security.png",
     "battery": None,
+    "debug": None,
     "about": HERE / "settings_root_about.png",
 }
 
@@ -46,6 +47,21 @@ def draw_battery_icon() -> Image.Image:
         draw.rounded_rectangle(
             box((left, 18, right, 30)), radius=1 * scale, fill=color)
 
+    return icon.resize((48, 48), LANCZOS)
+
+
+def draw_debug_icon() -> Image.Image:
+    """Terminal glyph in the same size and color as the root icon set."""
+    scale = 4
+    color = (214, 214, 222, 255)
+    icon = Image.new("RGBA", (48 * scale, 48 * scale), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(icon)
+    draw.rounded_rectangle((5 * scale, 9 * scale, 43 * scale, 39 * scale),
+                          radius=5 * scale, outline=color, width=3 * scale)
+    draw.line([(12 * scale, 18 * scale), (19 * scale, 24 * scale),
+               (12 * scale, 30 * scale)], fill=color, width=3 * scale)
+    draw.line([(24 * scale, 30 * scale), (35 * scale, 30 * scale)],
+              fill=color, width=3 * scale)
     return icon.resize((48, 48), LANCZOS)
 
 
@@ -106,6 +122,7 @@ def main() -> None:
     ]
     for name, path in ICONS.items():
         source = (draw_battery_icon() if name == "battery"
+                  else draw_debug_icon() if name == "debug"
                   else Image.open(path).convert("RGBA"))
         icon = Image.new("RGBA", (48, 48), (0, 0, 0, 0))
         icon.alpha_composite(source, ((48 - source.width) // 2,

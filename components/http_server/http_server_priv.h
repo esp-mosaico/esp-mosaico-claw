@@ -56,4 +56,8 @@ esp_err_t http_server_register_lua_app_routes(httpd_handle_t server);
 esp_err_t http_server_register_wechat_routes(httpd_handle_t server);
 esp_err_t http_server_register_webim_routes(httpd_handle_t server);
 void http_server_webim_ws_fd_remove(int fd);
+esp_err_t http_server_register_logs_routes(httpd_handle_t server);
+esp_err_t http_server_logs_start(httpd_handle_t server);
+void http_server_logs_stop(void);
+void http_server_logs_ws_fd_remove(int fd);
 esp_err_t http_server_captive_404_handler(httpd_req_t *req, httpd_err_code_t error);

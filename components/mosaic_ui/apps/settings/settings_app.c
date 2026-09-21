@@ -51,6 +51,7 @@
 #define SETTINGS_ABOUT_PAGE 2
 #define SETTINGS_SECURITY_PAGE 12
 #define SETTINGS_UPDATE_PAGE 13
+#define SETTINGS_DEBUG_PAGE 14
 #define SETTINGS_DETAIL_PAGE 7
 #define SETTINGS_FACTORY_PAGE 8
 #define SETTINGS_FACTORY_HOLD_US INT64_C(3000000)
@@ -1025,6 +1026,7 @@ static const settings_root_row_t s_root_rows[] = {
     SETTINGS_ROOT_ROW("Sound", sound),
     SETTINGS_ROOT_ROW("Security", security),
     SETTINGS_ROOT_ROW("Battery", battery),
+    SETTINGS_ROOT_ROW("Debug", debug),
     SETTINGS_ROOT_ROW("About", about),
 };
 
@@ -2011,6 +2013,16 @@ static void settings_wlan_handle_forget(esp_gsp_handle_t ui)
     }
 }
 
+static esp_err_t settings_render_web_logs(esp_gsp_handle_t ui)
+{
+    bool enabled = s_state.snapshot.web_logs_enabled;
+    esp_err_t result = esp_gsp_set_visible(
+        ui, GSP_BIND_SETTINGS_WEB_LOGS_ON_VISIBLE, enabled);
+    keep_first_error(&result, esp_gsp_set_visible(
+        ui, GSP_BIND_SETTINGS_WEB_LOGS_OFF_VISIBLE, !enabled));
+    return result;
+}
+
 static esp_err_t settings_render_snapshot(esp_gsp_handle_t ui)
 {
     const mosaic_settings_snapshot_t *snapshot = &s_state.snapshot;
@@ -2036,6 +2048,8 @@ static esp_err_t settings_render_snapshot(esp_gsp_handle_t ui)
 
     keep_first_error(&result,
         settings_wlan_render(ui));
+    keep_first_error(&result,
+        settings_render_web_logs(ui));
 
     (void)snprintf(text, sizeof(text), "v%u.%u.%u",
                    GSP_VERSION_MAJOR, GSP_VERSION_MINOR, GSP_VERSION_PATCH);
@@ -2979,7 +2993,7 @@ static void settings_dispatch_call(
             settings_open_detail(ui, SETTINGS_DETAIL_BATTERY);
             return;
         }
-        if (item == 7U) {
+        if (item == 8U) {
             settings_refresh_snapshot(ui);
             settings_open_detail(ui, SETTINGS_DETAIL_ABOUT);
             s_state.update_notice_sequence =
@@ -2990,6 +3004,7 @@ static void settings_dispatch_call(
             [3] = SETTINGS_DISPLAY_PAGE,
             [4] = SETTINGS_SOUND_PAGE,
             [5] = SETTINGS_SECURITY_PAGE,
+            [7] = SETTINGS_DEBUG_PAGE,
         };
         const uint16_t page = pages[item];
         if (page == 0U || esp_gsp_stack_view_push(
@@ -3129,6 +3144,26 @@ static void settings_dispatch_call(
     case GSP_ACT_ID_SETTINGS_UPDATE_LEAVE:
         settings_leave_update_page(ui);
         return;
+    case GSP_ACT_ID_SETTINGS_WEB_LOGS_TOGGLE: {
+        /* Each visible button requests an explicit state, so a duplicate
+         * release cannot invert the setting a second time. */
+        const bool enabled = event->data.call.arg != 0;
+        if (enabled == s_state.snapshot.web_logs_enabled) {
+            return;
+        }
+        esp_err_t err = s_state.ops.set_web_logs_enabled
+            ? s_state.ops.set_web_logs_enabled(s_state.ops.user_ctx, enabled)
+            : ESP_ERR_NOT_SUPPORTED;
+        if (err == ESP_OK) {
+            s_state.snapshot.web_logs_enabled = enabled;
+        } else {
+            ESP_LOGE(TAG, "set Web live logs failed: %s", esp_err_to_name(err));
+            mosaic_top_notice_show(ui, &s_top_notice, "Debug",
+                "Unable to save log setting", SETTINGS_NOTICE_DURATION_MS);
+        }
+        (void)settings_render_web_logs(ui);
+        return;
+    }
     case GSP_ACT_ID_WLAN_TOGGLE:
         if (event->timestamp_us - s_state.wlan_toggle_last_us < 100000) {
             return;

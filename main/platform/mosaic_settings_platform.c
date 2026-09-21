@@ -18,6 +18,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mosaic_battery_platform.h"
@@ -178,6 +179,7 @@ static esp_err_t get_snapshot(
         ret_snapshot->volume = snapshot->volume;
         ret_snapshot->screen_timeout_ms = snapshot->screen_timeout_ms;
         ret_snapshot->vibration_enabled = snapshot->vibration_enabled;
+        ret_snapshot->web_logs_enabled = snapshot->web_logs_enabled;
         ret_snapshot->display_available = snapshot->display_available;
         ret_snapshot->audio_available = snapshot->audio_available;
         ret_snapshot->network.desired_enabled = wifi.desired_enabled;
@@ -298,6 +300,16 @@ static esp_err_t set_brightness(void *user_ctx, int brightness, bool persist)
 {
     return app_settings_service_set_brightness(
         user_ctx, brightness, persist);
+}
+
+static esp_err_t set_web_logs_enabled(void *user_ctx, bool enabled)
+{
+    esp_err_t err = app_settings_service_set_web_logs_enabled(user_ctx, enabled);
+    if (err == ESP_OK) {
+        http_server_set_web_logs_enabled(enabled);
+        ESP_LOGI(TAG, "Web live logs %s", enabled ? "enabled" : "disabled");
+    }
+    return err;
 }
 
 static esp_err_t set_vibration(void *user_ctx, bool enabled)
@@ -681,6 +693,7 @@ esp_err_t mosaic_settings_platform_init(
         .set_brightness = set_brightness,
         .set_volume = set_volume,
         .set_vibration = set_vibration,
+        .set_web_logs_enabled = set_web_logs_enabled,
         .set_screen_timeout = set_screen_timeout,
         .factory_reset = factory_reset,
         .request_update_check = request_update_check,

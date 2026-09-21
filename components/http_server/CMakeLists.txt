@@ -29,6 +29,7 @@ set(http_server_srcs
 
 set(http_server_requires
     app_config
+    app_system_config
     app_claw
     cap_im_local
     claw_cap

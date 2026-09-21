@@ -6,6 +6,7 @@ set(MOSAIC_APP_SCENE_DIR scene)
 set(MOSAIC_APP_SCENE_JSON scene/settings_480.json)
 set(MOSAIC_APP_GENERATOR scene/gen_scene.py)
 set(MOSAIC_APP_SCENE_SOURCES
+    scene/generate_root_icon_data.py
     ../setup_center/scene/gen_scene.py
     ../setup_center/scene/setup_html_chevron.png
     ../setup_center/scene/setup_html_yes.png

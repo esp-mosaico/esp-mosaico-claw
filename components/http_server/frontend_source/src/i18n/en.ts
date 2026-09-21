@@ -32,6 +32,8 @@ export const en = {
   logsConnecting: 'Connecting…',
   logsConnected: 'Live',
   logsDisconnected: 'Disconnected',
+  logsDisabled: 'Disabled',
+  logsDisabledHint: 'Live logs are disabled. Enable “Live Logs in WebUI” in Settings → Debug on the device.',
   logsEmpty: 'Waiting for new logs…',
   logsClear: 'Clear',
 

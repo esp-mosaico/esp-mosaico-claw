@@ -34,6 +34,8 @@ export const zhCn: Dict = {
   logsConnecting: '连接中…',
   logsConnected: '实时连接',
   logsDisconnected: '已断开',
+  logsDisabled: '已关闭',
+  logsDisabledHint: '实时日志已关闭。请在设备 Settings → Debug 中开启“Live Logs in WebUI”。',
   logsEmpty: '等待新日志…',
   logsClear: '清空',
 

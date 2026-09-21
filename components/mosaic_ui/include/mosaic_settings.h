@@ -152,6 +152,7 @@ typedef struct {
     int volume;
     uint32_t screen_timeout_ms;
     bool vibration_enabled;
+    bool web_logs_enabled;
     bool display_available;
     bool audio_available;
     mosaic_settings_network_t network;
@@ -180,6 +181,7 @@ typedef struct {
     esp_err_t (*set_brightness)(void *user_ctx, int brightness, bool persist);
     esp_err_t (*set_volume)(void *user_ctx, int volume, bool persist);
     esp_err_t (*set_vibration)(void *user_ctx, bool enabled);
+    esp_err_t (*set_web_logs_enabled)(void *user_ctx, bool enabled);
     esp_err_t (*set_screen_timeout)(void *user_ctx, uint32_t timeout_ms);
     esp_err_t (*factory_reset)(void *user_ctx);
     /** Start a metadata-only asynchronous update manifest check. */

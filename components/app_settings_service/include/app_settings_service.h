@@ -55,6 +55,7 @@ typedef struct {
     int brightness;
     uint32_t screen_timeout_ms;
     bool vibration_enabled;
+    bool web_logs_enabled;
     app_system_boot_stage_t boot_stage;
     bool display_available;
     bool audio_available;
@@ -93,6 +94,8 @@ esp_err_t app_settings_service_set_screen_timeout(
 esp_err_t app_settings_service_get_wifi_enabled(
     app_settings_service_handle_t handle, bool *ret_enabled);
 esp_err_t app_settings_service_set_wifi_enabled(
+    app_settings_service_handle_t handle, bool enabled);
+esp_err_t app_settings_service_set_web_logs_enabled(
     app_settings_service_handle_t handle, bool enabled);
 esp_err_t app_settings_service_get_boot_stage(
     app_settings_service_handle_t handle,

@@ -14,12 +14,17 @@
 #include <sys/time.h>
 
 #include "esp_log.h"
+#include "app_system_config.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
 #if !CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
 #error "Live logs require CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y"
+#endif
+
+#if !CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT
+#error "Live logs require CONFIG_HTTPD_WS_PRE_HANDSHAKE_CB_SUPPORT=y"
 #endif
 
 #define LOG_WS_MAX_CLIENTS 2
@@ -50,6 +55,7 @@ static QueueHandle_t s_queue;
 static TaskHandle_t s_sender_task;
 static log_client_t s_clients[LOG_WS_MAX_CLIENTS];
 static atomic_uint s_active_clients;
+static atomic_bool s_enabled;
 static uint32_t s_next_generation;
 static unsigned s_pending_work;
 static bool s_sender_stop_requested;
@@ -75,7 +81,7 @@ static bool log_client_is_current(const log_client_t *client, httpd_handle_t ser
 {
     bool current = false;
     portENTER_CRITICAL(&s_lock);
-    if (s_httpd == server) {
+    if (s_httpd == server && atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
         for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
             if (s_clients[i].fd == client->fd && s_clients[i].generation == client->generation) {
                 current = true;
@@ -92,7 +98,7 @@ static void __attribute__((noinline)) log_capture(const char *format, va_list ar
     log_item_t item = {0};
 
     portENTER_CRITICAL(&s_lock);
-    if (s_httpd && s_queue) {
+    if (s_httpd && s_queue && atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
         for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
             if (s_clients[i].fd >= 0) {
                 item.clients[item.client_count++] = s_clients[i];
@@ -116,7 +122,8 @@ static void __attribute__((noinline)) log_capture(const char *format, va_list ar
 
 static int logs_vprintf(const char *format, va_list args)
 {
-    if (atomic_load_explicit(&s_active_clients, memory_order_relaxed) == 0) {
+    if (!atomic_load_explicit(&s_enabled, memory_order_relaxed) ||
+        atomic_load_explicit(&s_active_clients, memory_order_relaxed) == 0) {
         return s_previous_vprintf(format, args);
     }
 
@@ -214,7 +221,7 @@ static bool log_ws_add(int fd)
 {
     bool added = false;
     portENTER_CRITICAL(&s_lock);
-    if (s_httpd) {
+    if (s_httpd && atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
         for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
             if (s_clients[i].fd == fd) {
                 added = true;
@@ -248,6 +255,61 @@ void http_server_logs_ws_fd_remove(int fd)
         }
     }
     portEXIT_CRITICAL(&s_lock);
+}
+
+static void log_close_disabled_clients(void *arg)
+{
+    httpd_handle_t server = arg;
+    log_client_t clients[LOG_WS_MAX_CLIENTS];
+    portENTER_CRITICAL(&s_lock);
+    if (s_httpd != server || atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
+        portEXIT_CRITICAL(&s_lock);
+        return;
+    }
+    memcpy(clients, s_clients, sizeof(clients));
+    portEXIT_CRITICAL(&s_lock);
+    /* Executed on HTTPD's task so descriptors cannot be reused mid-close. */
+    for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
+        if (clients[i].fd >= 0) {
+            http_server_logs_ws_fd_remove(clients[i].fd);
+            (void)httpd_sess_trigger_close(server, clients[i].fd);
+        }
+    }
+}
+
+void http_server_set_web_logs_enabled(bool enabled)
+{
+    portENTER_CRITICAL(&s_lock);
+    atomic_store_explicit(&s_enabled, enabled, memory_order_relaxed);
+    httpd_handle_t server = s_httpd;
+    if (!enabled) {
+        /* Invalidate queued log items even if logging is quickly re-enabled. */
+        for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
+            s_clients[i].generation = ++s_next_generation;
+        }
+    }
+    portEXIT_CRITICAL(&s_lock);
+    if (!enabled && server) {
+        /* The capture/send gates already deny logs if this queue is busy. */
+        (void)httpd_queue_work(server, log_close_disabled_clients, server);
+    }
+}
+
+static esp_err_t log_status_handler(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_sendstr(req, atomic_load_explicit(&s_enabled, memory_order_relaxed)
+        ? "{\"enabled\":true}" : "{\"enabled\":false}");
+}
+
+static esp_err_t log_ws_pre_handshake(httpd_req_t *req)
+{
+    if (atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
+        return ESP_OK;
+    }
+    (void)httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Live logs are disabled in Settings > Debug");
+    return ESP_FAIL;
 }
 
 static esp_err_t log_ws_connected(httpd_req_t *req)
@@ -303,13 +365,27 @@ esp_err_t http_server_register_logs_routes(httpd_handle_t server)
         .method = HTTP_GET,
         .handler = log_ws_handler,
         .is_websocket = true,
+        .ws_pre_handshake_cb = log_ws_pre_handshake,
         .ws_post_handshake_cb = log_ws_connected,
     };
-    return httpd_register_uri_handler(server, &handler);
+    esp_err_t err = httpd_register_uri_handler(server, &handler);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const httpd_uri_t status = {
+        .uri = "/api/logs/status",
+        .method = HTTP_GET,
+        .handler = log_status_handler,
+    };
+    return httpd_register_uri_handler(server, &status);
 }
 
 esp_err_t http_server_logs_start(httpd_handle_t server)
 {
+    app_system_config_t config;
+    esp_err_t config_err = app_system_config_load(&config);
+    /* Missing/corrupt storage must never opt the device into log exposure. */
+    http_server_set_web_logs_enabled(config_err == ESP_OK && config.web_logs_enabled);
     if (!s_queue) {
         s_queue = xQueueCreate(LOG_QUEUE_DEPTH, sizeof(log_item_t));
         if (!s_queue) {

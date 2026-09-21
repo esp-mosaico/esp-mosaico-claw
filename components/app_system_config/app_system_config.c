@@ -19,6 +19,7 @@
 #define SYSTEM_SCREEN_TIMEOUT_KEY "sys_screen_to"
 #define SYSTEM_VIBRATION_KEY  "sys_vibration"
 #define SYSTEM_WIFI_ENABLED_KEY "sys_wifi_en"
+#define SYSTEM_WEB_LOGS_KEY "sys_web_logs"
 
 #define SYSTEM_SCREEN_TIMEOUT_DEFAULT_MS 30000
 #define SYSTEM_SCREEN_TIMEOUT_MAX_MS     1800000
@@ -91,6 +92,7 @@ void app_system_config_defaults(app_system_config_t *config)
         .screen_timeout_ms = SYSTEM_SCREEN_TIMEOUT_DEFAULT_MS,
         .vibration_enabled = true,
         .wifi_enabled = true,
+        .web_logs_enabled = false,
     };
 }
 
@@ -106,6 +108,7 @@ esp_err_t app_system_config_load(app_system_config_t *config)
     int screen_timeout = config->screen_timeout_ms;
     int vibration = config->vibration_enabled;
     int wifi_enabled = config->wifi_enabled;
+    int web_logs_enabled = config->web_logs_enabled;
     system_int_field_t fields[] = {
         {SYSTEM_BOOT_STAGE_KEY, NULL,
          APP_SYSTEM_BOOT_SETUP, APP_SYSTEM_BOOT_HOME,
@@ -117,6 +120,7 @@ esp_err_t app_system_config_load(app_system_config_t *config)
          SYSTEM_SCREEN_TIMEOUT_DEFAULT_MS, &screen_timeout},
         {SYSTEM_VIBRATION_KEY, NULL, 0, 1, 1, &vibration},
         {SYSTEM_WIFI_ENABLED_KEY, NULL, 0, 1, 1, &wifi_enabled},
+        {SYSTEM_WEB_LOGS_KEY, NULL, 0, 1, 0, &web_logs_enabled},
     };
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
         ESP_RETURN_ON_ERROR(read_int(&fields[i]), TAG, "load system config");
@@ -135,6 +139,7 @@ esp_err_t app_system_config_load(app_system_config_t *config)
     config->screen_timeout_ms = (uint32_t)screen_timeout;
     config->vibration_enabled = vibration != 0;
     config->wifi_enabled = wifi_enabled != 0;
+    config->web_logs_enabled = web_logs_enabled != 0;
     return ESP_OK;
 }
 
@@ -164,6 +169,9 @@ esp_err_t app_system_config_save(const app_system_config_t *config)
     ESP_RETURN_ON_ERROR(write_int(SYSTEM_WIFI_ENABLED_KEY,
                                   config->wifi_enabled ? 1 : 0),
                         TAG, "save Wi-Fi enabled");
+    ESP_RETURN_ON_ERROR(write_int(SYSTEM_WEB_LOGS_KEY,
+                                  config->web_logs_enabled ? 1 : 0),
+                        TAG, "save Web logs enabled");
     return settings_store_commit();
 }
 
@@ -177,6 +185,7 @@ esp_err_t app_system_config_reset(void)
         SYSTEM_SCREEN_TIMEOUT_KEY,
         SYSTEM_VIBRATION_KEY,
         SYSTEM_WIFI_ENABLED_KEY,
+        SYSTEM_WEB_LOGS_KEY,
         /* Remove the previous scattered keys during migration/reset. */
         "ui_rotation",
         "audio_volume",

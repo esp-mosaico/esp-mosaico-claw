@@ -3,18 +3,26 @@ import { TabShell } from '../components/layout/TabShell';
 import { Button } from '../components/ui/Button';
 import { PageHeader } from '../components/ui/PageHeader';
 import { t } from '../i18n';
+import { logLineClass, splitLogLines } from '../utils/logs';
 
 const MAX_VISIBLE_LINES = 300;
 
 export const LogsPage: Component = () => {
   const [lines, setLines] = createSignal<string[]>([]);
-  const [status, setStatus] = createSignal<'connecting' | 'connected' | 'disconnected'>(
+  const [status, setStatus] = createSignal<'connecting' | 'connected' | 'disconnected' | 'disabled'>(
     'connecting',
   );
   let socket: WebSocket | undefined;
-  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let statusTimer: ReturnType<typeof setTimeout> | undefined;
+  let statusRequest: AbortController | undefined;
   let output: HTMLDivElement | undefined;
   let disposed = false;
+
+  const closeSocket = () => {
+    const previous = socket;
+    socket = undefined;
+    previous?.close();
+  };
 
   const connect = () => {
     if (disposed) return;
@@ -22,31 +30,67 @@ export const LogsPage: Component = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const next = new WebSocket(`${protocol}//${window.location.host}/ws/logs`);
     socket = next;
-    next.onopen = () => setStatus('connected');
+    next.onopen = () => {
+      if (!disposed && socket === next) setStatus('connected');
+    };
     next.onmessage = (event: MessageEvent<string>) => {
+      if (disposed || socket !== next) return;
       const followTail =
         !output || output.scrollTop + output.clientHeight >= output.scrollHeight - 32;
-      setLines((current) => [...current, event.data].slice(-MAX_VISIBLE_LINES));
+      setLines((current) => [...current, ...splitLogLines(event.data)].slice(-MAX_VISIBLE_LINES));
       if (followTail) {
         requestAnimationFrame(() => output?.scrollTo(0, output.scrollHeight));
       }
     };
     next.onclose = () => {
-      if (disposed) return;
+      if (disposed || socket !== next) return;
+      socket = undefined;
       setStatus('disconnected');
-      reconnectTimer = setTimeout(connect, 2000);
     };
     next.onerror = () => next.close();
   };
 
-  onMount(connect);
+  const pollStatus = async () => {
+    if (disposed) return;
+    const controller = new AbortController();
+    statusRequest = controller;
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch('/api/logs/status', {
+        cache: 'no-store', signal: controller.signal,
+      });
+      if (!response.ok) throw new Error('Log status unavailable');
+      const result: { enabled: boolean } = await response.json();
+      if (typeof result.enabled !== 'boolean') throw new Error('Invalid log status');
+      if (disposed) return;
+      if (!result.enabled) {
+        closeSocket();
+        setLines([]);
+        setStatus('disabled');
+      } else if (!socket) {
+        connect();
+      }
+    } catch {
+      if (!disposed) {
+        closeSocket();
+        setStatus('disconnected');
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (!disposed) statusTimer = setTimeout(pollStatus, 2000);
+    }
+  };
+
+  onMount(() => void pollStatus());
   onCleanup(() => {
     disposed = true;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    socket?.close();
+    if (statusTimer) clearTimeout(statusTimer);
+    statusRequest?.abort();
+    closeSocket();
   });
 
   const statusLabel = () => {
+    if (status() === 'disabled') return t('logsDisabled');
     if (status() === 'connected') return t('logsConnected');
     if (status() === 'connecting') return t('logsConnecting');
     return t('logsDisconnected');
@@ -72,9 +116,11 @@ export const LogsPage: Component = () => {
         ref={output}
         class="h-[min(65vh,640px)] overflow-auto bg-black/40 p-4 font-mono text-xs leading-5 text-[var(--color-text-secondary)]"
       >
-        <Show when={lines().length > 0} fallback={<span>{t('logsEmpty')}</span>}>
+        <Show when={lines().length > 0} fallback={
+          <span>{status() === 'disabled' ? t('logsDisabledHint') : t('logsEmpty')}</span>
+        }>
           <For each={lines()}>
-            {(line) => <div class="whitespace-pre-wrap break-all">{line}</div>}
+            {(line) => <div class={`min-h-5 whitespace-pre-wrap break-all ${logLineClass(line)}`}>{line}</div>}
           </For>
         </Show>
       </div>

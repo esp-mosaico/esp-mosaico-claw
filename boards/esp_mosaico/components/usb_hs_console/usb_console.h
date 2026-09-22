@@ -16,14 +16,13 @@ extern "C" {
 /**
  * @brief Start the USB-OTG CDC console.
  *
- * CONFIG_BSP_USB_CONSOLE_AUTO_INIT enables this automatically before
+ * CONFIG_USB_HS_CONSOLE_USB_CDC_AUTO_INIT enables this automatically before
  * app_main(). Call it manually only when automatic initialization is disabled.
  * On success, stdin, stdout, stderr and subsequent ESP_LOG output use TinyUSB
  * CDC-ACM interface 0. Repeated calls are harmless.
  *
- * When CONFIG_BSP_USB_AUTO_DOWNLOAD is enabled, the same interface also
- * emulates the USB-Serial/JTAG DTR/RTS reset behavior and uses its VID/PID, so
- * idf.py can reset into ROM download mode without extra esptool arguments.
+ * CONFIG_USB_HS_CONSOLE_USB_CDC_AUTO_DOWNLOAD independently enables the
+ * USB-Serial/JTAG-compatible DTR/RTS reset behavior for firmware download.
  */
 esp_err_t bsp_usb_console_init(void);
 

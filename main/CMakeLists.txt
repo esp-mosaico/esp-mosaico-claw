@@ -10,6 +10,7 @@ idf_component_register(
         cmd_wifi
         esp_app_format
         esp_hw_support
+        esp_lcd_touch_mux
         esp_wifi
         espressif__cjson
         espressif__bq27220

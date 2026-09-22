@@ -9,10 +9,12 @@
 
 extern void __real_app_main(void);
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdatomic.h>
 
 #include "esp_log.h"
+#include "esp_log_write.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "soc/lp_system_reg.h"
@@ -24,6 +26,47 @@ extern void __real_app_main(void);
 
 static const char *TAG = "bsp_usb_console";
 static bool s_initialized;
+
+#if CONFIG_USB_HS_CONSOLE_USB_CDC_MIRROR_LOG_TO_UART
+
+static FILE *s_uart_log_stream;
+
+static int mirror_log_vprintf(const char *format, va_list args)
+{
+    va_list usb_args;
+    va_list uart_args;
+    va_copy(usb_args, args);
+    va_copy(uart_args, args);
+    int usb_result = vprintf(format, usb_args);
+    int uart_result = vfprintf(s_uart_log_stream, format, uart_args);
+    va_end(usb_args);
+    va_end(uart_args);
+    return usb_result >= 0 ? usb_result : uart_result;
+}
+
+static esp_err_t log_mirror_init(void)
+{
+    char uart_path[24];
+    int path_len = snprintf(uart_path, sizeof(uart_path), "/dev/uart/%d", CONFIG_ESP_CONSOLE_UART_NUM);
+    if (path_len < 0 || path_len >= (int)sizeof(uart_path)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    s_uart_log_stream = fopen(uart_path, "w");
+    if (!s_uart_log_stream) {
+        return ESP_FAIL;
+    }
+    if (setvbuf(s_uart_log_stream, NULL, _IONBF, 0) != 0) {
+        fclose(s_uart_log_stream);
+        s_uart_log_stream = NULL;
+        return ESP_FAIL;
+    }
+
+    (void)esp_log_set_vprintf(mirror_log_vprintf);
+    return ESP_OK;
+}
+
+#endif /* CONFIG_USB_HS_CONSOLE_USB_CDC_MIRROR_LOG_TO_UART */
 
 #if CONFIG_USB_HS_CONSOLE_USB_CDC_AUTO_DOWNLOAD
 
@@ -211,10 +254,29 @@ esp_err_t bsp_usb_console_init(void)
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    s_initialized = true;
-    ESP_LOGI(TAG, "USB-OTG CDC console ready%s",
+#if CONFIG_USB_HS_CONSOLE_USB_CDC_MIRROR_LOG_TO_UART
+    ret = log_mirror_init();
+    if (ret != ESP_OK) {
+        (void)tinyusb_console_deinit(TINYUSB_CDC_ACM_0);
+        (void)tinyusb_cdcacm_deinit(TINYUSB_CDC_ACM_0);
+        (void)tinyusb_driver_uninstall();
 #if CONFIG_USB_HS_CONSOLE_USB_CDC_AUTO_DOWNLOAD
-             "; USB-Serial/JTAG-compatible reset enabled"
+        auto_download_deinit();
+#endif
+        ESP_LOGE(TAG, "Failed to initialize UART log mirror: %s", esp_err_to_name(ret));
+        return ret;
+    }
+#endif
+
+    s_initialized = true;
+    ESP_LOGI(TAG, "USB-OTG CDC console ready%s%s",
+#if CONFIG_USB_HS_CONSOLE_USB_CDC_AUTO_DOWNLOAD
+             "; USB-Serial/JTAG-compatible reset enabled",
+#else
+             "",
+#endif
+#if CONFIG_USB_HS_CONSOLE_USB_CDC_MIRROR_LOG_TO_UART
+             "; ESP logs mirrored to UART"
 #else
              ""
 #endif

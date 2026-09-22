@@ -264,10 +264,26 @@ esp_err_t mosaic_system_configure(const mosaic_system_ops_t *ops)
     return err;
 }
 
+static void update_quick_slot_from_module(const mosaico_module_mgr_info_t *info)
+{
+    if (info == NULL || info->slot >= MOSAICO_MODULE_MGR_SLOT_COUNT || info->presence == MOSAICO_MODULE_PRESENCE_UNKNOWN) {
+        return;
+    }
+    bool occupied = info->presence == MOSAICO_MODULE_PRESENCE_PRESENT;
+    if (occupied && info->descriptor_state == MOSAICO_MODULE_DESCRIPTOR_VALID && info->eeprom.board_type == MOSAICO_BOARD_TYPE_CAMERA) {
+        occupied = false;
+    }
+    mosaic_hub_request_quick_slot_module(info->slot == MOSAICO_MODULE_MGR_SLOT_RIGHT ? 'R' : 'L', occupied);
+}
+
 static void on_module_insert_notice(const mosaico_module_mgr_event_t *event, void *user_ctx)
 {
     (void)user_ctx;
-    if (event == NULL || event->info.presence != MOSAICO_MODULE_PRESENCE_PRESENT ||
+    if (event == NULL) return;
+    if (event->changes & (MOSAICO_MODULE_CHANGE_PRESENCE | MOSAICO_MODULE_CHANGE_DESCRIPTOR)) {
+        update_quick_slot_from_module(&event->info);
+    }
+    if (event->info.presence != MOSAICO_MODULE_PRESENCE_PRESENT ||
         event->info.descriptor_state != MOSAICO_MODULE_DESCRIPTOR_VALID ||
         !(event->changes & (MOSAICO_MODULE_CHANGE_PRESENCE | MOSAICO_MODULE_CHANGE_DESCRIPTOR))) return;
     if (mosaic_loader_app() != mosaic_app_root()) return;
@@ -526,8 +542,18 @@ esp_err_t mosaic_ui_start(void)
     ESP_RETURN_ON_ERROR(mosaico_module_mgr_init(NULL), TAG, "initialize module manager");
     ESP_RETURN_ON_ERROR(mosaico_module_mgr_subscribe(on_module_insert_notice, NULL, &s_module_subscription), TAG,
                         "subscribe to module insertions");
+    for (mosaico_module_mgr_slot_t slot = MOSAICO_MODULE_MGR_SLOT_LEFT; slot < MOSAICO_MODULE_MGR_SLOT_COUNT; ++slot) {
+        mosaico_module_mgr_info_t info = {0};
+        esp_err_t err = mosaico_module_mgr_get_info(slot, &info);
+        if (err == ESP_OK) {
+            update_quick_slot_from_module(&info);
+        } else {
+            ESP_LOGW(TAG, "Read initial module slot %d failed: %s", slot, esp_err_to_name(err));
+        }
+    }
     s_started = true;
     mosaico_camera_service_set_callback(on_camera_availability_notice, NULL);
+    mosaic_hub_request_quick_slot_camera('L', mosaico_camera_service_is_available());
     ESP_LOGI(TAG, "mosaic hub live (ported esp-gsp example)");
     return ESP_OK;
 }

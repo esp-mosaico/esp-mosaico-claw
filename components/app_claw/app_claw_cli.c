@@ -6,10 +6,16 @@
 #include "app_claw_cli.h"
 #include "app_claw.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "linenoise/linenoise.h"
 
 #if CONFIG_APP_CLAW_CAP_IM_QQ
 #include "cap_im_qq.h"
@@ -49,6 +55,7 @@
 #include "claw_event_router.h"
 #include "cJSON.h"
 #include "esp_console.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 extern esp_err_t mosaic_ui_simulate_tap(int16_t x, int16_t y) __attribute__((weak));
@@ -59,6 +66,18 @@ static const size_t CAP_OUTPUT_BUF_SIZE = 1024;
 
 static uint32_t s_next_request_id = 1;
 static char s_current_session_id[64] = "default";
+
+static ssize_t app_claw_cli_read_blocking(int fd, void *buffer, size_t size)
+{
+    /* TinyUSB stdin is nonblocking; wait for input instead of redrawing the prompt on EAGAIN. */
+    for (;;) {
+        ssize_t ret = read(fd, buffer, size);
+        if (ret >= 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            return ret;
+        }
+        vTaskDelay(1);
+    }
+}
 
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 static bool parse_touch_coordinate(const char *text, int16_t *coordinate)
@@ -774,7 +793,9 @@ esp_err_t app_claw_cli_start(void)
     repl_config.task_stack_size = 10240;
     repl_config.max_cmdline_length = 512;
 
-#if CONFIG_ESP_CONSOLE_UART_DEFAULT || CONFIG_ESP_CONSOLE_UART_CUSTOM
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 2, 0)
+    ESP_ERROR_CHECK(esp_console_new_repl_stdio(&repl_config, &repl));
+#elif CONFIG_ESP_CONSOLE_UART_DEFAULT || CONFIG_ESP_CONSOLE_UART_CUSTOM
     esp_console_dev_uart_config_t hw_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_console_new_repl_uart(&hw_config, &repl_config, &repl));
 #elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
@@ -788,6 +809,7 @@ esp_err_t app_claw_cli_start(void)
     ESP_LOGE(TAG, "No supported console backend is enabled");
     return ESP_ERR_NOT_SUPPORTED;
 #endif
+    linenoiseSetReadFunction(app_claw_cli_read_blocking);
 
     esp_console_register_help_command();
     register_cap_cli_commands();

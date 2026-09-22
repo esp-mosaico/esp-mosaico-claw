@@ -519,11 +519,17 @@ def build_quick_content(objs, parent):
     for x, side in ((22, 'L'), (126, 'R')):
         empty = image(
             slot_group, f'{ASSETS}/control_center/slot{side}.png',
-            x, 22, 72, 72, name='quick_slot_' + side.lower())
-        if side == 'L':
-            empty['bind'] = 'quick_slot_l_empty_visible'
-            empty['bind_target'] = 'visible'
+            x, 22, 72, 72, name='quick_slot_' + side.lower(),
+            bind=f'quick_slot_{side.lower()}_empty_visible')
+        empty['bind_target'] = 'visible'
         objs.append(empty)
+        module = image(
+            slot_group, f'{ASSETS}/icons/controller.png',
+            x, 22, 72, 72, name=f'quick_slot_{side.lower()}_module',
+            bind=f'quick_slot_{side.lower()}_module_visible')
+        module['bind_target'] = 'visible'
+        module['hidden'] = True
+        objs.append(module)
         if side == 'L':
             camera = image(
                 slot_group, f'{ASSETS}/control_center/slot_camera.png',

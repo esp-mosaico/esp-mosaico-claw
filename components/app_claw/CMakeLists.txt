@@ -17,4 +17,7 @@ idf_component_register(
         "include"
     PRIV_REQUIRES
         console
+        display_service
+        esp_board_manager
+        esp_lcd_touch_mux
 )

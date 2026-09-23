@@ -54,12 +54,14 @@
 #include "claw_event_publisher.h"
 #include "claw_event_router.h"
 #include "cJSON.h"
+#include "esp_board_manager.h"
+#include "esp_board_manager_defs.h"
+#include "esp_board_manager_includes.h"
 #include "esp_console.h"
 #include "esp_idf_version.h"
+#include "esp_lcd_touch_mux.h"
 #include "esp_log.h"
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-extern esp_err_t mosaic_ui_simulate_tap(int16_t x, int16_t y) __attribute__((weak));
-#endif
+#include "display_service.h"
 
 static const char *TAG = "app_claw_cli";
 static const size_t CAP_OUTPUT_BUF_SIZE = 1024;
@@ -79,40 +81,300 @@ static ssize_t app_claw_cli_read_blocking(int fd, void *buffer, size_t size)
     }
 }
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-static bool parse_touch_coordinate(const char *text, int16_t *coordinate)
+#define TOUCH_DEFAULT_HOLD_MS 32U
+#define TOUCH_DEFAULT_STEP_MS 16U
+#define TOUCH_MAX_DURATION_MS 60000U
+#define TOUCH_INJECT_TIMEOUT_MS 1000U
+
+typedef struct {
+    int32_t x1;
+    int32_t y1;
+    int32_t x2;
+    int32_t y2;
+    uint32_t duration_ms;
+    uint32_t step_ms;
+} touch_swipe_request_t;
+
+typedef struct {
+    portMUX_TYPE lock;
+    TaskHandle_t task;
+    touch_swipe_request_t request;
+    bool cancel_requested;
+    bool reserved;
+} touch_playback_state_t;
+
+static touch_playback_state_t s_touch_playback = {
+    .lock = portMUX_INITIALIZER_UNLOCKED,
+};
+static esp_lcd_touch_handle_t s_touch_mux;
+
+static esp_err_t touch_load_mux(void)
 {
-    char *end = NULL;
-    long value = strtol(text, &end, 10);
-    if (text == end || *end != '\0' || value < 0 || value >= 480) {
+#if CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUPPORT
+    void *device_handle = NULL;
+    esp_err_t err = esp_board_manager_get_device_handle(ESP_BOARD_DEVICE_NAME_LCD_TOUCH, &device_handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    dev_lcd_touch_handles_t *touch_handles = device_handle;
+    if (touch_handles == NULL || touch_handles->touch_handle == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_touch_mux = touch_handles->touch_handle;
+    return ESP_OK;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+static bool parse_touch_uint(const char *text, uint32_t max_value, uint32_t *value)
+{
+    if (text == NULL || text[0] < '0' || text[0] > '9') {
         return false;
     }
-    *coordinate = (int16_t)value;
+    char *end = NULL;
+    unsigned long parsed = strtoul(text, &end, 10);
+    if (text == end || *end != '\0' || parsed > max_value) {
+        return false;
+    }
+    *value = (uint32_t)parsed;
     return true;
+}
+
+static bool parse_touch_coordinate(const char *text, bool x_axis, int32_t *coordinate)
+{
+    uint32_t limit = x_axis ? display_service_width() : display_service_height();
+    uint32_t value = 0;
+    if (limit == 0 || !parse_touch_uint(text, limit - 1, &value)) {
+        return false;
+    }
+    *coordinate = (int32_t)value;
+    return true;
+}
+
+static esp_err_t touch_push_point(int32_t x, int32_t y)
+{
+    const esp_lcd_touch_mux_frame_t frame = {
+        .count = 1,
+        .points = {{.track_id = 0, .x = (uint16_t)x, .y = (uint16_t)y}},
+    };
+    return esp_lcd_touch_mux_inject(s_touch_mux, &frame, TOUCH_INJECT_TIMEOUT_MS);
+}
+
+static esp_err_t touch_tap(int32_t x, int32_t y, uint32_t hold_ms)
+{
+    esp_err_t err = esp_lcd_touch_mux_begin(s_touch_mux, TOUCH_INJECT_TIMEOUT_MS);
+    if (err == ESP_OK) {
+        err = touch_push_point(x, y);
+    }
+    if (err == ESP_OK && hold_ms > 0) {
+        vTaskDelay(pdMS_TO_TICKS(hold_ms));
+    }
+    if (err == ESP_OK) {
+        err = esp_lcd_touch_mux_end(s_touch_mux, TOUCH_INJECT_TIMEOUT_MS);
+    } else {
+        (void)esp_lcd_touch_mux_cancel(s_touch_mux);
+    }
+    return err;
+}
+
+static bool touch_playback_cancelled(void)
+{
+    taskENTER_CRITICAL(&s_touch_playback.lock);
+    bool cancelled = s_touch_playback.cancel_requested;
+    taskEXIT_CRITICAL(&s_touch_playback.lock);
+    return cancelled;
+}
+
+static void touch_swipe_task(void *arg)
+{
+    (void)arg;
+    (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    taskENTER_CRITICAL(&s_touch_playback.lock);
+    touch_swipe_request_t request = s_touch_playback.request;
+    taskEXIT_CRITICAL(&s_touch_playback.lock);
+    esp_err_t err = touch_playback_cancelled() ? ESP_ERR_INVALID_STATE :
+                    esp_lcd_touch_mux_begin(s_touch_mux, TOUCH_INJECT_TIMEOUT_MS);
+    if (err == ESP_OK) {
+        err = touch_push_point(request.x1, request.y1);
+    }
+    uint32_t elapsed = 0;
+    while (err == ESP_OK && elapsed + request.step_ms < request.duration_ms) {
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(request.step_ms)) > 0 || touch_playback_cancelled()) {
+            err = ESP_ERR_INVALID_STATE;
+            break;
+        }
+        elapsed += request.step_ms;
+        int32_t x = request.x1 + (int32_t)(((int64_t)request.x2 - request.x1) * elapsed / request.duration_ms);
+        int32_t y = request.y1 + (int32_t)(((int64_t)request.y2 - request.y1) * elapsed / request.duration_ms);
+        err = touch_push_point(x, y);
+    }
+    if (err == ESP_OK && !touch_playback_cancelled()) {
+        uint32_t remaining_ms = request.duration_ms - elapsed;
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(remaining_ms)) > 0 || touch_playback_cancelled()) {
+            err = ESP_ERR_INVALID_STATE;
+        } else {
+            err = touch_push_point(request.x2, request.y2);
+        }
+    }
+    if (err == ESP_OK) {
+        err = esp_lcd_touch_mux_end(s_touch_mux, TOUCH_INJECT_TIMEOUT_MS);
+    } else {
+        (void)esp_lcd_touch_mux_cancel(s_touch_mux);
+    }
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Touch swipe failed: %s", esp_err_to_name(err));
+    }
+    taskENTER_CRITICAL(&s_touch_playback.lock);
+    s_touch_playback.task = NULL;
+    s_touch_playback.cancel_requested = false;
+    s_touch_playback.reserved = false;
+    taskEXIT_CRITICAL(&s_touch_playback.lock);
+    vTaskDelete(NULL);
+}
+
+static int touch_start_swipe(const touch_swipe_request_t *request)
+{
+    taskENTER_CRITICAL(&s_touch_playback.lock);
+    if (s_touch_playback.reserved) {
+        taskEXIT_CRITICAL(&s_touch_playback.lock);
+        ESP_LOGE(TAG, "A touch swipe is already running");
+        return 1;
+    }
+    s_touch_playback.reserved = true;
+    s_touch_playback.cancel_requested = false;
+    s_touch_playback.request = *request;
+    taskEXIT_CRITICAL(&s_touch_playback.lock);
+    TaskHandle_t task = NULL;
+    BaseType_t created = xTaskCreate(touch_swipe_task, "touch_swipe", 3072, NULL, 3, &task);
+    if (created != pdPASS) {
+        taskENTER_CRITICAL(&s_touch_playback.lock);
+        s_touch_playback.reserved = false;
+        taskEXIT_CRITICAL(&s_touch_playback.lock);
+        ESP_LOGE(TAG, "Failed to create touch swipe task");
+        return 1;
+    }
+    taskENTER_CRITICAL(&s_touch_playback.lock);
+    s_touch_playback.task = task;
+    xTaskNotifyGive(task);
+    taskEXIT_CRITICAL(&s_touch_playback.lock);
+    printf("Touch swipe queued\n");
+    return 0;
+}
+
+static int touch_cancel(void)
+{
+    taskENTER_CRITICAL(&s_touch_playback.lock);
+    s_touch_playback.cancel_requested = true;
+    TaskHandle_t task = s_touch_playback.task;
+    if (task != NULL) {
+        xTaskNotifyGive(task);
+    }
+    taskEXIT_CRITICAL(&s_touch_playback.lock);
+    esp_err_t err = esp_lcd_touch_mux_cancel(s_touch_mux);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to cancel touch: %s", esp_err_to_name(err));
+        return 1;
+    }
+    printf("Touch cancelled\n");
+    return 0;
+}
+
+static void print_touch_usage(void)
+{
+    printf("Usage:\n"
+           "  touch <x> <y>\n"
+           "  touch tap <x> <y> [hold_ms]\n"
+           "  touch down <x> <y>\n"
+           "  touch move <x> <y>\n"
+           "  touch up [x y]\n"
+           "  touch swipe <x1> <y1> <x2> <y2> <duration_ms> [step_ms]\n"
+           "  touch cancel\n");
 }
 
 static int cmd_touch(int argc, char **argv)
 {
-    int16_t x = 0;
-    int16_t y = 0;
-    if (argc != 3 || !parse_touch_coordinate(argv[1], &x) || !parse_touch_coordinate(argv[2], &y)) {
-        printf("Usage: touch <x:0-479> <y:0-479>\n");
+    int32_t x1 = 0;
+    int32_t y1 = 0;
+    if (argc == 3 && parse_touch_coordinate(argv[1], true, &x1) &&
+            parse_touch_coordinate(argv[2], false, &y1)) {
+        esp_err_t err = touch_tap(x1, y1, TOUCH_DEFAULT_HOLD_MS);
+        if (err == ESP_OK) {
+            printf("Touch tap queued at (%ld,%ld)\n", (long)x1, (long)y1);
+            return 0;
+        }
+        ESP_LOGE(TAG, "Touch tap failed: %s", esp_err_to_name(err));
         return 1;
     }
-    if (mosaic_ui_simulate_tap == NULL) {
-        ESP_LOGE(TAG, "Mosaic touch injection is unavailable");
-        return 1;
+    if (argc >= 2 && strcmp(argv[1], "cancel") == 0 && argc == 2) {
+        return touch_cancel();
     }
-    esp_err_t err = mosaic_ui_simulate_tap(x, y);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to queue touch at (%d,%d): %s", x, y, esp_err_to_name(err));
-        return 1;
+    if (argc >= 4 && (strcmp(argv[1], "tap") == 0 || strcmp(argv[1], "down") == 0 ||
+            strcmp(argv[1], "move") == 0) &&
+            parse_touch_coordinate(argv[2], true, &x1) && parse_touch_coordinate(argv[3], false, &y1)) {
+        esp_err_t err = ESP_OK;
+        if (strcmp(argv[1], "tap") == 0) {
+            uint32_t hold_ms = TOUCH_DEFAULT_HOLD_MS;
+            if ((argc != 4 && argc != 5) ||
+                    (argc == 5 && !parse_touch_uint(argv[4], TOUCH_MAX_DURATION_MS, &hold_ms))) {
+                print_touch_usage();
+                return 1;
+            }
+            err = touch_tap(x1, y1, hold_ms);
+        } else if (argc != 4) {
+            print_touch_usage();
+            return 1;
+        } else if (strcmp(argv[1], "down") == 0) {
+            err = esp_lcd_touch_mux_begin(s_touch_mux, TOUCH_INJECT_TIMEOUT_MS);
+            if (err == ESP_OK) err = touch_push_point(x1, y1);
+            if (err != ESP_OK) (void)esp_lcd_touch_mux_cancel(s_touch_mux);
+        } else {
+            err = touch_push_point(x1, y1);
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Touch %s failed: %s", argv[1], esp_err_to_name(err));
+            return 1;
+        }
+        printf("Touch %s queued at (%ld,%ld)\n", argv[1], (long)x1, (long)y1);
+        return 0;
     }
-    printf("Touch queued at (%d,%d)\n", x, y);
-    return 0;
+    if (argc >= 2 && strcmp(argv[1], "up") == 0 && (argc == 2 || argc == 4)) {
+        esp_err_t err = ESP_OK;
+        if (argc == 4) {
+            if (!parse_touch_coordinate(argv[2], true, &x1) || !parse_touch_coordinate(argv[3], false, &y1)) {
+                print_touch_usage();
+                return 1;
+            }
+            err = touch_push_point(x1, y1);
+        }
+        if (err == ESP_OK) err = esp_lcd_touch_mux_end(s_touch_mux, TOUCH_INJECT_TIMEOUT_MS);
+        if (err != ESP_OK) {
+            (void)esp_lcd_touch_mux_cancel(s_touch_mux);
+            ESP_LOGE(TAG, "Touch up failed: %s", esp_err_to_name(err));
+            return 1;
+        }
+        printf("Touch up queued\n");
+        return 0;
+    }
+    if (argc >= 7 && strcmp(argv[1], "swipe") == 0) {
+        touch_swipe_request_t request = {.step_ms = TOUCH_DEFAULT_STEP_MS};
+        uint32_t duration_ms = 0;
+        if ((argc != 7 && argc != 8) || !parse_touch_coordinate(argv[2], true, &request.x1) ||
+                !parse_touch_coordinate(argv[3], false, &request.y1) ||
+                !parse_touch_coordinate(argv[4], true, &request.x2) ||
+                !parse_touch_coordinate(argv[5], false, &request.y2) ||
+                !parse_touch_uint(argv[6], TOUCH_MAX_DURATION_MS, &duration_ms) || duration_ms == 0 ||
+                (argc == 8 && (!parse_touch_uint(argv[7], 1000, &request.step_ms) || request.step_ms == 0)) ||
+                request.step_ms > duration_ms) {
+            print_touch_usage();
+            return 1;
+        }
+        request.duration_ms = duration_ms;
+        return touch_start_swipe(&request);
+    }
+    print_touch_usage();
+    return 1;
 }
-
-#endif
 
 static char *join_prompt_args(int argc, char **argv)
 {
@@ -814,16 +1076,17 @@ esp_err_t app_claw_cli_start(void)
     esp_console_register_help_command();
     register_cap_cli_commands();
 
-#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
-    {
+    esp_err_t touch_err = touch_load_mux();
+    if (touch_err == ESP_OK) {
         const esp_console_cmd_t touch_cmd = {
             .command = "touch",
-            .help = "Simulate one touchscreen tap: touch <x> <y>",
+            .help = "Inject touchscreen tap/down/move/up/swipe/cancel",
             .func = cmd_touch,
         };
         ESP_ERROR_CHECK(esp_console_cmd_register(&touch_cmd));
+    } else {
+        ESP_LOGW(TAG, "Touch injection unavailable: %s", esp_err_to_name(touch_err));
     }
-#endif
 
     {
         esp_console_cmd_t ask_cmd = {

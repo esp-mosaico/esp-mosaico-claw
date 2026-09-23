@@ -306,7 +306,15 @@ static esp_err_t set_web_logs_enabled(void *user_ctx, bool enabled)
 {
     esp_err_t err = app_settings_service_set_web_logs_enabled(user_ctx, enabled);
     if (err == ESP_OK) {
-        http_server_set_web_logs_enabled(enabled);
+        err = http_server_set_web_logs_enabled(enabled);
+        if (err != ESP_OK && enabled) {
+            esp_err_t rollback_err = app_settings_service_set_web_logs_enabled(user_ctx, false);
+            if (rollback_err != ESP_OK) {
+                ESP_LOGE(TAG, "rollback Web live logs setting failed: %s", esp_err_to_name(rollback_err));
+            }
+        }
+    }
+    if (err == ESP_OK) {
         ESP_LOGI(TAG, "Web live logs %s", enabled ? "enabled" : "disabled");
     }
     return err;

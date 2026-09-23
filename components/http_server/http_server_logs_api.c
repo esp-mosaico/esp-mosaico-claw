@@ -49,18 +49,26 @@ typedef struct {
     log_item_t item;
 } log_send_job_t;
 
-static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
-static httpd_handle_t s_httpd;
-static QueueHandle_t s_queue;
-static TaskHandle_t s_sender_task;
-static log_client_t s_clients[LOG_WS_MAX_CLIENTS];
-static atomic_uint s_active_clients;
-static atomic_bool s_enabled;
-static uint32_t s_next_generation;
-static unsigned s_pending_work;
-static bool s_sender_stop_requested;
-static bool s_hook_installed;
-static vprintf_like_t s_previous_vprintf = vprintf;
+typedef struct {
+    portMUX_TYPE lock;
+    httpd_handle_t server;
+    QueueHandle_t queue;
+    TaskHandle_t sender_task;
+    log_client_t clients[LOG_WS_MAX_CLIENTS];
+    atomic_uint active_clients;
+    atomic_uint capture_users;
+    atomic_uint pending_work;
+    atomic_bool enabled;
+    atomic_flag lifecycle_lock;
+    uint32_t next_generation;
+    vprintf_like_t previous_vprintf;
+} log_state_t;
+
+static log_state_t s_log = {
+    .lock = portMUX_INITIALIZER_UNLOCKED,
+    .lifecycle_lock = ATOMIC_FLAG_INIT,
+    .previous_vprintf = vprintf,
+};
 
 static size_t log_utf8_prefix_len(const char *text, size_t len)
 {
@@ -80,16 +88,16 @@ static size_t log_utf8_prefix_len(const char *text, size_t len)
 static bool log_client_is_current(const log_client_t *client, httpd_handle_t server)
 {
     bool current = false;
-    portENTER_CRITICAL(&s_lock);
-    if (s_httpd == server && atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
+    portENTER_CRITICAL(&s_log.lock);
+    if (s_log.server == server && atomic_load_explicit(&s_log.enabled, memory_order_relaxed)) {
         for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
-            if (s_clients[i].fd == client->fd && s_clients[i].generation == client->generation) {
+            if (s_log.clients[i].fd == client->fd && s_log.clients[i].generation == client->generation) {
                 current = true;
                 break;
             }
         }
     }
-    portEXIT_CRITICAL(&s_lock);
+    portEXIT_CRITICAL(&s_log.lock);
     return current;
 }
 
@@ -97,15 +105,15 @@ static void __attribute__((noinline)) log_capture(const char *format, va_list ar
 {
     log_item_t item = {0};
 
-    portENTER_CRITICAL(&s_lock);
-    if (s_httpd && s_queue && atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
+    portENTER_CRITICAL(&s_log.lock);
+    if (s_log.server && s_log.queue && atomic_load_explicit(&s_log.enabled, memory_order_relaxed)) {
         for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
-            if (s_clients[i].fd >= 0) {
-                item.clients[item.client_count++] = s_clients[i];
+            if (s_log.clients[i].fd >= 0) {
+                item.clients[item.client_count++] = s_log.clients[i];
             }
         }
     }
-    portEXIT_CRITICAL(&s_lock);
+    portEXIT_CRITICAL(&s_log.lock);
 
     if (item.client_count) {
         int written = vsnprintf(item.text, sizeof(item.text), format, args);
@@ -115,24 +123,28 @@ static void __attribute__((noinline)) log_capture(const char *format, va_list ar
                 item.len = log_utf8_prefix_len(item.text, item.len);
             }
             /* No waiting, allocation, or logging on the producer path. */
-            (void)xQueueSend(s_queue, &item, 0);
+            (void)xQueueSend(s_log.queue, &item, 0);
         }
     }
 }
 
 static int logs_vprintf(const char *format, va_list args)
 {
-    if (!atomic_load_explicit(&s_enabled, memory_order_relaxed) ||
-        atomic_load_explicit(&s_active_clients, memory_order_relaxed) == 0) {
-        return s_previous_vprintf(format, args);
+    atomic_fetch_add_explicit(&s_log.capture_users, 1, memory_order_acquire);
+    if (!atomic_load_explicit(&s_log.enabled, memory_order_relaxed) ||
+        atomic_load_explicit(&s_log.active_clients, memory_order_relaxed) == 0) {
+        int result = s_log.previous_vprintf(format, args);
+        atomic_fetch_sub_explicit(&s_log.capture_users, 1, memory_order_release);
+        return result;
     }
 
     /* The original sink consumes args. Keep an independent copy for the web stream. */
     va_list copy;
     va_copy(copy, args);
-    int result = s_previous_vprintf(format, args);
+    int result = s_log.previous_vprintf(format, args);
     log_capture(format, copy);
     va_end(copy);
+    atomic_fetch_sub_explicit(&s_log.capture_users, 1, memory_order_release);
     return result;
 }
 
@@ -156,9 +168,7 @@ static void log_send_job_run(void *arg)
         }
     }
 
-    portENTER_CRITICAL(&s_lock);
-    --s_pending_work;
-    portEXIT_CRITICAL(&s_lock);
+    atomic_fetch_sub_explicit(&s_log.pending_work, 1, memory_order_relaxed);
     free(job);
 }
 
@@ -167,32 +177,21 @@ static void log_sender_task(void *arg)
     log_item_t item;
     (void)arg;
 
-    while (true) {
-        if (xQueueReceive(s_queue, &item, pdMS_TO_TICKS(100)) != pdTRUE) {
-            bool stop_requested;
-            portENTER_CRITICAL(&s_lock);
-            stop_requested = s_sender_stop_requested;
-            portEXIT_CRITICAL(&s_lock);
-            if (stop_requested) {
-                break;
-            }
-            continue;
+    while (xQueueReceive(s_log.queue, &item, portMAX_DELAY) == pdTRUE) {
+        if (item.client_count == 0) {
+            break;
         }
 
         httpd_handle_t server;
-        portENTER_CRITICAL(&s_lock);
-        if (s_sender_stop_requested) {
-            portEXIT_CRITICAL(&s_lock);
-            break;
-        }
-        server = s_httpd;
-        if (server && s_pending_work < LOG_MAX_PENDING_WORK) {
-            ++s_pending_work;
-        } else {
-            server = NULL;
-        }
-        portEXIT_CRITICAL(&s_lock);
+        portENTER_CRITICAL(&s_log.lock);
+        server = s_log.server;
+        portEXIT_CRITICAL(&s_log.lock);
         if (!server) {
+            continue;
+        }
+        unsigned pending = atomic_fetch_add_explicit(&s_log.pending_work, 1, memory_order_relaxed);
+        if (pending >= LOG_MAX_PENDING_WORK) {
+            atomic_fetch_sub_explicit(&s_log.pending_work, 1, memory_order_relaxed);
             continue;
         }
 
@@ -203,71 +202,69 @@ static void log_sender_task(void *arg)
         }
         if (!job || httpd_queue_work(server, log_send_job_run, job) != ESP_OK) {
             free(job);
-            portENTER_CRITICAL(&s_lock);
-            --s_pending_work;
-            portEXIT_CRITICAL(&s_lock);
+            atomic_fetch_sub_explicit(&s_log.pending_work, 1, memory_order_relaxed);
         }
     }
 
-    portENTER_CRITICAL(&s_lock);
-    if (s_sender_task == xTaskGetCurrentTaskHandle()) {
-        s_sender_task = NULL;
+    portENTER_CRITICAL(&s_log.lock);
+    if (s_log.sender_task == xTaskGetCurrentTaskHandle()) {
+        s_log.sender_task = NULL;
     }
-    portEXIT_CRITICAL(&s_lock);
+    portEXIT_CRITICAL(&s_log.lock);
     vTaskDelete(NULL);
 }
 
 static bool log_ws_add(int fd)
 {
     bool added = false;
-    portENTER_CRITICAL(&s_lock);
-    if (s_httpd && atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
+    portENTER_CRITICAL(&s_log.lock);
+    if (s_log.server && atomic_load_explicit(&s_log.enabled, memory_order_relaxed)) {
         for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
-            if (s_clients[i].fd == fd) {
+            if (s_log.clients[i].fd == fd) {
                 added = true;
                 break;
             }
         }
         if (!added) {
             for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
-                if (s_clients[i].fd < 0) {
-                    s_clients[i].fd = fd;
-                    s_clients[i].generation = ++s_next_generation;
-                    atomic_fetch_add_explicit(&s_active_clients, 1, memory_order_relaxed);
+                if (s_log.clients[i].fd < 0) {
+                    s_log.clients[i].fd = fd;
+                    s_log.clients[i].generation = ++s_log.next_generation;
+                    atomic_fetch_add_explicit(&s_log.active_clients, 1, memory_order_relaxed);
                     added = true;
                     break;
                 }
             }
         }
     }
-    portEXIT_CRITICAL(&s_lock);
+    portEXIT_CRITICAL(&s_log.lock);
     return added;
 }
 
 void http_server_logs_ws_fd_remove(int fd)
 {
-    portENTER_CRITICAL(&s_lock);
+    portENTER_CRITICAL(&s_log.lock);
     for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
-        if (s_clients[i].fd == fd) {
-            s_clients[i].fd = -1;
-            atomic_fetch_sub_explicit(&s_active_clients, 1, memory_order_relaxed);
+        if (s_log.clients[i].fd == fd) {
+            s_log.clients[i].fd = -1;
+            atomic_fetch_sub_explicit(&s_log.active_clients, 1, memory_order_relaxed);
             break;
         }
     }
-    portEXIT_CRITICAL(&s_lock);
+    portEXIT_CRITICAL(&s_log.lock);
 }
 
 static void log_close_disabled_clients(void *arg)
 {
     httpd_handle_t server = arg;
     log_client_t clients[LOG_WS_MAX_CLIENTS];
-    portENTER_CRITICAL(&s_lock);
-    if (s_httpd != server || atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
-        portEXIT_CRITICAL(&s_lock);
+    portENTER_CRITICAL(&s_log.lock);
+    if (s_log.server != server || atomic_load_explicit(&s_log.enabled, memory_order_relaxed)) {
+        portEXIT_CRITICAL(&s_log.lock);
         return;
     }
-    memcpy(clients, s_clients, sizeof(clients));
-    portEXIT_CRITICAL(&s_lock);
+    memcpy(clients, s_log.clients, sizeof(clients));
+    portEXIT_CRITICAL(&s_log.lock);
     /* Executed on HTTPD's task so descriptors cannot be reused mid-close. */
     for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
         if (clients[i].fd >= 0) {
@@ -277,35 +274,100 @@ static void log_close_disabled_clients(void *arg)
     }
 }
 
-void http_server_set_web_logs_enabled(bool enabled)
+static esp_err_t log_resources_start(void)
 {
-    portENTER_CRITICAL(&s_lock);
-    atomic_store_explicit(&s_enabled, enabled, memory_order_relaxed);
-    httpd_handle_t server = s_httpd;
-    if (!enabled) {
-        /* Invalidate queued log items even if logging is quickly re-enabled. */
-        for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
-            s_clients[i].generation = ++s_next_generation;
-        }
+    if (s_log.queue) {
+        return ESP_OK;
     }
-    portEXIT_CRITICAL(&s_lock);
-    if (!enabled && server) {
-        /* The capture/send gates already deny logs if this queue is busy. */
+
+    s_log.queue = xQueueCreate(LOG_QUEUE_DEPTH, sizeof(log_item_t));
+    if (!s_log.queue) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    if (xTaskCreate(log_sender_task, "http_log", 4096, NULL, 3, &s_log.sender_task) != pdPASS) {
+        vQueueDelete(s_log.queue);
+        s_log.queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_log.previous_vprintf = esp_log_set_vprintf(logs_vprintf);
+    atomic_store_explicit(&s_log.enabled, true, memory_order_release);
+    return ESP_OK;
+}
+
+static void log_resources_stop(void)
+{
+    atomic_store_explicit(&s_log.enabled, false, memory_order_release);
+
+    portENTER_CRITICAL(&s_log.lock);
+    for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
+        s_log.clients[i].generation = ++s_log.next_generation;
+    }
+    portEXIT_CRITICAL(&s_log.lock);
+
+    esp_log_set_vprintf(s_log.previous_vprintf);
+    while (atomic_load_explicit(&s_log.capture_users, memory_order_acquire) != 0) {
+        vTaskDelay(1);
+    }
+
+    log_item_t stop_item = {0};
+    xQueueReset(s_log.queue);
+    (void)xQueueSend(s_log.queue, &stop_item, portMAX_DELAY);
+
+    portENTER_CRITICAL(&s_log.lock);
+    bool sender_running = s_log.sender_task != NULL;
+    portEXIT_CRITICAL(&s_log.lock);
+    while (sender_running) {
+        vTaskDelay(1);
+        portENTER_CRITICAL(&s_log.lock);
+        sender_running = s_log.sender_task != NULL;
+        portEXIT_CRITICAL(&s_log.lock);
+    }
+
+    vQueueDelete(s_log.queue);
+    s_log.queue = NULL;
+}
+
+esp_err_t http_server_set_web_logs_enabled(bool enabled)
+{
+    while (atomic_flag_test_and_set_explicit(&s_log.lifecycle_lock, memory_order_acquire)) {
+        vTaskDelay(1);
+    }
+    if (enabled == atomic_load_explicit(&s_log.enabled, memory_order_acquire)) {
+        atomic_flag_clear_explicit(&s_log.lifecycle_lock, memory_order_release);
+        return ESP_OK;
+    }
+
+    httpd_handle_t server;
+    portENTER_CRITICAL(&s_log.lock);
+    server = s_log.server;
+    portEXIT_CRITICAL(&s_log.lock);
+    if (enabled) {
+        esp_err_t err = server ? log_resources_start() : ESP_ERR_INVALID_STATE;
+        atomic_flag_clear_explicit(&s_log.lifecycle_lock, memory_order_release);
+        return err;
+    }
+
+    log_resources_stop();
+    if (server) {
         (void)httpd_queue_work(server, log_close_disabled_clients, server);
     }
+    atomic_flag_clear_explicit(&s_log.lifecycle_lock, memory_order_release);
+    return ESP_OK;
 }
 
 static esp_err_t log_status_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_sendstr(req, atomic_load_explicit(&s_enabled, memory_order_relaxed)
+    return httpd_resp_sendstr(req, atomic_load_explicit(&s_log.enabled, memory_order_relaxed)
         ? "{\"enabled\":true}" : "{\"enabled\":false}");
 }
 
 static esp_err_t log_ws_pre_handshake(httpd_req_t *req)
 {
-    if (atomic_load_explicit(&s_enabled, memory_order_relaxed)) {
+    if (atomic_load_explicit(&s_log.enabled, memory_order_relaxed)) {
         return ESP_OK;
     }
     (void)httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Live logs are disabled in Settings > Debug");
@@ -382,74 +444,29 @@ esp_err_t http_server_register_logs_routes(httpd_handle_t server)
 
 esp_err_t http_server_logs_start(httpd_handle_t server)
 {
+    portENTER_CRITICAL(&s_log.lock);
+    s_log.server = server;
+    for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
+        s_log.clients[i].fd = -1;
+    }
+    atomic_store_explicit(&s_log.active_clients, 0, memory_order_relaxed);
+    portEXIT_CRITICAL(&s_log.lock);
+
     app_system_config_t config;
     esp_err_t config_err = app_system_config_load(&config);
-    /* Missing/corrupt storage must never opt the device into log exposure. */
-    http_server_set_web_logs_enabled(config_err == ESP_OK && config.web_logs_enabled);
-    if (!s_queue) {
-        s_queue = xQueueCreate(LOG_QUEUE_DEPTH, sizeof(log_item_t));
-        if (!s_queue) {
-            return ESP_ERR_NO_MEM;
-        }
-    }
-
-    portENTER_CRITICAL(&s_lock);
-    s_sender_stop_requested = false;
-    portEXIT_CRITICAL(&s_lock);
-
-    if (!s_sender_task && xTaskCreate(log_sender_task, "http_log", 4096, NULL, 3, &s_sender_task) != pdPASS) {
-        portENTER_CRITICAL(&s_lock);
-        s_sender_stop_requested = true;
-        portEXIT_CRITICAL(&s_lock);
-        return ESP_ERR_NO_MEM;
-    }
-
-    xQueueReset(s_queue);
-
-    portENTER_CRITICAL(&s_lock);
-    s_httpd = server;
-    for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
-        s_clients[i].fd = -1;
-    }
-    atomic_store_explicit(&s_active_clients, 0, memory_order_relaxed);
-    portEXIT_CRITICAL(&s_lock);
-
-    if (!s_hook_installed) {
-        s_previous_vprintf = esp_log_set_vprintf(logs_vprintf);
-        s_hook_installed = true;
-    }
-    return ESP_OK;
+    /* Missing or corrupt storage must never opt the device into log exposure. */
+    return config_err == ESP_OK && config.web_logs_enabled ? http_server_set_web_logs_enabled(true) : ESP_OK;
 }
 
 void http_server_logs_stop(void)
 {
-    bool sender_running;
-    bool hook_installed;
+    (void)http_server_set_web_logs_enabled(false);
 
-    portENTER_CRITICAL(&s_lock);
-    s_httpd = NULL;
-    s_sender_stop_requested = true;
+    portENTER_CRITICAL(&s_log.lock);
+    s_log.server = NULL;
     for (size_t i = 0; i < LOG_WS_MAX_CLIENTS; ++i) {
-        s_clients[i].fd = -1;
+        s_log.clients[i].fd = -1;
     }
-    atomic_store_explicit(&s_active_clients, 0, memory_order_relaxed);
-    sender_running = s_sender_task != NULL;
-    hook_installed = s_hook_installed;
-    portEXIT_CRITICAL(&s_lock);
-
-    if (s_queue) {
-        xQueueReset(s_queue);
-    }
-
-    while (sender_running) {
-        vTaskDelay(1);
-        portENTER_CRITICAL(&s_lock);
-        sender_running = s_sender_task != NULL;
-        portEXIT_CRITICAL(&s_lock);
-    }
-
-    if (hook_installed) {
-        esp_log_set_vprintf(s_previous_vprintf);
-        s_hook_installed = false;
-    }
+    atomic_store_explicit(&s_log.active_clients, 0, memory_order_relaxed);
+    portEXIT_CRITICAL(&s_log.lock);
 }

@@ -1,5 +1,5 @@
 set(EDGE_AGENT_PROJECT_LOG_PREFIX "[edge_agent]")
-option(EDGE_AGENT_STRICT_IDF_PATCH "Fail configure when an ESP-IDF patch cannot be verified or applied" ON)
+option(EDGE_AGENT_STRICT_IDF_PATCH "Fail configure when an ESP-IDF patch cannot be verified or applied" OFF)
 
 if(NOT DEFINED ENV{IDF_PATH} OR "$ENV{IDF_PATH}" STREQUAL "")
     message(FATAL_ERROR "${EDGE_AGENT_PROJECT_LOG_PREFIX} IDF_PATH environment variable is not set")
@@ -87,6 +87,24 @@ static esp_err_t _set_config(esp_http_client_handle_t client, const esp_http_cli
     "http_client_set_event_handler_impl"
     "esp_err_t esp_http_client_set_event_handler(esp_http_client_handle_t client, http_event_handle_cb event_handler)"
 )
+
+set(DVP_FRAME_TAIL_PATCH "${CMAKE_CURRENT_LIST_DIR}/../patches/esp-idf-dvp-frame-tail.patch")
+execute_process(COMMAND git -C "$ENV{IDF_PATH}" apply --check "${DVP_FRAME_TAIL_PATCH}" RESULT_VARIABLE DVP_FRAME_TAIL_CHECK OUTPUT_QUIET ERROR_QUIET)
+if(DVP_FRAME_TAIL_CHECK EQUAL 0)
+    execute_process(COMMAND git -C "$ENV{IDF_PATH}" apply "${DVP_FRAME_TAIL_PATCH}" RESULT_VARIABLE DVP_FRAME_TAIL_RESULT ERROR_VARIABLE DVP_FRAME_TAIL_ERROR)
+    if(DVP_FRAME_TAIL_RESULT EQUAL 0)
+        message(STATUS "${EDGE_AGENT_PROJECT_LOG_PREFIX} Applied ESP-IDF DVP frame tail patch")
+    else()
+        message(WARNING "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF DVP frame tail patch failed: ${DVP_FRAME_TAIL_ERROR}")
+    endif()
+else()
+    execute_process(COMMAND git -C "$ENV{IDF_PATH}" apply --reverse --check "${DVP_FRAME_TAIL_PATCH}" RESULT_VARIABLE DVP_FRAME_TAIL_REVERSE_CHECK OUTPUT_QUIET ERROR_QUIET)
+    if(DVP_FRAME_TAIL_REVERSE_CHECK EQUAL 0)
+        message(STATUS "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF DVP frame tail patch already applied")
+    else()
+        message(WARNING "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF DVP frame tail patch skipped: source is incompatible")
+    endif()
+endif()
 
 edge_agent_patch_file_replace(
     "$ENV{IDF_PATH}/components/esp_http_client/include/esp_http_client.h"

@@ -42,6 +42,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_check.h"
+#include "esp_lcd_touch_mux.h"
 #include "esp_system.h"
 #include "esp_board_manager_includes.h"
 #include "captive_dns.h"
@@ -799,6 +800,27 @@ static void main_restore_display_brightness(void)
     }
 }
 
+static esp_err_t main_install_touch_mux(void)
+{
+#if CONFIG_ESP_BOARD_DEV_LCD_TOUCH_SUPPORT
+    void *device_handle = NULL;
+    ESP_RETURN_ON_ERROR(esp_board_manager_get_device_handle(ESP_BOARD_DEVICE_NAME_LCD_TOUCH, &device_handle), TAG,
+                        "Get LCD touch handle failed");
+    dev_lcd_touch_handles_t *touch_handles = device_handle;
+    ESP_RETURN_ON_FALSE(touch_handles != NULL && touch_handles->touch_handle != NULL, ESP_ERR_INVALID_STATE, TAG,
+                        "LCD touch handle is invalid");
+
+    esp_lcd_touch_handle_t mux = NULL;
+    esp_lcd_touch_mux_config_t config = ESP_LCD_TOUCH_MUX_CONFIG_DEFAULT();
+    config.own_physical_handle = true;
+    ESP_RETURN_ON_ERROR(esp_lcd_touch_mux_new(touch_handles->touch_handle, &config, &mux), TAG,
+                        "Create LCD touch mux failed");
+    touch_handles->touch_handle = mux;
+    ESP_LOGI(TAG, "LCD touch mux installed");
+#endif
+    return ESP_OK;
+}
+
 void app_main(void)
 {
 #if defined(ESP_MOSAICO_REMOTE_DEBUG) && APP_ENABLE_CLAW_TASKS
@@ -830,6 +852,7 @@ void app_main(void)
 #endif
     ESP_ERROR_CHECK(trial_auth_init());
     ESP_ERROR_CHECK(esp_board_manager_init());
+    ESP_ERROR_CHECK(main_install_touch_mux());
     /* Audio mixer/capture acquire their board devices through the hardware
      * registry. Initialize it before either service attempts a claim. */
     ESP_ERROR_CHECK(claw_hw_registry_init());

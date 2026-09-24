@@ -1,9 +1,0 @@
-{
-  "schema_version": 1,
-  "id": "neon_strike",
-  "entry": "scripts/main.lua",
-  "display_name": "Neon Strike",
-  "args": {},
-  "order": 21,
-  "visible": true
-}

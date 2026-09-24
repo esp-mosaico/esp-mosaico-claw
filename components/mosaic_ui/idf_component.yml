@@ -16,7 +16,7 @@ dependencies:
 
   mosaico_module_interact:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
-    version: cdf6a398
+    version: e110720fc6e
     path: components/mosaico_module_interact
 
   weather_service:

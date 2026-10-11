@@ -34,6 +34,7 @@
 #include "wechat_binding_service.h"
 #include "audio_hub.h"
 #endif
+#include "air_voice_service.h"
 #include "time.h"
 #include "nvs_flash.h"
 #include "http_server.h"
@@ -496,6 +497,25 @@ static esp_err_t main_restart_device(void)
     return ESP_OK;
 }
 
+/* Air Voice speaker volume goes through the persisted system setting so the
+ * web page, the device App and Settings stay consistent. */
+static esp_err_t main_air_voice_set_volume(void *ctx, int volume)
+{
+    (void)ctx;
+    return app_settings_service_set_volume(s_app_settings, volume, true);
+}
+
+static esp_err_t main_air_voice_get_volume(void *ctx, int *out_volume)
+{
+    (void)ctx;
+    app_settings_snapshot_t snapshot;
+    esp_err_t err = app_settings_service_get_snapshot(s_app_settings, &snapshot);
+    if (err == ESP_OK) {
+        *out_volume = snapshot.volume;
+    }
+    return err;
+}
+
 #if CONFIG_APP_CLAW_CAP_IM_WECHAT
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
 static esp_err_t main_wechat_binding_persist(
@@ -858,6 +878,10 @@ void app_main(void)
                                                   NULL));
 
     ESP_ERROR_CHECK(app_settings_service_create(&s_app_settings));
+    air_voice_service_set_volume_hooks(&(air_voice_volume_hooks_t) {
+        .set_volume = main_air_voice_set_volume,
+        .get_volume = main_air_voice_get_volume,
+    });
 
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
     ESP_ERROR_CHECK(weather_service_init(&(weather_service_config_t) {

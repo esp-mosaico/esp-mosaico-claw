@@ -39,6 +39,9 @@ const FilesPage = lazy(() =>
 const WebImPage = lazy(() =>
   import('./pages/WebImPage').then((mod) => ({ default: mod.WebImPage })),
 );
+const AirVoicePage = lazy(() =>
+  import('./pages/AirVoicePage').then((mod) => ({ default: mod.AirVoicePage })),
+);
 const SetupWizardPage = lazy(() =>
   import('./pages/SetupWizardPage').then((mod) => ({ default: mod.SetupWizardPage })),
 );
@@ -276,6 +279,9 @@ const App: Component = () => {
               </Show>
               <Show when={currentTab() === 'files'}>
                 <FilesPage />
+              </Show>
+              <Show when={currentTab() === 'airvoice'}>
+                <AirVoicePage />
               </Show>
             </Suspense>
           </Layout>

@@ -54,6 +54,10 @@ idf_component_register(
         nvs_flash
         esp_driver_jpeg
         esp_driver_ppa
+        esp-mosaico-bsp
+        audio_hub
+        audio_playback
+        air_voice_service
 )
 
 if(CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO)

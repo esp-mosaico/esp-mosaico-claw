@@ -808,6 +808,9 @@ def build_hub_objects():
     place_app_grid(objs, apps2_main, (
         {'name': 'app_interact', 'icon': 'controller', 'text': 'Interaction',
          'callback': 'app_interact'},
+        {'name': 'app_air_voice', 'text': 'Air Voice',
+         'callback': 'app_air_voice', 'button_text': 'AV',
+         'bg': '#FF6B35'},
     ))
 
     # Fixed chrome is authored after PageFlow content so it remains topmost.

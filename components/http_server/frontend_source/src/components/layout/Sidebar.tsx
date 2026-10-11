@@ -1,5 +1,6 @@
 import {
   Activity,
+  AudioWaveform,
   Blocks,
   Bot,
   DatabaseZap,
@@ -31,6 +32,7 @@ const IconCaps: Component = () => <Blocks class={iconClass} />;
 const IconSkills: Component = () => <SquareFunction class={iconClass} />;
 const IconFiles: Component = () => <Folder class={iconClass} />;
 const IconWebIm: Component = () => <MessagesSquare class={iconClass} />;
+const IconAirVoice: Component = () => <AudioWaveform class={iconClass} />;
 
 export type LeafNode = {
   kind: 'leaf';
@@ -46,7 +48,8 @@ export type LeafNode = {
     | 'navCapabilities'
     | 'navLuaModules'
     | 'navFiles'
-    | 'navWebIm';
+    | 'navWebIm'
+    | 'navAirVoice';
   icon: Component;
 };
 export type GroupNode = {
@@ -60,6 +63,7 @@ export type NavNode = LeafNode | GroupNode;
 
 export const NAV_TREE: NavNode[] = [
   { kind: 'leaf', id: 'status', labelKey: 'navStatus', icon: IconStatus },
+  { kind: 'leaf', id: 'airvoice', labelKey: 'navAirVoice', icon: IconAirVoice },
   {
     kind: 'group',
     id: 'basic-settings',

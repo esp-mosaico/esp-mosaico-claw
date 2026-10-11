@@ -1146,12 +1146,16 @@ static void writer_open(av_service_t *s, av_writer_t *w, const av_writer_msg_t *
 static void writer_close(av_service_t *s, av_writer_t *w, const av_writer_msg_t *msg)
 {
     /* The worker stopped producing before sending CLOSE: drain everything. */
+    const int64_t drain_start = esp_timer_get_time();
+    const uint64_t before = w->proc_bytes + w->raw_bytes;
     while (drain_ring(s, s->proc_ring, w->proc, &w->proc_bytes, w->chunk, 0) > 0) {
     }
     while (drain_ring(s, s->raw_ring, w->raw, &w->raw_bytes, w->chunk, 0) > 0) {
     }
+    const uint64_t drained = w->proc_bytes + w->raw_bytes - before;
     const bool had_file = w->proc != NULL;
     const int64_t close_start = esp_timer_get_time();
+    const uint32_t drain_ms = (uint32_t)((close_start - drain_start) / 1000);
     finalize_track(w->proc, w->name, AV_FILE_PART, AV_FILE_PROCESSED);
     finalize_track(w->raw, w->name, AV_FILE_RAW_PART, AV_FILE_RAW);
     w->proc = w->raw = NULL;
@@ -1169,8 +1173,9 @@ static void writer_close(av_service_t *s, av_writer_t *w, const av_writer_msg_t 
     unlock();
     (void)writer_refresh_space(s);
     if (had_file) {
-        AV_LOGI("saved %s: %" PRIu32 " ms, %" PRIu64 " + %" PRIu64 " bytes (closed in %" PRIu32 " ms)",
-                w->name, ms, w->proc_bytes, w->raw_bytes, close_ms);
+        AV_LOGI("saved %s: %" PRIu32 " ms, %" PRIu64 " + %" PRIu64 " bytes (drained %" PRIu64
+                " KB in %" PRIu32 " ms, closed in %" PRIu32 " ms)",
+                w->name, ms, w->proc_bytes, w->raw_bytes, drained / 1024U, drain_ms, close_ms);
     }
 }
 

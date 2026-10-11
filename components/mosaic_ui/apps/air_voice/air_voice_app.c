@@ -27,12 +27,15 @@
 #define VOLUME_STEP             10
 #define DELETE_CONFIRM_US       (3LL * 1000 * 1000)
 #define NOTICE_US               (2LL * 1000 * 1000)
+#define START_RETRY_US          (1000LL * 1000)
 #define TEXT_MAX                96U
 
 static const char *TAG = "air_voice_app";
 
 typedef struct {
     bool started;
+    uint32_t start_failures;
+    int64_t start_retry_at_us;
     air_voice_track_t track;
     int64_t delete_armed_until_us;
     int64_t notice_until_us;
@@ -270,6 +273,26 @@ static void handle_call(uint16_t action)
     }
 }
 
+/* The App can be restored at boot before the audio hub runs, so a failed
+ * start is retried from the tick instead of leaving the buttons dead. */
+static void try_start(void)
+{
+    const esp_err_t err = air_voice_service_start();
+    if (err != ESP_OK) {
+        if (s_view.start_failures++ == 0) {
+            ESP_LOGW(TAG, "service start failed: %s; retrying", esp_err_to_name(err));
+        }
+        s_view.start_retry_at_us = esp_timer_get_time() + START_RETRY_US;
+        return;
+    }
+    if (s_view.start_failures > 0) {
+        ESP_LOGI(TAG, "service started after %" PRIu32 " retries", s_view.start_failures);
+    }
+    s_view.started = true;
+    s_view.start_failures = 0;
+    (void)air_voice_hold(AIR_VOICE_CLIENT_UI, true);
+}
+
 static void air_voice_event(esp_gsp_handle_t ui, const struct mosaic_event *raw)
 {
     const mosaic_event_t *event = raw;
@@ -277,18 +300,14 @@ static void air_voice_event(esp_gsp_handle_t ui, const struct mosaic_event *raw)
         return;
     }
     switch (event->type) {
-    case MOSAIC_EVENT_START: {
-        const esp_err_t err = air_voice_service_start();
-        s_view.started = err == ESP_OK;
-        if (!s_view.started) {
-            ESP_LOGE(TAG, "service start failed: %s", esp_err_to_name(err));
-        } else {
-            (void)air_voice_hold(AIR_VOICE_CLIENT_UI, true);
-        }
+    case MOSAIC_EVENT_START:
+        try_start();
         render(ui);
         break;
-    }
     case MOSAIC_EVENT_TIMER:
+        if (!s_view.started && esp_timer_get_time() >= s_view.start_retry_at_us) {
+            try_start();
+        }
         render(ui);
         break;
     case MOSAIC_EVENT_UI_CALL:
@@ -304,6 +323,7 @@ static void air_voice_event(esp_gsp_handle_t ui, const struct mosaic_event *raw)
             (void)air_voice_hold(AIR_VOICE_CLIENT_UI, false);
         }
         s_view.started = false;
+        s_view.start_failures = 0;
         break;
     default:
         break;

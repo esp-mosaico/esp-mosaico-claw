@@ -46,9 +46,10 @@ After resolving the project's managed dependencies, run from the repository root
 python3 tools/tests/camera_roi/run_tests.py
 ```
 
-The host needs a C compiler with AddressSanitizer/UndefinedBehaviorSanitizer and
-CMake. The checks use the resolved sensor's actual 15/25 fps tables and the real
+The host needs a C compiler with AddressSanitizer/UndefinedBehaviorSanitizer.
+The checks use the resolved sensor's actual 15/25 fps tables and the real
 ROI implementation. They cover the unchanged registers and source area, borrowed
-storage lifetime, unsupported formats, active-buffer rejection, I/O/power cleanup,
-and the SDK capability gate. They do not replace device tests for preview,
+storage lifetime, unsupported formats, active-buffer rejection and I/O/power cleanup.
+The firmware's CMake configure and build check the pinned SDK's capabilities.
+Host checks do not replace device tests for preview,
 full-photo Album returns, capture/exit races, JPEG validity or image quality.

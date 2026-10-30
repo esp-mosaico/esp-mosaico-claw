@@ -10,7 +10,8 @@ ROOT = HERE.parents[2]
 UI = ROOT / "components/mosaic_ui"
 GSP = ROOT / "managed_components/espressif__esp-gsp/include"
 HOST = ROOT / "third-party/esp-claw/components/claw_modules/claw_endpoint/test_host/include"
-GENERATED = ROOT / "build/esp-idf/mosaic_ui/mosaic_gen/hub"
+BUILD = Path(os.environ.get("MOSAICO_TEST_BUILD_DIR", ROOT / "build"))
+GENERATED = BUILD / "esp-idf/mosaic_ui/mosaic_gen/hub"
 if not (GENERATED / "mosaic_hub_objects.h").is_file():
     raise SystemExit("Build the Mosaic UI once to generate the Hub API headers.")
 

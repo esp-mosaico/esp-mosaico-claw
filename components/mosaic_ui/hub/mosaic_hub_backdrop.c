@@ -36,12 +36,21 @@ static void draw_backdrop(const esp_gsp_canvas_surface_t *surface, void *ctx)
     if (surface->pixel_format != ESP_GSP_CANVAS_PIXEL_RGB565 ||
             surface->x + surface->width > BACKDROP_WIDTH ||
             surface->y + surface->height > BACKDROP_HEIGHT) return;
-    for (uint16_t y=0;y<surface->height;++y) {
+    uint16_t rows = surface->height;
+    size_t bytes = (size_t)surface->width * 2U;
+    if (surface->x == 0 && bytes == BACKDROP_STRIDE &&
+            surface->stride_bytes == BACKDROP_STRIDE) {
+        /* Full-width tiles are contiguous in both buffers. Keep the row
+         * path for cropped or padded surfaces, including rounded repairs. */
+        bytes *= rows;
+        rows = rows != 0;
+    }
+    for (uint16_t y=0;y<rows;++y) {
         uint8_t *out=(uint8_t *)surface->pixels+(size_t)y*surface->stride_bytes;
         if (s_pixels != NULL) memcpy(out,s_pixels+
             (size_t)(surface->y+y)*BACKDROP_STRIDE+(size_t)surface->x*2U,
-            (size_t)surface->width*2U);
-        else memset(out,0,(size_t)surface->width*2U);
+            bytes);
+        else memset(out,0,bytes);
     }
 }
 

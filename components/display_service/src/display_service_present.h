@@ -12,7 +12,7 @@
 #include "esp_err.h"
 
 /** Partition drawbuf height configured in display_service_target_build(). */
-#define DISPLAY_SERVICE_PRESENT_DRAWBUF_LINES 10
+#define DISPLAY_SERVICE_PRESENT_DRAWBUF_LINES 16
 // #define DISPLAY_SERVICE_PRESENT_DRAWBUF_LINES 30
 
 esp_err_t display_service_present_buffer_lines(

@@ -999,6 +999,29 @@ static bool settings_any_im_is_bound(void)
            s_state.snapshot.im.telegram_configured;
 }
 
+typedef struct {
+    int32_t brightness;
+    int32_t volume;
+    char network[sizeof(s_state.wlan.current_ssid)];
+    uint16_t charge;
+    bool battery_available;
+    bool llm_bound;
+    bool im_bound;
+} settings_root_values_t;
+
+/* Cache the values accepted into the command queue, not individual row
+ * handles: virtual rows can be recycled while the list scrolls. */
+static settings_root_values_t s_root_requested;
+static bool s_root_requested_valid;
+static unsigned s_root_requested_failures;
+static atomic_uint s_root_bind_failures;
+
+static void settings_root_list_reset(void)
+{
+    s_root_list = ESP_GSP_LIST_NONE;
+    s_root_requested_valid = false;
+}
+
 static gsp_err_t settings_root_list_bind_item(
     esp_gsp_handle_t ui, esp_gsp_row_t row, uint32_t item_index,
     void *user_ctx)
@@ -1050,13 +1073,48 @@ static gsp_err_t settings_root_list_bind_item(
         err = gsp_settings_settings_root_row_row_set_value_text(
             ui, row, value_text);
     }
+    if (err != ESP_GSP_OK) {
+        atomic_fetch_add_explicit(&s_root_bind_failures, 1U, memory_order_relaxed);
+    }
     return err;
 }
 
 static void settings_root_list_refresh(esp_gsp_handle_t ui)
 {
-    if (s_root_list != ESP_GSP_LIST_NONE) {
-        (void)esp_gsp_list_refresh(ui, s_root_list);
+    if (s_root_list == ESP_GSP_LIST_NONE) {
+        return;
+    }
+    const unsigned failures = atomic_load_explicit(
+        &s_root_bind_failures, memory_order_relaxed);
+    settings_root_values_t values = {
+        .brightness = s_state.brightness,
+        .volume = s_state.volume,
+        .battery_available = s_state.snapshot.battery.available,
+        .charge = s_state.snapshot.battery.available
+            ? s_state.snapshot.battery.state_of_charge : 0,
+        .llm_bound = settings_llm_is_bound(),
+        .im_bound = settings_any_im_is_bound(),
+    };
+    strlcpy(values.network, settings_wlan_summary(), sizeof(values.network));
+    if (s_root_requested_valid && failures == s_root_requested_failures &&
+            values.brightness == s_root_requested.brightness &&
+            values.volume == s_root_requested.volume &&
+            values.battery_available == s_root_requested.battery_available &&
+            values.charge == s_root_requested.charge &&
+            values.llm_bound == s_root_requested.llm_bound &&
+            values.im_bound == s_root_requested.im_bound &&
+            strcmp(values.network, s_root_requested.network) == 0) {
+        return;
+    }
+    /* refresh cancels the List's scrolling snapshot even when every bound
+     * value is unchanged. Preserve it for duplicate model notifications;
+     * changed values still update immediately, and rejected queues retry. */
+    if (esp_gsp_list_refresh(ui, s_root_list) == ESP_GSP_OK) {
+        s_root_requested = values;
+        /* Capture before enqueue: a bind failure between enqueue and this
+         * assignment must remain observable on the next refresh attempt. */
+        s_root_requested_failures = failures;
+        s_root_requested_valid = true;
     }
 }
 
@@ -3091,7 +3149,7 @@ static void settings_event(
         s_state.factory_hold_started_us = 0;
         s_state.wlan.selected_ssid[0] = '\0';
         s_state.wlan.password[0] = '\0';
-        s_root_list = ESP_GSP_LIST_NONE;
+        settings_root_list_reset();
         settings_wlan_lists_reset();
         s_detail_list = ESP_GSP_LIST_NONE;
         s_state.wlan_scan_compact_valid = false;
@@ -3156,6 +3214,9 @@ static void settings_event(
         }
         break;
     case MOSAIC_EVENT_TIMER:
+        /* Also retry asynchronous row-binding failures on the existing tick.
+         * Unchanged successful values enqueue no GUI commands. */
+        settings_root_list_refresh(ui);
         /* Also consume the asynchronous cache on the 1 s App tick. This makes
          * list delivery independent of a transiently full loader command
          * queue. settings_wlan_scan refreshes only when content changed. */
@@ -3271,7 +3332,7 @@ static void settings_event(
         (void)settings_wlan_set_loading(ui, false);
         settings_wlan_password_detach(ui);
         settings_wlan_list_park(ui);
-        s_root_list = ESP_GSP_LIST_NONE;
+        settings_root_list_reset();
         settings_wlan_lists_reset();
         s_detail_list = ESP_GSP_LIST_NONE;
         s_state.wlan_scan_compact_valid = false;

@@ -9,9 +9,13 @@ import tempfile
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 UI = ROOT / "components/mosaic_ui"
+BUILD = Path(os.environ.get("MOSAICO_TEST_BUILD_DIR", ROOT / "build"))
 HOST = ROOT / "third-party/esp-claw/components/claw_modules/claw_endpoint/test_host/include"
+if not (BUILD / "esp-idf/mosaic_ui/mosaic_gen/hub/mosaic_hub_actions.h").is_file():
+    raise SystemExit("Generate UI headers with an IDF build first, or set MOSAICO_TEST_BUILD_DIR to that build directory")
 with tempfile.TemporaryDirectory(prefix="mosaico-ui-state-") as directory:
-    for name, app in (("battery", "settings"), ("album", "album"), ("weather", "weather")):
+    for name, app in (("battery", "settings"), ("settings_refresh", "settings"),
+                      ("album", "album"), ("weather", "weather")):
         binary = Path(directory) / name
         command = [os.environ.get("CC", "cc"), "-std=gnu11", "-g", "-Wall", "-Wextra", "-Werror",
                    "-Wno-unused-function", "-Wno-unused-parameter", "-ffunction-sections", "-fdata-sections",
@@ -23,10 +27,13 @@ with tempfile.TemporaryDirectory(prefix="mosaico-ui-state-") as directory:
         command += ["-I" + str(path) for path in
                     (HERE / "include", HERE.parent / "ui_probe/include", UI / "include", UI / "common",
                      UI / "common/qrcodegen", UI / "runtime",
-                     ROOT / f"build/esp-idf/mosaic_ui/mosaic_gen/{app}",
-                     ROOT / "build/esp-idf/mosaic_ui/mosaic_gen/hub",
+                     BUILD / f"esp-idf/mosaic_ui/mosaic_gen/{app}",
+                     BUILD / "esp-idf/mosaic_ui/mosaic_gen/hub",
                      ROOT / "managed_components/espressif__esp-gsp/include", HOST)]
-        command += [str(HERE / f"test_{name}.c"), "-Wl,--gc-sections", "-o", str(binary)]
+        command += [str(HERE / f"test_{name}.c")]
+        if name == "settings_refresh":
+            command += [str(UI / "common/mosaic_settings_model.c")]
+        command += ["-Wl,--gc-sections", "-o", str(binary)]
         subprocess.run(command, check=True)
         subprocess.run([str(binary)], check=True)
     scene = json.loads((UI / "apps/album/scene/album_480.json").read_text())

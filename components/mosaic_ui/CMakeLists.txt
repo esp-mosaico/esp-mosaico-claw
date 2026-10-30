@@ -62,6 +62,8 @@ if(CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO)
         APPEND)
 endif()
 
+include("${MOSAIC_MAIN_DIR}/common/mosaic_gsp_product_fixes.cmake")
+
 # Mosaic loads its dynamic CJK fallback from the read-only SYSTEM filesystem.
 # Enable the optional esp-gsp FreeType provider without embedding another copy
 # of the font in every application bundle.

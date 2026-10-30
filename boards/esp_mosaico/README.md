@@ -18,6 +18,18 @@ ESP-Mosaico is an **ESP32-S31** development board. The hardware revision is stor
 
 There is no onboard camera or SD card. A camera module can be connected through the left expansion slot.
 
+The product cell is rated 3.7 V nominal / 65 mAh. Application gauge startup
+preserves learned FCC when the stored design capacity matches. The BQ27220
+driver is resolved through the BSP and used without a build-local source
+replacement. Recovery uses the unchanged upstream esp-mosaico-utils revision;
+its battery initialization follows that revision's BSP behavior.
+
+Qualified charge termination synchronizes remaining capacity with FCC (CSYNC).
+`CONFIG_MOSAICO_BATTERY_OVERRIDE_CHARGE_TERMINATION` defaults off: nominal cell
+voltage/capacity alone do not establish Charging Voltage, Taper Current or Taper
+Voltage. Enable it only with characterized cell/charger values and charge-cycle
+validation; the existing gauge thresholds are retained otherwise.
+
 ## Main Buses and GPIOs
 
 All I2C addresses below are 7-bit addresses.

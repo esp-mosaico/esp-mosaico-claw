@@ -65,6 +65,11 @@ static esp_err_t copy_file(const char *src_path, const char *dst_path)
     esp_err_t ret = ESP_OK;
     size_t n;
     FILE *dst = NULL;
+    char temporary_path[APP_FS_RECOVERY_PATH_SIZE];
+    int temporary_len = snprintf(temporary_path, sizeof(temporary_path),
+                                 "%s.seed.tmp", dst_path);
+    ESP_RETURN_ON_FALSE(temporary_len > 0 && temporary_len < (int)sizeof(temporary_path),
+                        ESP_ERR_INVALID_SIZE, TAG, "Recovery staging path too long");
     FILE *src = fopen(src_path, "rb");
     ESP_RETURN_ON_FALSE(src, ESP_FAIL, TAG, "open src failed: %s (%s)", src_path, strerror(errno));
 
@@ -72,7 +77,7 @@ static esp_err_t copy_file(const char *src_path, const char *dst_path)
     ESP_GOTO_ON_FALSE(buf, ESP_ERR_NO_MEM, cleanup, TAG,
                       "failed to allocate file copy buffer");
 
-    dst = fopen(dst_path, "wb");
+    dst = fopen(temporary_path, "wb");
     ESP_GOTO_ON_FALSE(dst, ESP_FAIL, cleanup, TAG, "open dst failed: %s (%s)", dst_path, strerror(errno));
 
     while ((n = fread(buf, 1, APP_FS_COPY_BUFFER_SIZE, src)) > 0) {
@@ -83,19 +88,26 @@ static esp_err_t copy_file(const char *src_path, const char *dst_path)
         ESP_LOGE(TAG, "read failed: %s (%s)", src_path, strerror(errno));
         ret = ESP_FAIL;
     }
+    if (fclose(dst) != 0) ret = ESP_FAIL;
+    dst = NULL;
+    if (ret == ESP_OK && rename(temporary_path, dst_path) != 0) {
+        ESP_LOGE(TAG, "install recovery file failed: %s (%s)", dst_path, strerror(errno));
+        ret = ESP_FAIL;
+    }
 
 cleanup:
     if (dst && fclose(dst) != 0 && ret == ESP_OK) {
         ESP_LOGE(TAG, "close failed: %s (%s)", dst_path, strerror(errno));
         ret = ESP_FAIL;
     }
+    if (ret != ESP_OK) (void)unlink(temporary_path);
     free(buf);
     fclose(src);
     return ret;
 }
 
-// Copy recovery files recursively and optionally replace existing files.
-static esp_err_t recover_files(const char *src_dir, const char *dst_dir, bool overwrite_existing)
+// Defaults become user-owned after seeding. Upgrades only fill missing files.
+static esp_err_t recover_files(const char *src_dir, const char *dst_dir)
 {
     DIR *dir = opendir(src_dir);
     if (!dir) {
@@ -144,12 +156,12 @@ static esp_err_t recover_files(const char *src_dir, const char *dst_dir, bool ov
                 continue;
             }
             // Recurse so files missing inside an existing directory are restored too.
-            esp_err_t sub_err = recover_files(src_path, dst_path, overwrite_existing);
+            esp_err_t sub_err = recover_files(src_path, dst_path);
             if (sub_err != ESP_OK) {
                 result = sub_err;
             }
         } else if (S_ISREG(st.st_mode)) {
-            if (dst_exists && !overwrite_existing) {
+            if (dst_exists) {
                 continue;  // keep whatever is already there, even if corrupt
             }
             esp_err_t copy_err = copy_file(src_path, dst_path);
@@ -227,14 +239,14 @@ static esp_err_t run_recovery(void)
     bool version_matches = read_recovery_version(s_storage_base_path, applied_version) &&
                            memcmp(system_version, applied_version, APP_FS_RECOVERY_VERSION_SIZE) == 0;
     if (!version_matches) {
-        ESP_LOGW(TAG, "Recovery version changed; overwriting recovery files on NAND");
+        ESP_LOGI(TAG, "Recovery defaults changed; preserving existing NAND files");
     }
 
-    ESP_RETURN_ON_ERROR(recover_files(recovery_path, s_storage_base_path, !version_matches), TAG, "Failed to restore recovery files");
+    ESP_RETURN_ON_ERROR(recover_files(recovery_path, s_storage_base_path), TAG, "Failed to restore recovery files");
     if (!version_matches) {
         // Commit the version only after every recovery file is copied.
         ESP_RETURN_ON_ERROR(save_recovery_version(), TAG, "Failed to save recovery version");
-        ESP_LOGW(TAG, "Recovery files overwritten for the current recovery version");
+        ESP_LOGI(TAG, "Recovery defaults seeded for the current version");
     }
     return ESP_OK;
 }

@@ -42,10 +42,11 @@ dependencies:
     path: ../third-party/esp-claw/components/common/captive_dns
 
   espressif/ramfs:
-    version: "^0.1"
+    # Preserve the validated filesystem versions during the GSP upgrade.
+    version: "0.1.0"
 
   joltwallet/littlefs:
-    version: "^1.22.0"
+    version: "1.22.3"
 
   claw_utils:
     path: ../third-party/esp-claw/components/claw_modules/claw_utils

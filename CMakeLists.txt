@@ -79,6 +79,7 @@ add_custom_target(edge_agent_prepare_system_fs_image ALL
     ${EDGE_AGENT_BOARD_FATFS_SYSTEM_COPY_COMMANDS}
     COMMAND ${CMAKE_COMMAND}
             "-DOUTPUT_FILE=${EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT}/.recovery.version"
+            "-DSEED_ROOT=${EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT}/.recovery"
             -P "${EDGE_AGENT_RECOVERY_VERSION_SCRIPT}"
     VERBATIM
 )

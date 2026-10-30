@@ -102,6 +102,10 @@ typedef struct {
 /** Immutable battery info snapshot for get()/subscriber callbacks. */
 typedef struct {
     bool available;
+    /** Last values may remain available after a failed/expired sensor read. */
+    bool stale;
+    int64_t sampled_at_us;
+    esp_err_t last_error;
     /** True when the gauge reports charge inbound. */
     bool charging;
     uint16_t state_of_charge;

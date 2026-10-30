@@ -27,3 +27,6 @@ void mosaic_app_shell_set_bottom_enabled(esp_gsp_handle_t ui, bool enabled);
 esp_gsp_err_t mosaic_app_shell_show_system_notice(
     esp_gsp_handle_t ui, mosaic_system_notice_t notice, uint32_t duration_ms);
 void mosaic_app_shell_detach(esp_gsp_handle_t ui);
+/** Clear native shell bookkeeping after the SDK has destroyed this UI.
+ * Makes no calls through the retired handle. */
+void mosaic_app_shell_forget(esp_gsp_handle_t ui);

@@ -33,7 +33,9 @@ esp_err_t mosaic_loader_invalidate_app(uint16_t app_id, uint32_t revision);
 /** Thread-safe request for a transient notice above the active App. */
 esp_err_t mosaic_loader_show_system_notice(
     mosaic_system_notice_t notice, uint32_t duration_ms);
-/** Run work on the loader task after the current runtime lock is released. */
+/** Queue bounded FIFO work from the loader task for execution after its
+ * runtime lock is released. Keep user_ctx alive until the callback runs;
+ * queued work may outlive the current App. Returns ESP_ERR_TIMEOUT when full. */
 esp_err_t mosaic_loader_defer(
     mosaic_loader_deferred_cb_t callback, void* user_ctx);
 bool mosaic_loader_poll(void);

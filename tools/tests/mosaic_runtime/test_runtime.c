@@ -56,6 +56,15 @@ typedef struct {
     unsigned replacements;
     uint32_t override_tick_ms;
     bool cancel_tick;
+    const mosaic_app_descriptor_t *fail_open;
+    const mosaic_app_descriptor_t *fail_start;
+    const mosaic_app_descriptor_t *fail_close;
+    bool partial_open;
+    bool fail_replace;
+    bool retain_replaced_app;
+    unsigned closes;
+    unsigned stops;
+    unsigned recoveries;
 } fixture_t;
 
 static esp_err_t open_app(void *ctx, const mosaic_app_descriptor_t *app,
@@ -64,11 +73,15 @@ static esp_err_t open_app(void *ctx, const mosaic_app_descriptor_t *app,
 {
     fixture_t *fixture = ctx;
     assert(fixture->active == NULL);
+    *out = NULL;
+    if (fixture->fail_open == app && !fixture->partial_open) {
+        return ESP_ERR_NO_MEM;
+    }
     fixture->active = app;
     fixture->callback = callback;
     fixture->callback_ctx = callback_ctx;
     *out = fixture;
-    return ESP_OK;
+    return fixture->fail_open == app ? ESP_ERR_NO_MEM : ESP_OK;
 }
 
 static esp_err_t replace_app(void *ctx, mosaic_platform_app_handle_t current,
@@ -78,6 +91,15 @@ static esp_err_t replace_app(void *ctx, mosaic_platform_app_handle_t current,
 {
     fixture_t *fixture = ctx;
     assert(current == fixture && fixture->active != &root_app && next != &root_app);
+    if (fixture->fail_replace) {
+        if (fixture->retain_replaced_app) {
+            *out = current;
+        } else {
+            fixture->active = NULL;
+            *out = NULL;
+        }
+        return ESP_FAIL;
+    }
     fixture->active = NULL;
     ++fixture->replacements;
     return open_app(ctx, next, callback, callback_ctx, out);
@@ -87,7 +109,20 @@ static esp_err_t close_app(void *ctx, mosaic_platform_app_handle_t app)
 {
     fixture_t *fixture = ctx;
     assert(app == fixture);
+    assert(fixture->active != NULL);
+    ++fixture->closes;
+    if (fixture->fail_close == fixture->active) {
+        return ESP_FAIL;
+    }
     fixture->active = NULL;
+    return ESP_OK;
+}
+
+static esp_err_t recover(void *ctx)
+{
+    fixture_t *fixture = ctx;
+    assert(fixture->active == NULL);
+    ++fixture->recoveries;
     return ESP_OK;
 }
 
@@ -108,12 +143,17 @@ static esp_err_t dispatch_event(void *ctx, mosaic_platform_app_handle_t app,
         ++fixture->ticks[fixture->active->id];
         fixture->sequences[fixture->active->id] = event->data.timer.sequence;
     } else if (event->type == MOSAIC_EVENT_START) {
+        if (fixture->fail_start == fixture->active) {
+            return ESP_FAIL;
+        }
         if (fixture->override_tick_ms != 0) {
             assert(mosaic_runtime_timer_start(fixture->runtime, "app_tick",
                        fixture->override_tick_ms, true) == ESP_OK);
         } else if (fixture->cancel_tick) {
             assert(mosaic_runtime_timer_cancel(fixture->runtime, "app_tick") == ESP_OK);
         }
+    } else if (event->type == MOSAIC_EVENT_STOP) {
+        ++fixture->stops;
     }
     return ESP_OK;
 }
@@ -133,6 +173,7 @@ static void start(fixture_t *fixture)
     static const mosaic_platform_ops_t platform = {
         .open_app = open_app, .replace_app = replace_app, .close_app = close_app,
         .step_app = step_app, .dispatch_event = dispatch_event, .feed_pointer = feed_pointer,
+        .recover = recover,
     };
     const mosaic_runtime_config_t config = {
         .platform = &platform, .platform_ctx = fixture,
@@ -227,6 +268,105 @@ static void test_start_callback_can_override_or_cancel_tick(void)
     puts("PASS START callbacks retain control of the default tick");
 }
 
+static void test_partial_open_keeps_owner_until_recovered(void)
+{
+    fixture_t fixture = {0};
+    start(&fixture);
+    assert(mosaic_runtime_request_app(fixture.runtime, "mosaic-hub") == ESP_OK);
+    step(&fixture, 1);
+    fixture.fail_open = &album_app;
+    fixture.partial_open = true;
+    fixture.fail_close = &album_app;
+    assert(mosaic_runtime_request_app(fixture.runtime, "album") == ESP_OK);
+    assert(mosaic_runtime_step(fixture.runtime, 2) == ESP_ERR_NO_MEM);
+    assert(fixture.active == &album_app);
+    assert(mosaic_runtime_active_app(fixture.runtime) == NULL);
+    const unsigned stopped = fixture.stops, closed = fixture.closes;
+    step(&fixture, 500001);
+    assert(fixture.closes == closed);
+    assert(mosaic_runtime_step(fixture.runtime, 500002) == ESP_FAIL);
+    assert(mosaic_runtime_step(fixture.runtime, 1000002) == ESP_FAIL);
+    assert(mosaic_runtime_step(fixture.runtime, 1500002) == ESP_FAIL);
+    step(&fixture, 5000000);
+    assert(fixture.closes == closed + 3 && fixture.stops == stopped);
+    assert(mosaic_runtime_delete(fixture.runtime) == ESP_FAIL);
+    /* Failed deletion retained the callback context and runtime for retry. */
+    fixture.fail_open = NULL;
+    fixture.fail_close = NULL;
+    assert(mosaic_runtime_back(fixture.runtime) == ESP_OK);
+    step(&fixture, 5000001);
+    assert(fixture.active == &root_app && fixture.recoveries == 1);
+    assert(mosaic_runtime_delete(fixture.runtime) == ESP_OK);
+    puts("PASS partial-open owners survive bounded recovery and failed deletion");
+}
+
+static void test_failed_replace_ownership(void)
+{
+    for (unsigned retained = 0; retained < 2; ++retained) {
+        fixture_t fixture = {0};
+        start(&fixture);
+        fixture.fail_replace = true;
+        fixture.retain_replaced_app = retained;
+        assert(mosaic_runtime_request_app(fixture.runtime, "bluetooth") == ESP_OK);
+        assert(mosaic_runtime_step(fixture.runtime, 1) == ESP_FAIL);
+        assert(fixture.stops == 1);
+        if (retained) {
+            assert(fixture.active == &music_app && fixture.closes == 0);
+            /* Late queued UI calls are ignored while the owner recovers. */
+            const esp_gsp_event_t event = { .type = ESP_GSP_EVENT_CALL,
+                                          .action_id = OPEN_BLUETOOTH };
+            fixture.callback(fixture.callback_ctx, &event);
+            step(&fixture, 500001);
+            assert(fixture.closes == 1 && fixture.recoveries == 1);
+        } else {
+            assert(fixture.closes == 0 && fixture.recoveries == 0);
+        }
+        assert(fixture.active == &root_app && fixture.stops == 1);
+        assert(mosaic_runtime_delete(fixture.runtime) == ESP_OK);
+    }
+    puts("PASS replacement failure distinguishes retained and consumed owners");
+}
+
+static void test_failed_start_closes_after_stop(void)
+{
+    fixture_t fixture = {0};
+    start(&fixture);
+    assert(mosaic_runtime_request_app(fixture.runtime, "mosaic-hub") == ESP_OK);
+    step(&fixture, 1);
+    fixture.fail_start = &album_app;
+    fixture.fail_close = &album_app;
+    assert(mosaic_runtime_request_app(fixture.runtime, "album") == ESP_OK);
+    assert(mosaic_runtime_step(fixture.runtime, 2) == ESP_FAIL);
+    const unsigned stopped = fixture.stops;
+    fixture.fail_close = NULL;
+    step(&fixture, 500002);
+    assert(fixture.active == &root_app && fixture.stops == stopped);
+    assert(mosaic_runtime_delete(fixture.runtime) == ESP_OK);
+    puts("PASS failed START stops once and retains its owner until close succeeds");
+}
+
+static void test_failed_delete_cannot_dispatch_stopped_logic(void)
+{
+    fixture_t fixture = {0};
+    start(&fixture);
+    fixture.fail_close = &music_app;
+    assert(mosaic_runtime_delete(fixture.runtime) == ESP_FAIL);
+    assert(fixture.stops == 1 && fixture.active == &music_app);
+    assert(mosaic_runtime_active_app(fixture.runtime) == NULL);
+    assert(mosaic_runtime_step(fixture.runtime, 1) == ESP_ERR_INVALID_STATE);
+    assert(mosaic_runtime_dispatch_pointer(fixture.runtime, 1, 1, true) == ESP_ERR_INVALID_STATE);
+    const esp_gsp_event_t event = { .type = ESP_GSP_EVENT_CALL,
+                                  .action_id = OPEN_BLUETOOTH };
+    fixture.callback(fixture.callback_ctx, &event);
+    assert(fixture.replacements == 0);
+    fixture.fail_close = NULL;
+    assert(mosaic_runtime_back(fixture.runtime) == ESP_OK);
+    step(&fixture, 2);
+    assert(fixture.active == &root_app && fixture.stops == 1);
+    assert(mosaic_runtime_delete(fixture.runtime) == ESP_OK);
+    puts("PASS failed deletion preserves its owner without dispatching stopped logic");
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -234,5 +374,9 @@ int main(void)
     test_direct_switch_restores_destination_ticks();
     test_zero_tick_destination_drops_previous_timer();
     test_start_callback_can_override_or_cancel_tick();
+    test_partial_open_keeps_owner_until_recovered();
+    test_failed_replace_ownership();
+    test_failed_start_closes_after_stop();
+    test_failed_delete_cannot_dispatch_stopped_logic();
     return 0;
 }

@@ -31,7 +31,8 @@ typedef struct {
 
 esp_err_t mosaic_esp_platform_create(const mosaic_esp_platform_config_t* config,
     mosaic_esp_platform_handle_t* ret_platform);
-void mosaic_esp_platform_delete(mosaic_esp_platform_handle_t platform);
+/** Failure retains the platform and all borrowed resources for retry. */
+esp_err_t mosaic_esp_platform_delete(mosaic_esp_platform_handle_t platform);
 
 const mosaic_platform_ops_t* mosaic_esp_platform_ops(void);
 

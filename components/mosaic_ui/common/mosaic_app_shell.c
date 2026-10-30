@@ -384,7 +384,14 @@ void mosaic_app_shell_detach(esp_gsp_handle_t ui)
     }
     (void)esp_gsp_set_input_interceptor(ui, NULL, NULL);
     (void)esp_gsp_set_overlay_contributor(ui, NULL, NULL);
-    if (ui == s_ui) {
+    mosaic_app_shell_forget(ui);
+}
+
+void mosaic_app_shell_forget(esp_gsp_handle_t ui)
+{
+    if (ui != NULL && ui == s_ui) {
+        s_chrome_timer = NULL;
+        s_notice_timer = NULL;
         s_ui = NULL;
         s_root_stack_key = 0;
         s_title = NULL;

@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MOSAIC_RUNTIME_RECOVERY_ATTEMPTS 3U
+#define MOSAIC_RUNTIME_RECOVERY_DELAY_US 500000LL
+
 typedef struct {
     bool active;
     bool repeat;
@@ -32,6 +35,9 @@ struct mosaic_runtime_t {
     esp_err_t pending_error;
     uint32_t timer_revision;
     bool stop_dispatched;
+    bool recovering;
+    uint8_t recovery_attempts;
+    int64_t recovery_retry_us;
     mosaic_runtime_timer_t timers[MOSAIC_RUNTIME_MAX_TIMERS];
 };
 
@@ -80,7 +86,8 @@ static void on_platform_ui_event(void* user_ctx, const esp_gsp_event_t* event)
 {
     mosaic_runtime_handle_t runtime = user_ctx;
     if (runtime == NULL || event == NULL || runtime->active == NULL
-        || runtime->platform_app == NULL) {
+        || runtime->platform_app == NULL || runtime->recovering ||
+            runtime->stop_dispatched) {
         return;
     }
 
@@ -169,8 +176,11 @@ static esp_err_t open_app(
             descriptor, on_platform_ui_event, runtime, &platform_app);
     if (err != ESP_OK) {
         if (platform_app != NULL) {
-            (void)runtime->config.platform->close_app(
-                runtime->config.platform_ctx, platform_app);
+            runtime->platform_app = platform_app;
+            runtime->active = descriptor;
+            /* START was never dispatched. The platform retains any partial
+             * preparation and its callbacks until close succeeds. */
+            runtime->stop_dispatched = true;
         }
         return err;
     }
@@ -179,6 +189,7 @@ static esp_err_t open_app(
     }
     runtime->platform_app = platform_app;
     runtime->active = descriptor;
+    runtime->stop_dispatched = false;
     runtime->pending = NULL;
     reset_app_timers(runtime, descriptor);
 
@@ -188,6 +199,15 @@ static esp_err_t open_app(
     };
     err = dispatch(runtime, &event);
     if (err != ESP_OK) {
+        const mosaic_event_t stop = {
+            .type = MOSAIC_EVENT_STOP,
+            .timestamp_us = runtime->now_us,
+        };
+        const esp_err_t stop_err = dispatch(runtime, &stop);
+        if (stop_err != ESP_OK) {
+            return stop_err;
+        }
+        runtime->stop_dispatched = true;
         esp_err_t close_err = runtime->config.platform->close_app(
             runtime->config.platform_ctx, runtime->platform_app);
         if (close_err == ESP_OK) {
@@ -203,11 +223,17 @@ static esp_err_t open_app(
 static esp_err_t replace_app(mosaic_runtime_handle_t runtime,
     const mosaic_app_descriptor_t* descriptor)
 {
+    const mosaic_platform_app_handle_t previous = runtime->platform_app;
     mosaic_platform_app_handle_t platform_app = NULL;
     esp_err_t err = runtime->config.platform->replace_app(
         runtime->config.platform_ctx, runtime->platform_app, descriptor,
         on_platform_ui_event, runtime, &platform_app);
     if (err != ESP_OK || platform_app == NULL) {
+        if (platform_app != previous) {
+            runtime->platform_app = platform_app;
+            runtime->active = platform_app != NULL ? descriptor : NULL;
+        }
+        runtime->stop_dispatched = true;
         return err != ESP_OK ? err : ESP_ERR_INVALID_STATE;
     }
     runtime->platform_app = platform_app;
@@ -274,15 +300,52 @@ esp_err_t mosaic_runtime_create(
     return ESP_OK;
 }
 
-void mosaic_runtime_delete(mosaic_runtime_handle_t runtime)
+esp_err_t mosaic_runtime_delete(mosaic_runtime_handle_t runtime)
 {
     if (runtime == NULL) {
-        return;
+        return ESP_OK;
     }
-    if (close_app(runtime) != ESP_OK) {
-        return;
+    const esp_err_t err = close_app(runtime);
+    if (err != ESP_OK) {
+        return err;
     }
     free(runtime);
+    return ESP_OK;
+}
+
+static void schedule_recovery(mosaic_runtime_handle_t runtime)
+{
+    runtime->recovering = true;
+    runtime->recovery_attempts = 0;
+    runtime->recovery_retry_us = runtime->now_us + MOSAIC_RUNTIME_RECOVERY_DELAY_US;
+    runtime->pending = NULL;
+    runtime->history_count = 0;
+    runtime->pending_error = ESP_OK;
+    runtime->pending_push_history = false;
+    runtime->pending_pop_history = false;
+    clear_timers(runtime);
+}
+
+static esp_err_t retry_recovery(mosaic_runtime_handle_t runtime)
+{
+    if (runtime->recovery_attempts >= MOSAIC_RUNTIME_RECOVERY_ATTEMPTS ||
+            runtime->now_us < runtime->recovery_retry_us) {
+        return ESP_OK;
+    }
+    ++runtime->recovery_attempts;
+    runtime->recovery_retry_us = runtime->now_us + MOSAIC_RUNTIME_RECOVERY_DELAY_US;
+    esp_err_t err = close_app(runtime);
+    if (err == ESP_OK && runtime->config.platform->recover != NULL) {
+        err = runtime->config.platform->recover(runtime->config.platform_ctx);
+    }
+    if (err == ESP_OK) {
+        err = open_app(runtime, mosaic_app_root());
+    }
+    if (err == ESP_OK) {
+        runtime->recovering = false;
+        runtime->recovery_attempts = 0;
+    }
+    return err;
 }
 
 esp_err_t mosaic_runtime_start(
@@ -291,7 +354,7 @@ esp_err_t mosaic_runtime_start(
     if (runtime == NULL || initial_app == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (runtime->platform_app != NULL) {
+    if (runtime->platform_app != NULL || runtime->recovering) {
         return ESP_ERR_INVALID_STATE;
     }
     runtime->history_count = 0;
@@ -313,6 +376,7 @@ esp_err_t mosaic_runtime_stop(mosaic_runtime_handle_t runtime)
         runtime->history_count = 0;
         runtime->pending_push_history = false;
         runtime->pending_pop_history = false;
+        runtime->recovering = false;
     }
     return err;
 }
@@ -354,11 +418,15 @@ static esp_err_t process_timers(mosaic_runtime_handle_t runtime)
 
 esp_err_t mosaic_runtime_step(mosaic_runtime_handle_t runtime, int64_t now_us)
 {
-    if (runtime == NULL || runtime->platform_app == NULL
+    if (runtime == NULL || (runtime->platform_app == NULL && !runtime->recovering)
+        || (runtime->stop_dispatched && !runtime->recovering)
         || now_us < runtime->now_us) {
         return ESP_ERR_INVALID_STATE;
     }
     runtime->now_us = now_us;
+    if (runtime->recovering) {
+        return retry_recovery(runtime);
+    }
     if (runtime->pending_error != ESP_OK) {
         esp_err_t err = runtime->pending_error;
         runtime->pending_error = ESP_OK;
@@ -381,6 +449,7 @@ esp_err_t mosaic_runtime_step(mosaic_runtime_handle_t runtime, int64_t now_us)
             };
             err = dispatch(runtime, &stop_event);
             if (err == ESP_OK) {
+                runtime->stop_dispatched = true;
                 target_open_attempted = true;
                 err = replace_app(runtime, target);
             }
@@ -393,6 +462,7 @@ esp_err_t mosaic_runtime_step(mosaic_runtime_handle_t runtime, int64_t now_us)
         }
         if (err != ESP_OK) {
             if (!target_open_attempted) {
+                schedule_recovery(runtime);
                 return err;
             }
             if (pushed_history && runtime->history_count != 0) {
@@ -400,10 +470,13 @@ esp_err_t mosaic_runtime_step(mosaic_runtime_handle_t runtime, int64_t now_us)
             }
             runtime->pending_push_history = false;
             runtime->pending_pop_history = false;
-            esp_err_t fallback_err = open_app(runtime, previous);
-            if (fallback_err != ESP_OK && previous != mosaic_app_root()) {
-                (void)open_app(runtime, mosaic_app_root());
+            if (runtime->platform_app == NULL) {
+                const esp_err_t fallback_err = open_app(runtime, mosaic_app_root());
+                if (fallback_err == ESP_OK) {
+                    return err;
+                }
             }
+            schedule_recovery(runtime);
             return err;
         }
         if (popped_history && runtime->history_count != 0) {
@@ -423,13 +496,21 @@ esp_err_t mosaic_runtime_step(mosaic_runtime_handle_t runtime, int64_t now_us)
 esp_err_t mosaic_runtime_request_app(
     mosaic_runtime_handle_t runtime, const char* name)
 {
-    if (runtime == NULL || name == NULL || runtime->active == NULL) {
+    if (runtime == NULL || name == NULL ||
+            (runtime->active == NULL && !runtime->recovering)) {
         return ESP_ERR_INVALID_ARG;
     }
     const mosaic_app_descriptor_t* descriptor
         = mosaic_app_descriptor_for_name(name);
     if (descriptor == NULL) {
         return ESP_ERR_NOT_FOUND;
+    }
+    if (runtime->recovering || runtime->stop_dispatched) {
+        /* Explicit navigation permits another bounded recovery cycle. The
+         * first recovered screen is always Home, with a valid owner. */
+        schedule_recovery(runtime);
+        runtime->recovery_retry_us = runtime->now_us;
+        return ESP_OK;
     }
     runtime->history_count = 0;
     runtime->pending_push_history = false;
@@ -440,6 +521,11 @@ esp_err_t mosaic_runtime_request_app(
 
 esp_err_t mosaic_runtime_back(mosaic_runtime_handle_t runtime)
 {
+    if (runtime != NULL && (runtime->recovering || runtime->stop_dispatched)) {
+        schedule_recovery(runtime);
+        runtime->recovery_retry_us = runtime->now_us;
+        return ESP_OK;
+    }
     if (runtime == NULL || runtime->active == NULL ||
             runtime->active->back_action == 0 ||
             runtime->active->back_action == UINT16_MAX) {
@@ -456,7 +542,8 @@ esp_err_t mosaic_runtime_back(mosaic_runtime_handle_t runtime)
 esp_err_t mosaic_runtime_dispatch_pointer(
     mosaic_runtime_handle_t runtime, int32_t x, int32_t y, bool pressed)
 {
-    if (runtime == NULL || runtime->platform_app == NULL) {
+    if (runtime == NULL || runtime->platform_app == NULL || runtime->recovering ||
+            runtime->stop_dispatched) {
         return ESP_ERR_INVALID_STATE;
     }
     const mosaic_event_t event = {
@@ -489,7 +576,8 @@ esp_err_t mosaic_runtime_notify_model_changed(
     if (runtime == NULL || runtime->platform_app == NULL || revision == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (runtime->active == NULL || runtime->active->id != app_id) {
+    if (runtime->recovering || runtime->stop_dispatched || runtime->active == NULL ||
+            runtime->active->id != app_id) {
         return ESP_OK;
     }
     const mosaic_event_t event = {
@@ -557,5 +645,6 @@ esp_err_t mosaic_runtime_timer_cancel(
 const mosaic_app_descriptor_t* mosaic_runtime_active_app(
     mosaic_runtime_handle_t runtime)
 {
-    return runtime != NULL ? runtime->active : NULL;
+    return runtime != NULL && !runtime->recovering && !runtime->stop_dispatched
+        ? runtime->active : NULL;
 }

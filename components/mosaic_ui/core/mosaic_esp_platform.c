@@ -19,6 +19,7 @@
 #include "esp_timer.h"
 #include "gsp/gsp_font_catalog.h"
 #include "mosaic_app_shell.h"
+#include "mosaic_camera.h"
 #include "mosaic_logic.h"
 
 #define MOSAIC_UI_ASSETS_PARTITION "ui_apps"
@@ -31,12 +32,14 @@
 #define MOSAIC_DYNAMIC_FONT_GLYPH_MAX_PX 40U
 #define MOSAIC_FREETYPE_RENDER_TASK_STACK_SIZE 32768U
 #define MOSAIC_DEFAULT_IMAGE_CACHE_BYTES (512U * 1024U)
+#define MOSAIC_CAMERA_TRIM_TIMEOUT_MS 1000U
 
 typedef struct {
     struct mosaic_esp_platform_t* platform;
     const mosaic_app_package_t* package;
     esp_gsp_handle_t ui;
     mosaic_logic_handle_t logic;
+    esp_gsp_esp_lcd_pause_t* prepare_pause;
     mosaic_platform_ui_event_cb_t event_cb;
     void* event_ctx;
     uint32_t generation;
@@ -62,7 +65,110 @@ struct mosaic_esp_platform_t {
     esp_gsp_esp_lcd_pause_t* screen_pause;
     uint32_t next_generation;
     bool paused;
+    bool screen_pause_complete;
+    bool destroying;
+    bool lifecycle_uncertain;
+    mosaic_esp_app_t* uncertain_next;
 };
+
+static esp_err_t platform_close_app(void* ctx,
+    mosaic_platform_app_handle_t handle);
+
+static void app_ui_destroyed(mosaic_esp_app_t* app)
+{
+    if (app != NULL) {
+        mosaic_app_shell_forget(app->ui);
+        app->ui = NULL;
+        app->shell_attached = false;
+        app->pointer_observer_attached = false;
+    }
+}
+
+static esp_err_t resume_hub(mosaic_esp_platform_handle_t platform)
+{
+    if (platform->destroying || platform->lifecycle_uncertain) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (platform->hub_session == NULL) {
+        return ESP_OK;
+    }
+    esp_gsp_handle_t hub = NULL;
+#if defined(ESP_GSP_ESP_LCD_SESSION_RESULT_INIT)
+    esp_gsp_esp_lcd_session_result_t result = ESP_GSP_ESP_LCD_SESSION_RESULT_INIT();
+    const esp_err_t err = esp_gsp_esp_lcd_resume_ex(
+        &platform->hub_session, platform->app_ui, &hub, &result);
+    if (err != ESP_OK) {
+        printf("mosaic_platform: resume stage=%d outcome=%d operation=%d recovery=%d\n",
+            (int)result.stage, (int)result.outcome,
+            (int)result.operation_error, (int)result.recovery_error);
+    }
+    const bool app_destroyed = result.outcome == ESP_GSP_ESP_LCD_SESSION_EMPTY ||
+                              result.outcome == ESP_GSP_ESP_LCD_SESSION_HUB_RESUMED;
+#else
+    const esp_err_t err = esp_gsp_esp_lcd_resume(
+        platform->hub_session, platform->app_ui, &hub);
+    const bool app_destroyed = err == ESP_OK || err == ESP_ERR_NOT_FINISHED;
+#endif
+    if (app_destroyed) {
+        platform->app_ui = NULL;
+        app_ui_destroyed(platform->active);
+    }
+    if (err == ESP_OK) {
+        platform->hub_ui = hub;
+        platform->hub_session = NULL;
+        platform->app_ui = NULL;
+    }
+    return err;
+}
+
+static esp_err_t platform_recover(void* ctx)
+{
+    mosaic_esp_platform_handle_t platform = ctx;
+    if (platform == NULL || platform->active != NULL || platform->destroying ||
+            platform->lifecycle_uncertain || platform->app_ui != NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return resume_hub(platform);
+}
+
+static esp_err_t trim_camera_replacement(mosaic_esp_app_t* app)
+{
+#if MOSAIC_GSP_HAS_SESSION_TRIM
+    if (strcmp(app->package->descriptor->name, "camera") != 0) {
+        return ESP_OK;
+    }
+    /* A direct Album -> Camera switch can retain an Album scroll snapshot.
+     * Trim the exact new UI before its START callback allocates the camera
+     * working set. Keep the pause owner if rollback cannot resume that UI. */
+    const esp_err_t pause_err = esp_gsp_esp_lcd_pause(
+        app->ui, MOSAIC_CAMERA_TRIM_TIMEOUT_MS, &app->prepare_pause);
+    esp_err_t err = pause_err;
+    if (pause_err == ESP_OK) {
+        size_t released = 0;
+        err = esp_gsp_esp_lcd_trim_paused(
+            app->prepare_pause, MOSAIC_CAMERA_TRIM_TIMEOUT_MS, &released);
+        if (err == ESP_OK) {
+            printf("mosaic_platform: released %u bytes before Camera replacement\n",
+                (unsigned)released);
+        }
+    }
+    if (app->prepare_pause != NULL) {
+        esp_gsp_handle_t resumed = NULL;
+        const esp_err_t resume_err = esp_gsp_esp_lcd_resume_paused(
+            app->prepare_pause, &resumed);
+        if (resume_err != ESP_OK) {
+            return ESP_ERR_NOT_FINISHED;
+        }
+        app->prepare_pause = NULL;
+        app->ui = resumed;
+        app->platform->app_ui = resumed;
+    }
+    return err;
+#else
+    (void)app;
+    return ESP_OK;
+#endif
+}
 
 static esp_err_t load_dynamic_font(mosaic_esp_platform_handle_t platform)
 {
@@ -385,42 +491,57 @@ static esp_err_t start_ui(mosaic_esp_platform_handle_t platform,
         return err;
     }
     if (platform->hub_ui == NULL || platform->app_ui != NULL
-        || platform->hub_session != NULL) {
+        || platform->hub_session != NULL || platform->destroying ||
+            platform->lifecycle_uncertain) {
         return ESP_ERR_INVALID_STATE;
     }
     ESP_RETURN_ON_ERROR(
         esp_gsp_esp_lcd_suspend(platform->hub_ui, &platform->hub_session),
         "mosaic_platform", "suspend hub");
+#if MOSAIC_GSP_HAS_SESSION_TRIM
+    if (strcmp(descriptor->name, "camera") == 0) {
+        size_t released = 0;
+        const esp_err_t trim_err = esp_gsp_esp_lcd_trim_session(
+            platform->hub_session, MOSAIC_CAMERA_TRIM_TIMEOUT_MS, &released);
+        if (trim_err != ESP_OK) {
+            const esp_err_t restore_err = resume_hub(platform);
+            printf("mosaic_platform: camera trim failed %s; Hub recovery %s\n",
+                esp_err_to_name(trim_err), esp_err_to_name(restore_err));
+            return restore_err != ESP_OK ? ESP_ERR_NOT_FINISHED : trim_err;
+        }
+        printf("mosaic_platform: released %u bytes before Camera\n", (unsigned)released);
+    }
+#endif
+#if defined(ESP_GSP_ESP_LCD_SESSION_RESULT_INIT)
+    esp_gsp_esp_lcd_session_result_t result = ESP_GSP_ESP_LCD_SESSION_RESULT_INIT();
+    esp_err_t err = esp_gsp_esp_lcd_start_on_session_prepared_ex(
+        &platform->hub_session, &app_config, prepare_app_ui, app,
+        &platform->app_ui, &result);
+    if (result.outcome == ESP_GSP_ESP_LCD_SESSION_HUB_RESUMED) {
+        platform->hub_ui = result.hub;
+    }
+#else
     esp_err_t err = esp_gsp_esp_lcd_start_on_session_prepared(
         platform->hub_session, &app_config, prepare_app_ui, app,
         &platform->app_ui);
+#endif
     if (err != ESP_OK) {
-        platform->hub_session = NULL;
-        app->ui = NULL;
-        app->shell_attached = false;
+#if defined(ESP_GSP_ESP_LCD_SESSION_RESULT_INIT)
+        printf("mosaic_platform: start stage=%d outcome=%d operation=%d recovery=%d\n",
+            (int)result.stage, (int)result.outcome,
+            (int)result.operation_error, (int)result.recovery_error);
+#endif
+        /* Valid empty Session and arguments are established above. An SDK
+         * startup failure consumes it only when automatic Hub recovery worked. */
+#if !defined(ESP_GSP_ESP_LCD_SESSION_RESULT_INIT)
+        if (err != ESP_ERR_NOT_FINISHED) {
+            platform->hub_session = NULL;
+        }
+#endif
+        app_ui_destroyed(app);
         return err;
     }
     app->ui = platform->app_ui;
-    return ESP_OK;
-}
-
-static esp_err_t recover_failed_open(
-    mosaic_esp_platform_handle_t platform, mosaic_esp_app_t* app)
-{
-    if (app->package->descriptor == mosaic_app_root()) {
-        return ESP_OK;
-    }
-    if (platform->hub_session != NULL && platform->app_ui != NULL) {
-        esp_gsp_handle_t hub = NULL;
-        esp_err_t err = esp_gsp_esp_lcd_resume(
-            platform->hub_session, platform->app_ui, &hub);
-        if (err != ESP_OK) {
-            return err;
-        }
-        platform->hub_ui = hub;
-        platform->hub_session = NULL;
-        platform->app_ui = NULL;
-    }
     return ESP_OK;
 }
 
@@ -432,10 +553,14 @@ static esp_err_t platform_open_app(void* ctx,
     mosaic_esp_platform_handle_t platform = ctx;
     if (platform == NULL || descriptor == NULL || event_cb == NULL
         || ret_app == NULL || platform->active != NULL
-        || platform->present_pause != NULL) {
+        || platform->present_pause != NULL || platform->screen_pause != NULL ||
+            platform->destroying || platform->lifecycle_uncertain) {
         return ESP_ERR_INVALID_ARG;
     }
     *ret_app = NULL;
+    if (platform->hub_session != NULL) {
+        return ESP_ERR_NOT_FINISHED;
+    }
     const mosaic_app_package_t* package
         = mosaic_app_package_for_descriptor(descriptor);
     if (package == NULL) {
@@ -503,17 +628,15 @@ static esp_err_t platform_open_app(void* ctx,
     return ESP_OK;
 
 fail:
-    if (app->pointer_observer_attached) {
-        (void)esp_gsp_set_pointer_observer(app->ui, NULL, NULL);
+    app->stopping = true;
+    platform->active = app;
+    const esp_err_t close_err = platform_close_app(platform, app);
+    if (close_err != ESP_OK) {
+        /* Keep the callback owner as well as the SDK token across this call. */
+        *ret_app = app;
+        printf("mosaic_platform: failed open cleanup retained: %s\n",
+            esp_err_to_name(close_err));
     }
-    (void)esp_gsp_on_event(app->ui, NULL, NULL);
-    mosaic_logic_delete(app->logic);
-    if (app->shell_attached) {
-        mosaic_app_shell_detach(app->ui);
-        app->shell_attached = false;
-    }
-    ESP_ERROR_CHECK(recover_failed_open(platform, app));
-    free(app);
     return err;
 }
 
@@ -525,8 +648,27 @@ static esp_err_t platform_close_app(
     if (platform == NULL || app == NULL || platform->active != app) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (platform->lifecycle_uncertain) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (platform->screen_pause != NULL || platform->present_pause != NULL) {
+        return ESP_ERR_NOT_FINISHED;
+    }
+    if (app->prepare_pause != NULL) {
+        esp_gsp_handle_t resumed = NULL;
+        const esp_err_t err = esp_gsp_esp_lcd_resume_paused(app->prepare_pause, &resumed);
+        if (err != ESP_OK) {
+            return err;
+        }
+        app->prepare_pause = NULL;
+        app->ui = resumed;
+        platform->app_ui = resumed;
+    }
     if (app->pointer_observer_attached) {
-        (void)esp_gsp_set_pointer_observer(app->ui, NULL, NULL);
+        const esp_err_t err = esp_gsp_set_pointer_observer(app->ui, NULL, NULL);
+        if (err != ESP_OK) {
+            return err;
+        }
         app->pointer_observer_attached = false;
     }
     if (app->shell_attached) {
@@ -534,17 +676,20 @@ static esp_err_t platform_close_app(
         app->shell_attached = false;
     }
     if (app->package->descriptor != mosaic_app_root()) {
-        esp_gsp_handle_t hub = NULL;
-        esp_err_t err = esp_gsp_esp_lcd_resume(
-            platform->hub_session, platform->app_ui, &hub);
+        const esp_err_t err = resume_hub(platform);
         if (err != ESP_OK) {
             return err;
         }
-        platform->hub_ui = hub;
-        platform->hub_session = NULL;
-        platform->app_ui = NULL;
     } else {
-        (void)esp_gsp_on_event(app->ui, NULL, NULL);
+        const esp_err_t err = esp_gsp_on_event(app->ui, NULL, NULL);
+        if (err != ESP_OK) {
+            return err;
+        }
+        /* Hub stays resident. Queue admission alone does not retire callbacks
+         * borrowing app; wait for their removal before freeing this owner. */
+        if (esp_gsp_flush(app->ui, 1000) != ESP_GSP_OK) {
+            return ESP_ERR_NOT_FINISHED;
+        }
     }
     mosaic_logic_delete(app->logic);
     platform->active = NULL;
@@ -560,13 +705,18 @@ static esp_err_t platform_replace_app(void* ctx,
 {
     mosaic_esp_platform_handle_t platform = ctx;
     mosaic_esp_app_t* old_app = current;
+    if (ret_app != NULL) {
+        *ret_app = platform != NULL && platform->active == old_app ? old_app : NULL;
+    }
     if (platform == NULL || old_app == NULL || descriptor == NULL ||
             event_cb == NULL || ret_app == NULL || platform->active != old_app ||
             old_app->package->descriptor == mosaic_app_root() ||
-            descriptor == mosaic_app_root() || platform->hub_session == NULL) {
+            descriptor == mosaic_app_root() || platform->hub_session == NULL ||
+            platform->destroying || platform->lifecycle_uncertain ||
+            platform->present_pause != NULL || platform->screen_pause != NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    *ret_app = NULL;
+    *ret_app = old_app;
     const mosaic_app_package_t* package =
         mosaic_app_package_for_descriptor(descriptor);
     const void* bundle = NULL;
@@ -590,28 +740,78 @@ static esp_err_t platform_replace_app(void* ctx,
         next_app->generation = ++platform->next_generation;
     }
     if (old_app->pointer_observer_attached) {
-        (void)esp_gsp_set_pointer_observer(old_app->ui, NULL, NULL);
+        esp_err_t detach_err = esp_gsp_set_pointer_observer(old_app->ui, NULL, NULL);
+        if (detach_err != ESP_OK) {
+            free(next_app);
+            return detach_err;
+        }
+        old_app->pointer_observer_attached = false;
     }
     if (old_app->shell_attached) {
         mosaic_app_shell_detach(old_app->ui);
+        old_app->shell_attached = false;
     }
-    mosaic_logic_delete(old_app->logic);
-    platform->active = NULL;
-    platform->app_ui = NULL;
     const esp_gsp_config_t app_config =
         app_config_for(platform, bundle, bundle_size, descriptor);
+#if defined(ESP_GSP_ESP_LCD_SESSION_RESULT_INIT)
+    esp_gsp_esp_lcd_session_result_t result = ESP_GSP_ESP_LCD_SESSION_RESULT_INIT();
+    esp_err_t err = esp_gsp_esp_lcd_replace_on_session_prepared_ex(
+        &platform->hub_session, old_app->ui, &app_config, prepare_app_ui,
+        next_app, &next_app->ui, &result);
+    if (err != ESP_OK) {
+        printf("mosaic_platform: replace stage=%d outcome=%d operation=%d recovery=%d\n",
+            (int)result.stage, (int)result.outcome,
+            (int)result.operation_error, (int)result.recovery_error);
+        if (result.outcome == ESP_GSP_ESP_LCD_SESSION_UNCHANGED ||
+                result.outcome == ESP_GSP_ESP_LCD_SESSION_APP_RETAINED) {
+            old_app->stopping = true;
+            free(next_app);
+            return err;
+        }
+        if (result.outcome == ESP_GSP_ESP_LCD_SESSION_EMPTY ||
+                result.outcome == ESP_GSP_ESP_LCD_SESSION_HUB_RESUMED) {
+            app_ui_destroyed(old_app);
+            app_ui_destroyed(next_app);
+            mosaic_logic_delete(old_app->logic);
+            free(old_app);
+            free(next_app);
+            platform->active = NULL;
+            platform->app_ui = NULL;
+            *ret_app = NULL;
+            if (result.outcome == ESP_GSP_ESP_LCD_SESSION_HUB_RESUMED) {
+                platform->hub_ui = result.hub;
+            }
+            return err;
+        }
+        platform->lifecycle_uncertain = true;
+        platform->uncertain_next = next_app;
+        old_app->stopping = true;
+        return err;
+    }
+#else
     esp_err_t err = esp_gsp_esp_lcd_replace_on_session_prepared(
         platform->hub_session, old_app->ui, &app_config, prepare_app_ui,
         next_app, &next_app->ui);
-    free(old_app);
     if (err != ESP_OK) {
-        platform->hub_ui = NULL;
-        platform->hub_session = NULL;
-        free(next_app);
+        /* The legacy API cannot distinguish a retained old App from an
+         * already consumed Session for every error. Preserve both callback
+         * owners and stop lifecycle calls until an explicit SDK result is
+         * available; never probe a possibly freed Token. */
+        platform->lifecycle_uncertain = true;
+        platform->uncertain_next = next_app;
+        old_app->stopping = true;
         return err;
     }
+#endif
+    mosaic_logic_delete(old_app->logic);
+    free(old_app);
+    platform->active = NULL;
+    *ret_app = NULL;
     platform->app_ui = next_app->ui;
-    err = esp_gsp_on_event(next_app->ui, on_gsp_event, next_app);
+    err = trim_camera_replacement(next_app);
+    if (err == ESP_OK) {
+        err = esp_gsp_on_event(next_app->ui, on_gsp_event, next_app);
+    }
     const void* program = NULL;
     size_t program_size = 0;
     if (err == ESP_OK && package->logic_entry != NULL) {
@@ -634,21 +834,11 @@ static esp_err_t platform_replace_app(void* ctx,
         next_app->pointer_observer_attached = err == ESP_OK;
     }
     if (err != ESP_OK) {
-        esp_gsp_handle_t hub = NULL;
-        if (next_app->pointer_observer_attached) {
-            (void)esp_gsp_set_pointer_observer(next_app->ui, NULL, NULL);
+        next_app->stopping = true;
+        platform->active = next_app;
+        if (platform_close_app(platform, next_app) != ESP_OK) {
+            *ret_app = next_app;
         }
-        (void)esp_gsp_on_event(next_app->ui, NULL, NULL);
-        mosaic_logic_delete(next_app->logic);
-        if (next_app->shell_attached) {
-            mosaic_app_shell_detach(next_app->ui);
-        }
-        (void)esp_gsp_esp_lcd_resume(
-            platform->hub_session, next_app->ui, &hub);
-        platform->hub_ui = hub;
-        platform->hub_session = NULL;
-        platform->app_ui = NULL;
-        free(next_app);
         return err;
     }
     platform->active = next_app;
@@ -697,6 +887,12 @@ static esp_err_t platform_dispatch_event(
     }
     if (event->type == MOSAIC_EVENT_STOP) {
         mosaic_ui_probe_cancel(app->ui);
+        if (strcmp(app->package->descriptor->name, "camera") == 0) {
+            const esp_err_t stop_err = mosaic_camera_stop(app->ui);
+            if (stop_err != ESP_OK) {
+                return stop_err;
+            }
+        }
     }
     esp_err_t err = mosaic_logic_dispatch(app->logic, event);
     if (err == ESP_OK && app->package->descriptor->on_event != NULL) {
@@ -735,6 +931,7 @@ static const mosaic_platform_ops_t s_platform_ops = {
     .step_app = platform_step_app,
     .dispatch_event = platform_dispatch_event,
     .feed_pointer = platform_feed_pointer,
+    .recover = platform_recover,
 };
 
 esp_err_t mosaic_esp_platform_create(const mosaic_esp_platform_config_t* config,
@@ -773,23 +970,52 @@ esp_err_t mosaic_esp_platform_create(const mosaic_esp_platform_config_t* config,
     return ESP_OK;
 }
 
-void mosaic_esp_platform_delete(mosaic_esp_platform_handle_t platform)
+esp_err_t mosaic_esp_platform_delete(mosaic_esp_platform_handle_t platform)
 {
     if (platform == NULL) {
-        return;
+        return ESP_OK;
+    }
+    if (platform->lifecycle_uncertain) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    if (platform->present_pause != NULL || platform->screen_pause != NULL) {
+        const esp_err_t err = platform->present_pause != NULL
+            ? mosaic_esp_platform_activate(platform, platform->config.presenter)
+            : mosaic_esp_platform_resume_screen(platform);
+        if (err != ESP_OK) {
+            return err;
+        }
     }
     if (platform->active != NULL) {
+        if (!platform->active->stopping) {
+            const mosaic_event_t stop = { .type = MOSAIC_EVENT_STOP };
+            const esp_err_t err = platform_dispatch_event(platform, platform->active, &stop);
+            if (err != ESP_OK) {
+                return err;
+            }
+        }
         esp_err_t err = platform_close_app(platform, platform->active);
         if (err != ESP_OK) {
             printf("mosaic_platform: close during delete failed: %s\n",
                 esp_err_to_name(err));
-            return;
+            return err;
         }
     }
     if (platform->hub_session != NULL) {
-        (void)esp_gsp_esp_lcd_session_destroy(platform->hub_session);
+        platform->destroying = true;
+        const esp_err_t err = esp_gsp_esp_lcd_session_destroy(platform->hub_session);
+        if (err != ESP_OK) {
+            return err;
+        }
+        platform->hub_session = NULL;
+        platform->hub_ui = NULL;
     } else if (platform->hub_ui != NULL) {
-        (void)esp_gsp_stop(platform->hub_ui);
+        platform->destroying = true;
+        const esp_err_t err = esp_gsp_stop(platform->hub_ui);
+        if (err != ESP_OK) {
+            return err;
+        }
+        platform->hub_ui = NULL;
     }
     if (platform->font_catalog != NULL) {
         gsp_font_catalog_destroy(platform->font_catalog);
@@ -799,6 +1025,7 @@ void mosaic_esp_platform_delete(mosaic_esp_platform_handle_t platform)
     }
     free(platform->dynamic_font_data);
     free(platform);
+    return ESP_OK;
 }
 
 const mosaic_platform_ops_t* mosaic_esp_platform_ops(void)
@@ -832,8 +1059,10 @@ bool mosaic_esp_platform_deliver_pointer(
 
 esp_gsp_handle_t mosaic_esp_platform_ui(mosaic_esp_platform_handle_t platform)
 {
-    return platform != NULL && platform->active != NULL && !platform->paused &&
-            platform->screen_pause == NULL
+    return platform != NULL && platform->active != NULL &&
+            !platform->active->stopping && !platform->paused &&
+            !platform->destroying && !platform->lifecycle_uncertain &&
+            platform->screen_pause == NULL && platform->present_pause == NULL
         ? platform->active->ui
         : NULL;
 }
@@ -842,13 +1071,19 @@ esp_err_t mosaic_esp_platform_quiesce(
     mosaic_esp_platform_handle_t platform, uint32_t timeout_ms)
 {
     if (platform == NULL || timeout_ms == 0 || platform->active == NULL
-        || platform->present_pause != NULL) {
+        || platform->present_pause != NULL || platform->active->ui == NULL ||
+            platform->active->stopping || platform->destroying ||
+            platform->lifecycle_uncertain) {
         return ESP_ERR_INVALID_STATE;
     }
     /* The screen-sleep pause already guarantees the presenter is quiescent. */
     if (platform->screen_pause != NULL) {
+        if (!platform->screen_pause_complete) {
+            return ESP_ERR_NOT_FINISHED;
+        }
         platform->present_pause = platform->screen_pause;
         platform->screen_pause = NULL;
+        platform->screen_pause_complete = false;
         platform->paused = true;
         return ESP_OK;
     }
@@ -866,8 +1101,9 @@ esp_err_t mosaic_esp_platform_activate(mosaic_esp_platform_handle_t platform,
 {
     if (platform == NULL || presenter == NULL
         || presenter != platform->config.presenter
-        || platform->present_pause == NULL || platform->active == NULL
-        || !platform->paused) {
+        || platform->present_pause == NULL || platform->active == NULL ||
+            platform->active->stopping || platform->destroying ||
+            platform->lifecycle_uncertain) {
         return ESP_ERR_INVALID_STATE;
     }
     esp_gsp_handle_t resumed = NULL;
@@ -889,24 +1125,29 @@ esp_err_t mosaic_esp_platform_activate(mosaic_esp_platform_handle_t platform,
 esp_err_t mosaic_esp_platform_pause_screen(
     mosaic_esp_platform_handle_t platform, uint32_t timeout_ms)
 {
-    if (platform == NULL || timeout_ms == 0 || platform->active == NULL) {
+    if (platform == NULL || timeout_ms == 0 || platform->active == NULL ||
+            platform->active->ui == NULL || platform->active->stopping ||
+            platform->destroying || platform->lifecycle_uncertain) {
         return ESP_ERR_INVALID_STATE;
     }
     if (platform->screen_pause != NULL) {
-        return ESP_OK;
+        return platform->screen_pause_complete ? ESP_OK : ESP_ERR_NOT_FINISHED;
     }
-    if (platform->paused) {
+    if (platform->paused || platform->present_pause != NULL) {
         return ESP_ERR_INVALID_STATE;
     }
     mosaic_ui_probe_cancel(platform->active->ui);
-    return esp_gsp_esp_lcd_pause(
+    const esp_err_t err = esp_gsp_esp_lcd_pause(
         platform->active->ui, timeout_ms, &platform->screen_pause);
+    platform->screen_pause_complete = err == ESP_OK;
+    return err;
 }
 
 esp_err_t mosaic_esp_platform_resume_screen(
     mosaic_esp_platform_handle_t platform)
 {
-    if (platform == NULL || platform->active == NULL) {
+    if (platform == NULL || platform->active == NULL || platform->destroying ||
+            platform->lifecycle_uncertain) {
         return ESP_ERR_INVALID_STATE;
     }
     if (platform->screen_pause == NULL) {
@@ -917,6 +1158,7 @@ esp_err_t mosaic_esp_platform_resume_screen(
         platform->screen_pause, &resumed);
     if (err == ESP_OK) {
         platform->screen_pause = NULL;
+        platform->screen_pause_complete = false;
         platform->active->ui = resumed;
         if (platform->active->package->descriptor == mosaic_app_root()) {
             platform->hub_ui = resumed;

@@ -1,3 +1,0 @@
-#pragma once
-#define ESP_ERR_NVS_TYPE_MISMATCH 0x1103
-#define ESP_ERR_NVS_INVALID_LENGTH 0x110c

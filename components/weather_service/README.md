@@ -19,7 +19,3 @@ text. `CONFIG_WEATHER_CITY_SEARCH_URL` can select a compatible licensed endpoint
 or product backend; the default public endpoint has separate commercial usage
 terms. Forecasts continue to use MET Norway. Day grouping currently follows the
 device timezone; selecting a city does not change the system clock/timezone.
-
-Run `python3 tools/tests/weather_location/run_tests.py` from the repository root
-for parser, persistence, stale-state and delayed-response regressions under
-AddressSanitizer/UndefinedBehaviorSanitizer.

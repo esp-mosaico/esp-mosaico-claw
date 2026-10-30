@@ -1,9 +1,0 @@
-dependencies:
-  idf:
-    version: ">=5.0"
-  espressif/cjson: ^1.7.19
-  claw_endpoint:
-    path: ../../../../../third-party/esp-claw/components/claw_modules/claw_endpoint
-  espressif/esp_websocket_client: ^1.6.1
-  protocol_examples_common:
-    path: ${IDF_PATH}/examples/common_components/protocol_examples_common

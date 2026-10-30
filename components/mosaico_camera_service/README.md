@@ -37,19 +37,3 @@ On ACM5, ROI alone with the earlier GSP 1.8.0 profile failed after full-photo Al
 returns. ROI with the matched public trim/session-result SDK candidate passed
 the same return path. The 1.9.0 integration replaces that prototype with the
 released API/library pair; its device regression must be recorded separately.
-
-## Regression checks
-
-After resolving the project's managed dependencies, run from the repository root:
-
-```sh
-python3 tools/tests/camera_roi/run_tests.py
-```
-
-The host needs a C compiler with AddressSanitizer/UndefinedBehaviorSanitizer.
-The checks use the resolved sensor's actual 15/25 fps tables and the real
-ROI implementation. They cover the unchanged registers and source area, borrowed
-storage lifetime, unsupported formats, active-buffer rejection and I/O/power cleanup.
-The firmware's CMake configure and build check the pinned SDK's capabilities.
-Host checks do not replace device tests for preview,
-full-photo Album returns, capture/exit races, JPEG validity or image quality.

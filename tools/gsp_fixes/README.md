@@ -28,7 +28,7 @@ The Hub allocates its 480x480 RGB565 backdrop (460,800 bytes in PSRAM) on demand
 retains it until Hub stop, and polls motion only while eligible. Allocation or
 Canvas setup failure retains ordinary rendering. Shutdown fences callbacks
 before releasing the source; an unsuccessful fence retains it and disables
-caching for that boot. Pixel tests cover contiguous, cropped and padded tiles.
+caching for that boot.
 
 Camera ROI is enabled for the supported SC101IOT mode now that the released SDK
 has the required APIs. It retains XIP, preview UI, display buffers, and 480x480

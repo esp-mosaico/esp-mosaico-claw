@@ -104,7 +104,7 @@ direct App replacement pauses, trims and resumes the exact new Camera UI before
 native START. These barriers can add entry latency and preserve resource ownership.
 PSRAM XIP remains enabled.
 
-## Scrolling and validation
+## Scrolling and diagnostics
 
 Settings compares displayed row values before publishing. Unchanged notifications
 preserve scrolling snapshots; changed rows update immediately. Rejected commands
@@ -116,9 +116,12 @@ Display staging uses 16 rows with TE and two compose buffers. Compared with
 10 rows, the two staging buffers cost 11,520 additional bytes. The selected
 configuration preserves the existing scenes and module-detection effects.
 
-See [Host regressions](../../tools/tests/README.md) for commands and coverage,
-including generated-scene checks. The [Hub diagnostics guide](../../tools/tests/hub_refresh/README.md)
-describes bounded `ui_perf` sampling and controlled replay. Host checks and
-render-task service gaps do not establish physical LCD FPS, touch-to-photon
-latency, Bluetooth continuity or measured battery current. Record device,
-firmware/configuration and workload when collecting those results.
+CLI builds expose `ui_perf start 3500` and `ui_perf read` through the normal
+console transport. Capture runs for 500–4000 ms on an active, awake UI and records
+at most 256 render-task timer intervals, P50/P95/max, frame-count delta and drag
+snapshot counters. Stopping or suspending the UI cancels sampling.
+
+Render-task service gaps include scheduling, rendering and submission delays;
+they do not establish physical LCD FPS, touch-to-photon latency, Bluetooth
+continuity or measured battery current. Use the same device, firmware/configuration
+and workload for comparisons, and reject incomplete synthetic gesture playback.

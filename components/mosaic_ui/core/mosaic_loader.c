@@ -198,7 +198,7 @@ static void process_command(const mosaic_loader_command_t* command)
                     ui, GSP_OBJ_KEY_HUB_STACK, &page) == ESP_GSP_OK &&
                     page != 0) {
                 (void)esp_gsp_stack_view_pop(
-                    ui, GSP_OBJ_KEY_HUB_STACK, false);
+                    ui, GSP_OBJ_KEY_HUB_STACK, page == MOSAIC_HUB_INSERT_PAGE);
                 return;
             }
             if (esp_gsp_page_flow_get_page(
@@ -529,7 +529,13 @@ esp_err_t mosaic_loader_pause_screen(uint32_t timeout_ms)
 
     /* Pause the current producer without changing its StackView, scroll
      * position or App lifecycle. Audio services remain owned and running. */
-    const esp_err_t err = mosaic_esp_platform_pause_screen(s_platform, timeout_ms);
+    esp_err_t err = mosaic_esp_platform_pause_screen(s_platform, timeout_ms);
+    if (err == ESP_OK && mosaic_runtime_active_app(s_runtime) == mosaic_app_root() &&
+            mosaic_hub_quiet_module_notice(mosaic_esp_platform_ui(s_platform)) != ESP_GSP_OK) {
+        /* Retain the pause token: the existing screen recovery path can
+         * resume it, rather than committing sleep with unfinished feedback. */
+        err = ESP_FAIL;
+    }
     xSemaphoreGive(s_runtime_lock);
     return err;
 }

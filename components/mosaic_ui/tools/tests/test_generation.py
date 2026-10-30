@@ -18,6 +18,42 @@ spec.loader.exec_module(builder)
 
 
 class GenerationTests(unittest.TestCase):
+    def test_module_side_feedback_keeps_runtime_animation_geometry(self):
+        path = builder.UI_ROOT / "hub/scene/gen_scenes.py"
+        scene_spec = importlib.util.spec_from_file_location("hub_side_scene", path)
+        scene = importlib.util.module_from_spec(scene_spec)
+        scene_spec.loader.exec_module(scene)
+        by_name = {obj.get("name"): obj for obj in scene.build_hub_objects()}
+        for side, outside, inside in (("left", -16, 0), ("right", 480, 464)):
+            with self.subTest(side=side):
+                strip = by_name["insert_fx_" + side]
+                self.assertTrue(strip["hidden"])
+                self.assertEqual(strip["bind"], "insert_fx_" + side + "_visible")
+                self.assertEqual(strip["bind_target"], "visible")
+                self.assertEqual(strip["x"], {"default": outside, "min": min(outside, inside), "max": max(outside, inside)})
+                self.assertEqual(strip["y"], {"default": 80, "min": 79, "max": 81})
+                self.assertEqual((strip["w"], strip["h"]), (16, 315))
+
+    def test_detection_uses_the_original_single_board_page(self):
+        path = builder.UI_ROOT / "hub/scene/gen_scenes.py"
+        scene_spec = importlib.util.spec_from_file_location("hub_scene", path)
+        scene = importlib.util.module_from_spec(scene_spec)
+        scene_spec.loader.exec_module(scene)
+        objects = scene.build_hub_objects()
+        by_name = {obj.get("name"): obj for obj in objects}
+        self.assertNotIn("insert_primary_group", by_name)
+        self.assertNotIn("insert_secondary_open", by_name)
+        self.assertNotIn("insert_second_info", by_name)
+        opening, done = by_name["insert_open"], by_name["insert_dismiss"]
+        self.assertEqual((opening["x"], opening["y"], opening["w"], opening["h"]), (64, 280, 352, 56))
+        self.assertEqual((done["x"], done["y"], done["w"], done["h"]), (64, 360, 352, 56))
+        self.assertEqual(opening["text"], "Open")
+        self.assertEqual(opening["callback"], "insert_open")
+        self.assertEqual(done["events"], [{"event": "click", "action": "stack_pop", "target_name": "hub_stack"}])
+        with tempfile.TemporaryDirectory() as directory:
+            scene.write_scene(Path(directory) / "hub.json", "hub", objects)
+        self.assertNotIn("animated", done["events"][0])
+
     def test_wlan_layouts_keep_the_last_row_reachable(self):
         path = builder.UI_ROOT / "apps/settings/scene/gen_scene.py"
         scene_spec = importlib.util.spec_from_file_location("settings_scene", path)

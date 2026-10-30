@@ -14,7 +14,9 @@
 #include "gsp_analog_clock.h"
 #include "mosaic_ui.h"
 #include "mosaic_settings.h"
+#include "mosaic_module_notice.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,9 +39,6 @@
 #define MOSAIC_INSERT_BLINK_HALF_MS  110U
 #define MOSAIC_INSERT_EXIT_MS        240U
 #define MOSAIC_INSERT_PAUSE_MS        90U
-#define MOSAIC_HUB_INSERT_PAGE       2U
-#define MOSAIC_INSERT_NAME_MAX        48U
-#define MOSAIC_INSERT_CAPABILITY_MAX  96U
 #define MOSAIC_INSERT_APP_NAME_MAX    32U
 #define MOSAIC_QUICK_TAP_SLOP          12
 #define MOSAIC_QUICK_FEEDBACK_MS      2000U
@@ -51,14 +50,6 @@ typedef enum {
     MOSAIC_LOCK_AOD,
     MOSAIC_LOCK_CHARGING,
 } mosaic_lock_mode_t;
-
-typedef struct {
-    bool pending;
-    char side;
-    char friendly_name[MOSAIC_INSERT_NAME_MAX];
-    char capability[MOSAIC_INSERT_CAPABILITY_MAX];
-    char open_app_name[MOSAIC_INSERT_APP_NAME_MAX];
-} mosaic_hub_insert_request_t;
 
 static uint8_t s_charge_percent;
 static mosaic_lock_mode_t s_lock_mode;
@@ -103,15 +94,29 @@ static bool s_weather_pending;
 static bool s_weather_seen;
 static bool s_weather_subscribed;
 #endif
-static void *s_insert_timer;
 static void *s_quick_feedback_timer;
-static char s_insert_side = 'R';
-static uint8_t s_insert_phase;
+/* Render-context state. Both sides share one sequence and at most one timer. */
+static struct {
+    esp_gsp_handle_t owner;
+    void *timer;
+    uintptr_t token;
+    uint8_t phase;
+    uint8_t dirty_mask;
+    bool automatic;
+    mosaic_module_notice_view_t cycle;
+    mosaic_module_notice_view_t completed;
+} s_insert_fx;
 static char s_insert_open_app_name[MOSAIC_INSERT_APP_NAME_MAX];
 /* Last charging sample used for edge-triggered lock follow (not continuous). */
 static bool s_lock_charge_known;
 static bool s_lock_was_charging;
-static mosaic_hub_insert_request_t s_insert_request;
+static mosaic_module_notice_t s_module_notice;
+static mosaic_module_notice_view_t s_module_notice_applied;
+static bool s_module_notice_applied_valid;
+static bool s_module_intro_active;
+static bool s_module_notice_foreground;
+static bool s_module_notice_accepting;
+static bool s_module_notice_deferred;
 static uint8_t s_quick_slot_pending;
 static bool s_quick_slot_module[2];
 static bool s_quick_slot_l_camera;
@@ -142,7 +147,9 @@ static void mosaic_hub_set_lock_mode(esp_gsp_handle_t ui,
 static bool mosaic_hub_lock_visible(void);
 static bool mosaic_hub_quick_drawer_open(esp_gsp_handle_t ui);
 
-static void mosaic_hub_insert_schedule(uint32_t delay_ms);
+static void mosaic_hub_module_notice_tick(esp_gsp_handle_t ui);
+static bool mosaic_hub_defer_refresh(esp_gsp_handle_t ui);
+static esp_gsp_err_t mosaic_hub_insert_schedule(uint32_t delay_ms);
 
 static void mosaic_hub_quick_feedback_timer_cb(
     esp_gsp_handle_t ui, void *user_ctx)
@@ -174,86 +181,141 @@ static void mosaic_hub_quick_feedback(const char *text)
         mosaic_hub_quick_feedback_timer_cb, NULL);
 }
 
-static gsp_component_key_t mosaic_hub_insert_strip(void)
+static gsp_component_key_t mosaic_hub_insert_strip(unsigned side)
 {
-    return s_insert_side == 'L' ? GSP_OBJ_KEY_INSERT_FX_LEFT
-                                : GSP_OBJ_KEY_INSERT_FX_RIGHT;
+    return side == 0 ? GSP_OBJ_KEY_INSERT_FX_LEFT : GSP_OBJ_KEY_INSERT_FX_RIGHT;
 }
 
-static uint16_t mosaic_hub_insert_strip_visible(void)
+static uint16_t mosaic_hub_insert_strip_visible(unsigned side)
 {
-    return s_insert_side == 'L' ? GSP_BIND_INSERT_FX_LEFT_VISIBLE
-                                : GSP_BIND_INSERT_FX_RIGHT_VISIBLE;
+    return side == 0 ? GSP_BIND_INSERT_FX_LEFT_VISIBLE : GSP_BIND_INSERT_FX_RIGHT_VISIBLE;
 }
 
-static void mosaic_hub_insert_reset(esp_gsp_handle_t ui)
+static esp_gsp_err_t mosaic_hub_insert_hide(esp_gsp_handle_t ui, unsigned side)
 {
-    if (ui == NULL) return;
-    if (s_insert_timer != NULL) {
-        (void)esp_gsp_timer_delete(ui, s_insert_timer);
-        s_insert_timer = NULL;
+    const gsp_component_key_t strip = mosaic_hub_insert_strip(side);
+    esp_gsp_err_t err = esp_gsp_component_stop_position_animation(ui, strip);
+    esp_gsp_err_t next = esp_gsp_component_set_position(ui, strip, side == 0 ? -16 : 480, 80);
+    if (err == ESP_GSP_OK) err = next;
+    next = esp_gsp_set_visible(ui, mosaic_hub_insert_strip_visible(side), false);
+    if (err == ESP_GSP_OK) err = next;
+    if (err == ESP_GSP_OK) s_insert_fx.dirty_mask &= (uint8_t)~(1U << side);
+    return err;
+}
+
+static esp_gsp_err_t mosaic_hub_insert_reset(esp_gsp_handle_t ui)
+{
+    /* Invalidate callbacks before deleting. A queued callback must never touch
+     * the timer or UI belonging to a newer insertion / Hub instance. */
+    ++s_insert_fx.token;
+    s_insert_fx.cycle = (mosaic_module_notice_view_t) {0};
+    s_insert_fx.phase = 0;
+    s_insert_fx.automatic = false;
+    if (ui == NULL) return ESP_GSP_OK;
+    esp_gsp_err_t err = ESP_GSP_OK;
+    if (s_insert_fx.timer != NULL) {
+        /* Context teardown owns its remaining timers. Never submit an old
+         * context's timer handle to a newly created UI. */
+        if (s_insert_fx.owner == ui) err = esp_gsp_timer_delete(ui, s_insert_fx.timer);
+        if (err == ESP_GSP_OK) s_insert_fx.timer = NULL;
     }
-    (void)esp_gsp_component_stop_position_animation(ui, GSP_OBJ_KEY_INSERT_FX_LEFT);
-    (void)esp_gsp_component_stop_position_animation(ui, GSP_OBJ_KEY_INSERT_FX_RIGHT);
-    (void)esp_gsp_component_set_position(ui, GSP_OBJ_KEY_INSERT_FX_LEFT, -16, 80);
-    (void)esp_gsp_component_set_position(ui, GSP_OBJ_KEY_INSERT_FX_RIGHT, 480, 80);
-    (void)esp_gsp_set_visible(ui, GSP_BIND_INSERT_FX_LEFT_VISIBLE, false);
-    (void)esp_gsp_set_visible(ui, GSP_BIND_INSERT_FX_RIGHT_VISIBLE, false);
-    s_insert_phase = 0;
+    for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+        const esp_gsp_err_t next = mosaic_hub_insert_hide(ui, i);
+        if (err == ESP_GSP_OK) err = next;
+    }
+    return err;
+}
+
+static void mosaic_hub_insert_finish(esp_gsp_handle_t ui)
+{
+    const bool automatic = s_insert_fx.automatic;
+    for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+        if (s_insert_fx.cycle.mask & (1U << i)) {
+            s_insert_fx.completed.mask |= 1U << i;
+            s_insert_fx.completed.generation[i] = s_insert_fx.cycle.generation[i];
+        }
+    }
+    (void)mosaic_hub_insert_reset(ui);
+    if (automatic) {
+        if (!mosaic_hub_defer_refresh(ui)) mosaic_hub_module_notice_tick(ui);
+    } else {
+        (void)esp_gsp_stack_view_push(ui, GSP_OBJ_KEY_HUB_STACK, MOSAIC_HUB_INSERT_PAGE, true);
+    }
 }
 
 static void mosaic_hub_insert_timer_cb(esp_gsp_handle_t ui, void *user_ctx)
 {
-    (void)user_ctx;
-    void *timer = s_insert_timer;
-    s_insert_timer = NULL;
-    if (timer != NULL) {
-        (void)esp_gsp_timer_delete(ui, timer);
+    if (ui != s_hub_ui || (uintptr_t)user_ctx != s_insert_fx.token ||
+            s_insert_fx.timer == NULL || s_insert_fx.cycle.mask == 0) return;
+    uint16_t page = 0;
+    bool allowed = !mosaic_hub_lock_visible() && !mosaic_hub_quick_drawer_open(ui);
+    if (s_insert_fx.automatic) {
+        allowed = allowed && s_module_notice_foreground &&
+            esp_gsp_stack_view_get_top(ui, GSP_OBJ_KEY_HUB_STACK, &page) == ESP_GSP_OK &&
+            (page == 0 || (page == MOSAIC_HUB_INSERT_PAGE && s_module_intro_active));
     }
-    const gsp_component_key_t strip = mosaic_hub_insert_strip();
-    const uint16_t visible = mosaic_hub_insert_strip_visible();
-    if (mosaic_hub_lock_visible()) {
-        mosaic_hub_insert_reset(ui);
+#if defined(ESP_PLATFORM)
+    allowed = allowed && !mosaic_ui_screen_asleep();
+#endif
+    if (!allowed) {
+        (void)mosaic_hub_quiet_module_notice(ui);
         return;
     }
-    switch (s_insert_phase++) {
-    case 0: /* entered: first half of the single blink */
-        (void)esp_gsp_set_visible(ui, visible, false);
-        mosaic_hub_insert_schedule(MOSAIC_INSERT_BLINK_HALF_MS);
-        break;
-    case 1: /* blink back on */
-        (void)esp_gsp_set_visible(ui, visible, true);
-        mosaic_hub_insert_schedule(MOSAIC_INSERT_BLINK_HALF_MS);
-        break;
-    case 2: /* return through the physical side */
-        (void)esp_gsp_component_animate_position_to(
-            ui, strip, s_insert_side == 'L' ? -16 : 480, 80,
-            MOSAIC_INSERT_EXIT_MS, ESP_GSP_EASE_IN_OUT);
-        mosaic_hub_insert_schedule(MOSAIC_INSERT_EXIT_MS);
-        break;
-    case 3:
-        (void)esp_gsp_set_visible(ui, visible, false);
-        mosaic_hub_insert_schedule(MOSAIC_INSERT_PAUSE_MS);
-        break;
-    default:
-        s_insert_phase = 0;
-        (void)esp_gsp_stack_view_push(
-            ui, GSP_OBJ_KEY_HUB_STACK, MOSAIC_HUB_INSERT_PAGE, true);
-        break;
+    esp_gsp_err_t err = esp_gsp_timer_delete(ui, s_insert_fx.timer);
+    if (err != ESP_GSP_OK) {
+        mosaic_hub_insert_finish(ui);
+        return;
     }
+    s_insert_fx.timer = NULL;
+    const uint8_t phase = s_insert_fx.phase++;
+    if (phase > 3) {
+        mosaic_hub_insert_finish(ui);
+        return;
+    }
+    for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT && err == ESP_GSP_OK; ++i) {
+        if (!(s_insert_fx.cycle.mask & (1U << i))) continue;
+        if (phase == 2) {
+            err = esp_gsp_component_animate_position_to(ui, mosaic_hub_insert_strip(i),
+                i == 0 ? -16 : 480, 80, MOSAIC_INSERT_EXIT_MS, ESP_GSP_EASE_IN_OUT);
+        } else {
+            err = esp_gsp_set_visible(ui, mosaic_hub_insert_strip_visible(i), phase == 1);
+        }
+    }
+    const uint32_t delay = phase < 2 ? MOSAIC_INSERT_BLINK_HALF_MS
+        : phase == 2 ? MOSAIC_INSERT_EXIT_MS : MOSAIC_INSERT_PAUSE_MS;
+    if (err == ESP_GSP_OK) err = mosaic_hub_insert_schedule(delay);
+    if (err != ESP_GSP_OK) mosaic_hub_insert_finish(ui);
 }
 
-static void mosaic_hub_insert_schedule(uint32_t delay_ms)
+static esp_gsp_err_t mosaic_hub_insert_schedule(uint32_t delay_ms)
 {
-    if (s_hub_ui == NULL) {
-        return;
+    if (++s_insert_fx.token == 0) ++s_insert_fx.token;
+    s_insert_fx.owner = s_hub_ui;
+    s_insert_fx.timer = esp_gsp_timer_create(s_hub_ui, delay_ms,
+        mosaic_hub_insert_timer_cb, (void *)s_insert_fx.token);
+    return s_insert_fx.timer != NULL ? ESP_GSP_OK : ESP_GSP_ERR_NO_MEM;
+}
+
+static esp_gsp_err_t mosaic_hub_insert_start(esp_gsp_handle_t ui,
+    const mosaic_module_notice_view_t *view, bool automatic)
+{
+    esp_gsp_err_t err = mosaic_hub_insert_reset(ui);
+    if (err != ESP_GSP_OK) return err;
+    s_insert_fx.cycle = *view;
+    s_insert_fx.automatic = automatic;
+    for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT && err == ESP_GSP_OK; ++i) {
+        if (!(view->mask & (1U << i))) continue;
+        s_insert_fx.dirty_mask |= 1U << i;
+        err = esp_gsp_set_visible(ui, mosaic_hub_insert_strip_visible(i), true);
+        if (err == ESP_GSP_OK) err = esp_gsp_component_animate_position_to(
+            ui, mosaic_hub_insert_strip(i), i == 0 ? 0 : 464, 80,
+            MOSAIC_INSERT_ENTER_MS, ESP_GSP_EASE_OUT);
     }
-    s_insert_timer = esp_gsp_timer_create(
-        s_hub_ui, delay_ms, mosaic_hub_insert_timer_cb, NULL);
-    if (s_insert_timer == NULL) {
-        ESP_LOGE(TAG, "Create insert animation timer failed");
-        mosaic_hub_insert_reset(s_hub_ui);
+    if (err == ESP_GSP_OK) err = mosaic_hub_insert_schedule(MOSAIC_INSERT_ENTER_MS);
+    if (err == ESP_GSP_OK && automatic) {
+        ESP_LOGI(TAG, "Runtime module side feedback started: slots=0x%x", (unsigned)view->mask);
     }
+    return err;
 }
 
 void mosaic_hub_show_board_insert(
@@ -267,8 +329,11 @@ void mosaic_hub_show_board_insert(
             mosaic_hub_quick_drawer_open(s_hub_ui)) {
         return;
     }
-    mosaic_hub_insert_reset(s_hub_ui);
-    s_insert_side = side;
+    (void)mosaic_hub_insert_reset(s_hub_ui);
+    s_insert_fx.completed = (mosaic_module_notice_view_t) {0};
+    MOSAIC_HUB_INSERT_LOCK();
+    s_module_intro_active = false;
+    MOSAIC_HUB_INSERT_UNLOCK();
     strlcpy(s_insert_open_app_name, open_app_name,
             sizeof(s_insert_open_app_name));
     (void)esp_gsp_set_text(
@@ -278,38 +343,50 @@ void mosaic_hub_show_board_insert(
         s_hub_ui, GSP_BIND_INSERT_BOARD_NAME, friendly_name);
     (void)esp_gsp_set_text(
         s_hub_ui, GSP_BIND_INSERT_BOARD_CAP, capability);
-    const gsp_component_key_t strip = mosaic_hub_insert_strip();
-    (void)esp_gsp_set_visible(
-        s_hub_ui, mosaic_hub_insert_strip_visible(), true);
-    (void)esp_gsp_component_animate_position_to(
-        s_hub_ui, strip, side == 'L' ? 0 : 464, 80,
-        MOSAIC_INSERT_ENTER_MS, ESP_GSP_EASE_OUT);
-    mosaic_hub_insert_schedule(MOSAIC_INSERT_ENTER_MS);
+    const mosaic_module_notice_view_t view = {.mask = side == 'L' ? 1U : 2U};
+    if (mosaic_hub_insert_start(s_hub_ui, &view, false) != ESP_GSP_OK) {
+        (void)mosaic_hub_insert_reset(s_hub_ui);
+        (void)esp_gsp_stack_view_push(s_hub_ui, GSP_OBJ_KEY_HUB_STACK, MOSAIC_HUB_INSERT_PAGE, true);
+    }
 }
 
-void mosaic_hub_request_board_insert(
-    char side, const char *friendly_name, const char *capability,
-    const char *open_app_name)
+void mosaic_hub_update_module(const mosaico_module_mgr_info_t *info)
 {
-    if ((side != 'L' && side != 'R') ||
-            friendly_name == NULL || capability == NULL ||
-            open_app_name == NULL) {
+    if (info == NULL || (unsigned)info->slot >= MOSAICO_MODULE_MGR_SLOT_COUNT) {
         return;
     }
-    mosaic_hub_insert_request_t request = {
-        .pending = true,
-        .side = side,
-    };
-    strlcpy(request.friendly_name, friendly_name,
-            sizeof(request.friendly_name));
-    strlcpy(request.capability, capability,
-            sizeof(request.capability));
-    strlcpy(request.open_app_name, open_app_name,
-            sizeof(request.open_app_name));
-
+    const int64_t now_us = esp_timer_get_time();
     MOSAIC_HUB_INSERT_LOCK();
-    s_insert_request = request;
+    bool allow_notice = s_module_notice_foreground && s_module_notice_accepting;
+#if defined(ESP_PLATFORM)
+    allow_notice = allow_notice && !mosaic_ui_screen_asleep();
+#endif
+    if (mosaic_module_notice_observe(&s_module_notice, info, now_us, allow_notice) &&
+            info->presence != MOSAICO_MODULE_PRESENCE_UNKNOWN) {
+        const bool occupied =
+            info->presence == MOSAICO_MODULE_PRESENCE_PRESENT &&
+            !(info->descriptor_state == MOSAICO_MODULE_DESCRIPTOR_VALID &&
+              info->eeprom.board_type == MOSAICO_BOARD_TYPE_CAMERA);
+        if (s_quick_slot_module[info->slot] != occupied) {
+            s_quick_slot_module[info->slot] = occupied;
+            s_quick_slot_pending |= 1U << info->slot;
+        }
+    }
     MOSAIC_HUB_INSERT_UNLOCK();
+}
+
+esp_gsp_err_t mosaic_hub_quiet_module_notice(esp_gsp_handle_t ui)
+{
+    s_module_notice_deferred = false;
+    MOSAIC_HUB_INSERT_LOCK();
+    s_module_notice_accepting = false;
+    mosaic_module_notice_quiet(&s_module_notice);
+    MOSAIC_HUB_INSERT_UNLOCK();
+    /* Discard transient work, but retain an already open introduction just
+     * like other foreground pages across idle screen-off. */
+    s_insert_fx.completed = (mosaic_module_notice_view_t) {0};
+    return s_insert_fx.cycle.mask != 0 || s_insert_fx.timer != NULL || s_insert_fx.dirty_mask != 0
+        ? mosaic_hub_insert_reset(ui) : ESP_GSP_OK;
 }
 
 void mosaic_hub_request_quick_slot_camera(char side, bool occupied)
@@ -320,18 +397,6 @@ void mosaic_hub_request_quick_slot_camera(char side, bool occupied)
     MOSAIC_HUB_INSERT_LOCK();
     s_quick_slot_l_camera = occupied;
     s_quick_slot_pending |= 1U;
-    MOSAIC_HUB_INSERT_UNLOCK();
-}
-
-void mosaic_hub_request_quick_slot_module(char side, bool occupied)
-{
-    if (side != 'L' && side != 'R') {
-        return;
-    }
-    const uint8_t index = side == 'R' ? 1U : 0U;
-    MOSAIC_HUB_INSERT_LOCK();
-    s_quick_slot_module[index] = occupied;
-    s_quick_slot_pending |= 1U << index;
     MOSAIC_HUB_INSERT_UNLOCK();
 }
 
@@ -365,20 +430,249 @@ static uint8_t mosaic_hub_take_quick_slots(bool modules[2], bool *camera_availab
     return pending;
 }
 
-static bool mosaic_hub_take_insert_request(
-    mosaic_hub_insert_request_t *out_request)
+static const char *mosaic_hub_module_name(uint8_t type)
 {
-    if (out_request == NULL) {
-        return false;
+    return type == MOSAICO_BOARD_TYPE_CAMERA ? "Camera" : "Interaction";
+}
+
+static const char *mosaic_hub_module_app(uint8_t type)
+{
+    return type == MOSAICO_BOARD_TYPE_CAMERA ? "camera" : "interact";
+}
+
+static esp_gsp_err_t mosaic_hub_apply_module_intro(esp_gsp_handle_t ui,
+    const mosaic_module_notice_view_t *view)
+{
+    const unsigned first = (view->mask & 1U) ? 0U : 1U;
+    const uint8_t type = view->board_type[first];
+    const struct { uint16_t bind; const char *text; } fields[] = {
+        {GSP_BIND_INSERT_PORT, first == 0 ? "Left port" : "Right port"},
+        {GSP_BIND_INSERT_BOARD_NAME, mosaic_hub_module_name(type)},
+        {GSP_BIND_INSERT_BOARD_CAP, type == MOSAICO_BOARD_TYPE_CAMERA
+            ? "Photo / Video" : "LED / Touch / IR / Sensors"},
+    };
+    esp_gsp_err_t err = ESP_GSP_OK;
+    for (unsigned i = 0; i < sizeof(fields) / sizeof(fields[0]) && err == ESP_GSP_OK; ++i) {
+        err = esp_gsp_set_text(ui, fields[i].bind, fields[i].text);
     }
+    return err;
+}
+
+/* Return the newly inserted sides still awaiting feedback. A second arrival
+ * during a sequence gets its own side animation without restarting the first;
+ * deliveries then share the original page, one application at a time. */
+static uint8_t mosaic_hub_insert_prepare(esp_gsp_handle_t ui,
+    const mosaic_module_notice_view_t *ready)
+{
+    if (s_insert_fx.cycle.mask != 0 && !s_insert_fx.automatic) return ready->mask;
+    for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+        const uint8_t bit = 1U << i;
+        if (!(ready->mask & bit) ||
+                ready->generation[i] != s_insert_fx.completed.generation[i]) {
+            s_insert_fx.completed.mask &= (uint8_t)~bit;
+        }
+        if ((s_insert_fx.cycle.mask & bit) && (!(ready->mask & bit) ||
+                ready->generation[i] != s_insert_fx.cycle.generation[i])) {
+            (void)mosaic_hub_insert_hide(ui, i);
+            s_insert_fx.cycle.mask &= (uint8_t)~bit;
+        }
+    }
+    uint8_t waiting = ready->mask & (uint8_t)~s_insert_fx.completed.mask;
+    if (s_insert_fx.cycle.mask == 0) {
+        if (s_insert_fx.timer != NULL || s_insert_fx.dirty_mask != 0) {
+            (void)mosaic_hub_insert_reset(ui);
+        }
+        if (waiting != 0) {
+            mosaic_module_notice_view_t todo = *ready;
+            todo.mask = waiting;
+            const esp_gsp_err_t err = mosaic_hub_insert_start(ui, &todo, true);
+            if (err != ESP_GSP_OK) {
+                ESP_LOGW(TAG, "Side feedback unavailable: 0x%x; showing introduction", (unsigned)err);
+                (void)mosaic_hub_insert_reset(ui);
+                for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+                    if (waiting & (1U << i)) s_insert_fx.completed.generation[i] = ready->generation[i];
+                }
+                s_insert_fx.completed.mask |= waiting;
+                waiting = 0;
+            }
+        }
+    }
+    return waiting;
+}
+
+static void mosaic_hub_module_notice_tick(esp_gsp_handle_t ui)
+{
+    uint16_t page = 0;
+    bool allow_notice = esp_gsp_stack_view_get_top(
+            ui, GSP_OBJ_KEY_HUB_STACK, &page) == ESP_GSP_OK &&
+        (page == 0 || (page == MOSAIC_HUB_INSERT_PAGE && s_module_intro_active)) &&
+        !mosaic_hub_lock_visible() &&
+        !mosaic_hub_quick_drawer_open(ui);
+#if defined(ESP_PLATFORM)
+    allow_notice = allow_notice && !mosaic_ui_screen_asleep();
+    /* Initial ABSENT is intentionally silent in the manager. Hydrate unknown
+     * slots from snapshots until their first stable state, then stop polling. */
+    uint8_t unknown_mask = 0;
     MOSAIC_HUB_INSERT_LOCK();
-    const bool pending = s_insert_request.pending;
-    if (pending) {
-        *out_request = s_insert_request;
-        s_insert_request.pending = false;
+    for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+        if (s_module_notice.slots[i].presence == MOSAICO_MODULE_PRESENCE_UNKNOWN) {
+            unknown_mask |= 1U << i;
+        }
     }
     MOSAIC_HUB_INSERT_UNLOCK();
-    return pending;
+    for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+        mosaico_module_mgr_info_t info = {0};
+        if ((unknown_mask & (1U << i)) &&
+                mosaico_module_mgr_get_info(i, &info) == ESP_OK) {
+            mosaic_hub_update_module(&info);
+        }
+    }
+#endif
+    MOSAIC_HUB_INSERT_LOCK();
+    s_module_notice_accepting = allow_notice && s_module_notice_foreground;
+    const int64_t now_us = esp_timer_get_time();
+    if (s_module_notice_deferred && s_module_notice_accepting &&
+            s_module_notice.pending_mask != 0) {
+        s_module_notice.pending_since_us = now_us;
+    }
+    /* Keep a second application's notice queued while the original page is
+     * being read, and preserve feedback that waited for a contact to end. */
+    if ((s_module_intro_active || (s_module_notice_deferred && s_module_notice_accepting)) &&
+            s_module_notice.visible_mask != 0) {
+        s_module_notice.visible_until_us = now_us + MOSAIC_MODULE_NOTICE_DURATION_US;
+    }
+    s_module_notice_deferred = false;
+    mosaic_module_notice_view_t ready = mosaic_module_notice_poll(
+        &s_module_notice, now_us, s_module_notice_accepting);
+    mosaic_module_notice_view_t view = ready;
+    if (s_module_intro_active && page == MOSAIC_HUB_INSERT_PAGE) {
+        view.mask |= s_module_notice_applied.mask;
+    }
+    for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+        const mosaic_module_notice_slot_t *slot = &s_module_notice.slots[i];
+        if (slot->presence != MOSAICO_MODULE_PRESENCE_PRESENT || !slot->valid ||
+                (slot->board_type != MOSAICO_BOARD_TYPE_CAMERA &&
+                 slot->board_type != MOSAICO_BOARD_TYPE_INTERACT)) {
+            view.mask &= (uint8_t)~(1U << i);
+        }
+        if (view.mask & (1U << i)) {
+            view.board_type[i] = slot->board_type;
+            view.generation[i] = slot->notice_generation;
+        } else {
+            view.board_type[i] = 0;
+            view.generation[i] = 0;
+        }
+    }
+    MOSAIC_HUB_INSERT_UNLOCK();
+    if (!allow_notice) {
+        if (s_insert_fx.cycle.mask || s_insert_fx.timer || s_insert_fx.dirty_mask) {
+            (void)mosaic_hub_insert_reset(ui);
+        }
+        s_insert_fx.completed = (mosaic_module_notice_view_t) {0};
+        return;
+    }
+    if (s_module_intro_active || ready.mask != 0) {
+        bool animating = false;
+        if (esp_gsp_stack_view_is_animating(ui, GSP_OBJ_KEY_HUB_STACK,
+                &animating) != ESP_GSP_OK || animating) {
+            return; /* Do not interrupt the original push/Done/Back animation. */
+        }
+    }
+    if (s_module_intro_active && page == MOSAIC_HUB_INSERT_PAGE) {
+        bool still_present = false;
+        for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+            const uint8_t bit = 1U << i;
+            still_present |= (view.mask & s_module_notice_applied.mask & bit) != 0 &&
+                view.board_type[i] == s_module_notice_applied.board_type[i] &&
+                view.generation[i] == s_module_notice_applied.generation[i];
+        }
+        /* Removal closes the old presentation before another application's
+         * Open target can be installed. Never retarget it in place. */
+        if (!still_present) {
+            if (esp_gsp_stack_view_pop(ui, GSP_OBJ_KEY_HUB_STACK, true) == ESP_GSP_OK) {
+                MOSAIC_HUB_INSERT_LOCK();
+                s_module_intro_active = false;
+                s_module_notice_applied = (mosaic_module_notice_view_t) {0};
+                MOSAIC_HUB_INSERT_UNLOCK();
+            }
+            return; /* Retain completed feedback for the queued application. */
+        }
+    }
+    ready.mask &= view.mask;
+    const uint8_t waiting = mosaic_hub_insert_prepare(ui, &ready);
+    if (waiting != 0) {
+        /* Keep already published entries live, but publish a batch of new
+         * deliveries only after every corresponding side has finished. */
+        view.mask &= s_module_intro_active
+            ? s_module_notice_applied.mask & (uint8_t)~ready.mask : 0;
+    }
+    if (s_module_intro_active && page != MOSAIC_HUB_INSERT_PAGE) {
+        MOSAIC_HUB_INSERT_LOCK();
+        s_module_intro_active = false;
+        s_module_notice_applied = (mosaic_module_notice_view_t) {0};
+        MOSAIC_HUB_INSERT_UNLOCK();
+    }
+    if (view.mask != 0) {
+        /* Retain the visible application until Done. Both ports with the
+         * same application share one notice; a different application waits
+         * for the original page to close instead of adding new UI controls. */
+        uint8_t current = 0;
+        if (s_module_intro_active) {
+            for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+                const uint8_t bit = 1U << i;
+                if ((view.mask & s_module_notice_applied.mask & bit) != 0 &&
+                        view.board_type[i] == s_module_notice_applied.board_type[i] &&
+                        view.generation[i] == s_module_notice_applied.generation[i]) {
+                    current |= bit;
+                }
+            }
+        }
+        const unsigned first = ((current != 0 ? current : view.mask) & 1U) ? 0U : 1U;
+        for (unsigned i = 0; i < MOSAICO_MODULE_MGR_SLOT_COUNT; ++i) {
+            if (view.board_type[i] != view.board_type[first]) {
+                view.mask &= (uint8_t)~(1U << i);
+            }
+            if (!(view.mask & (1U << i))) {
+                view.board_type[i] = 0;
+                view.generation[i] = 0;
+            }
+        }
+    }
+    if (view.mask == 0) {
+        if (s_module_intro_active && esp_gsp_stack_view_pop(
+                ui, GSP_OBJ_KEY_HUB_STACK, true) == ESP_GSP_OK) {
+            MOSAIC_HUB_INSERT_LOCK();
+            s_module_intro_active = false;
+            s_module_notice_applied = view;
+            MOSAIC_HUB_INSERT_UNLOCK();
+        }
+        return;
+    }
+    esp_gsp_err_t err = ESP_GSP_OK;
+    if (!s_module_intro_active || !s_module_notice_applied_valid ||
+            view.mask != s_module_notice_applied.mask ||
+            memcmp(view.board_type, s_module_notice_applied.board_type, sizeof(view.board_type)) != 0) {
+        err = mosaic_hub_apply_module_intro(ui, &view);
+    }
+    const bool opening = !s_module_intro_active;
+    if (err == ESP_GSP_OK && opening) {
+        err = esp_gsp_stack_view_push(ui, GSP_OBJ_KEY_HUB_STACK, MOSAIC_HUB_INSERT_PAGE, true);
+    }
+    if (err != ESP_GSP_OK && s_module_notice_applied_valid) {
+        ESP_LOGW(TAG, "Module introduction publication failed: 0x%x", (unsigned)err);
+    }
+    s_module_notice_applied_valid = err == ESP_GSP_OK;
+    if (err == ESP_GSP_OK) {
+        if (opening) ESP_LOGI(TAG, "Runtime module introduction opened: slots=0x%x", (unsigned)view.mask);
+        MOSAIC_HUB_INSERT_LOCK();
+        s_module_intro_active = true;
+        s_module_notice_applied = view;
+        mosaic_module_notice_view_t shown = ready;
+        shown.mask &= view.mask;
+        mosaic_module_notice_ack(&s_module_notice, &shown);
+        MOSAIC_HUB_INSERT_UNLOCK();
+        s_insert_fx.completed.mask &= (uint8_t)~shown.mask;
+    }
 }
 
 void mosaic_ui_set_haptic_callback(
@@ -1083,19 +1377,46 @@ bool mosaic_hub_handle_action(uint16_t action_id)
 {
     if (action_id == GSP_ACT_ID_INSERT_OPEN) {
         uint16_t page = 0;
-        if (s_hub_ui != NULL &&
-                esp_gsp_stack_view_get_top(
-                    s_hub_ui, GSP_OBJ_KEY_HUB_STACK, &page) == ESP_GSP_OK &&
-                page == MOSAIC_HUB_INSERT_PAGE) {
-            (void)esp_gsp_stack_view_pop(
-                s_hub_ui, GSP_OBJ_KEY_HUB_STACK, false);
+        if (s_hub_ui == NULL || esp_gsp_stack_view_get_top(
+                s_hub_ui, GSP_OBJ_KEY_HUB_STACK, &page) != ESP_GSP_OK ||
+                page != MOSAIC_HUB_INSERT_PAGE) {
+            return true;
         }
+        const char *app_name = s_insert_open_app_name;
+        MOSAIC_HUB_INSERT_LOCK();
+        const bool automatic = s_module_intro_active;
+        const mosaic_module_notice_view_t view = s_module_notice_applied;
+        MOSAIC_HUB_INSERT_UNLOCK();
+        if (automatic) {
+            const unsigned first = (view.mask & 1U) ? 0U : 1U;
+            const uint8_t type = view.board_type[first];
+            unsigned side = 0;
+            while (side < MOSAICO_MODULE_MGR_SLOT_COUNT &&
+                    (!(view.mask & (1U << side)) || view.board_type[side] != type)) ++side;
+            if (side == MOSAICO_MODULE_MGR_SLOT_COUNT) return true;
+            MOSAIC_HUB_INSERT_LOCK();
+            const mosaic_module_notice_slot_t slot = s_module_notice.slots[side];
+            MOSAIC_HUB_INSERT_UNLOCK();
+            if (slot.presence != MOSAICO_MODULE_PRESENCE_PRESENT || !slot.valid ||
+                    slot.board_type != type) return true;
+#if defined(ESP_PLATFORM)
+            mosaico_module_mgr_info_t info = {0};
+            if (mosaico_module_mgr_get_info(side, &info) != ESP_OK ||
+                    info.presence != MOSAICO_MODULE_PRESENCE_PRESENT ||
+                    info.descriptor_state != MOSAICO_MODULE_DESCRIPTOR_VALID ||
+                    info.eeprom.board_type != type) return true;
+#endif
+            app_name = mosaic_hub_module_app(type);
+        }
+        (void)esp_gsp_stack_view_pop(s_hub_ui, GSP_OBJ_KEY_HUB_STACK, false);
 #if defined(ESP_PLATFORM)
         const mosaic_app_descriptor_t *app =
-            mosaic_app_descriptor_for_name(s_insert_open_app_name);
+            mosaic_app_descriptor_for_name(app_name);
         if (app != NULL) {
             (void)mosaic_loader_request(app);
         }
+#else
+        (void)app_name;
 #endif
         return true;
     }
@@ -1316,29 +1637,16 @@ static void mosaic_hub_battery_tick(esp_gsp_handle_t ui, void *user_ctx)
      * out of a drag/settle. The latest pending model samples remain staged;
      * battery sampling and shutdown policy run independently of this UI timer. */
     if (mosaic_hub_defer_refresh(ui)) {
+        /* An otherwise eligible insertion waits for this contact to end;
+         * renew it under the existing model lock only after motion ends. */
+        s_module_notice_deferred = true;
         return;
     }
     if (s_clock_refresh_pending) {
         s_clock_refresh_pending = false;
         mosaic_hub_clock_apply(ui);
     }
-    mosaic_hub_insert_request_t insert_request = {0};
-    if (mosaic_hub_take_insert_request(&insert_request)) {
-        const bool show_notice =
-#if defined(ESP_PLATFORM)
-            mosaic_loader_app() == mosaic_app_root() &&
-#endif
-            !mosaic_hub_quick_drawer_open(ui);
-        if (show_notice) {
-            mosaic_hub_set_lock_mode(ui, MOSAIC_LOCK_HIDDEN);
-#if defined(ESP_PLATFORM)
-            mosaic_ui_note_screen_activity();
-#endif
-            mosaic_hub_show_board_insert(
-                insert_request.side, insert_request.friendly_name,
-                insert_request.capability, insert_request.open_app_name);
-        }
-    }
+    mosaic_hub_module_notice_tick(ui);
     bool slot_modules[2] = {false, false};
     bool camera_available = false;
     const uint8_t slot_pending = mosaic_hub_take_quick_slots(slot_modules, &camera_available, false);
@@ -1427,7 +1735,8 @@ static void mosaic_hub_stop_timers(esp_gsp_handle_t ui)
         s_quick_feedback_timer = NULL;
     }
     (void)esp_gsp_set_visible(ui, GSP_BIND_QUICK_FEEDBACK_VISIBLE, false);
-    mosaic_hub_insert_reset(ui);
+    (void)mosaic_hub_insert_reset(ui);
+    s_insert_fx.completed = (mosaic_module_notice_view_t) {0};
     if (s_clock_timer != NULL) {
         (void)esp_gsp_timer_delete(ui, s_clock_timer);
         s_clock_timer = NULL;
@@ -1468,7 +1777,21 @@ static void mosaic_hub_notif_bind(esp_gsp_handle_t ui)
 static void mosaic_hub_started(esp_gsp_handle_t ui)
 {
     s_hub_ui = ui;
-    mosaic_hub_insert_reset(ui);
+    s_module_notice_deferred = false;
+    MOSAIC_HUB_INSERT_LOCK();
+    s_module_notice_foreground = true;
+    s_module_notice_accepting = false;
+    mosaic_module_notice_quiet(&s_module_notice);
+    /* The SDK retains Hub component/bind state across child Apps. Keep an
+     * open introduction's identity with it; the apply tick revalidates its
+     * presence, or clears the identity if navigation already left the page. */
+    if (!s_module_intro_active) {
+        s_module_notice_applied = (mosaic_module_notice_view_t) {0};
+    }
+    MOSAIC_HUB_INSERT_UNLOCK();
+    s_module_notice_applied_valid = true;
+    (void)mosaic_hub_insert_reset(ui);
+    s_insert_fx.completed = (mosaic_module_notice_view_t) {0};
     s_charge_percent = 0;
     s_pointer_down = false;
     s_quick_brightness_drag = false;
@@ -1533,6 +1856,12 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
 
 static void mosaic_hub_stopping(esp_gsp_handle_t ui)
 {
+    MOSAIC_HUB_INSERT_LOCK();
+    s_module_notice_foreground = false;
+    s_module_notice_accepting = false;
+    mosaic_module_notice_quiet(&s_module_notice);
+    MOSAIC_HUB_INSERT_UNLOCK();
+    s_module_notice_applied_valid = false;
     mosaic_hub_stop_timers(ui);
     mosaic_hub_backdrop_stop(ui);
     if (s_battery_subscribed) {

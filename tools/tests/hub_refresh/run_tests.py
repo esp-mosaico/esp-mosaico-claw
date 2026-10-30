@@ -20,9 +20,22 @@ with tempfile.TemporaryDirectory(prefix="mosaico-hub-test-") as directory:
                "-Wno-unused-parameter", "-Wno-unused-function", "-ffunction-sections", "-fdata-sections",
                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-include", str(HOST / "host_compat.h")]
     command += ["-I" + str(path) for path in
-                (HERE / "include", UI / "include", UI / "common", UI / "hub", GENERATED, GSP, HOST)]
+                (HERE / "include", HERE.parent / "ui_probe/include", UI / "include", UI / "common",
+                 UI / "hub", GENERATED, GSP, HOST,
+                 ROOT / "managed_components/mosaico_module_mgr/include")]
     command += [str(HERE / "test_hub_refresh.c"), str(UI / "common/mosaic_settings_model.c"),
+                str(UI / "hub/mosaic_module_notice.c"),
                 "-Wl,--gc-sections", "-o", str(binary)]
+    subprocess.run(command, check=True)
+    subprocess.run([str(binary)], check=True)
+
+    binary = Path(directory) / "test_module_notice"
+    command = [os.environ.get("CC", "cc"), "-std=c11", "-g", "-Wall", "-Wextra", "-Werror",
+               "-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
+    command += ["-I" + str(path) for path in
+                (UI / "hub", ROOT / "managed_components/mosaico_module_mgr/include", HOST)]
+    command += [str(HERE / "test_module_notice.c"), str(UI / "hub/mosaic_module_notice.c"),
+                "-o", str(binary)]
     subprocess.run(command, check=True)
     subprocess.run([str(binary)], check=True)
     binary = Path(directory) / "test_backdrop"

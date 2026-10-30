@@ -313,42 +313,11 @@ esp_err_t mosaic_system_configure(const mosaic_system_ops_t *ops)
     return err;
 }
 
-static void update_quick_slot_from_module(const mosaico_module_mgr_info_t *info)
-{
-    if (info == NULL || info->slot >= MOSAICO_MODULE_MGR_SLOT_COUNT || info->presence == MOSAICO_MODULE_PRESENCE_UNKNOWN) {
-        return;
-    }
-    bool occupied = info->presence == MOSAICO_MODULE_PRESENCE_PRESENT;
-    if (occupied && info->descriptor_state == MOSAICO_MODULE_DESCRIPTOR_VALID && info->eeprom.board_type == MOSAICO_BOARD_TYPE_CAMERA) {
-        occupied = false;
-    }
-    mosaic_hub_request_quick_slot_module(info->slot == MOSAICO_MODULE_MGR_SLOT_RIGHT ? 'R' : 'L', occupied);
-}
-
 static void on_module_insert_notice(const mosaico_module_mgr_event_t *event, void *user_ctx)
 {
     (void)user_ctx;
     if (event == NULL) return;
-    if (event->changes & (MOSAICO_MODULE_CHANGE_PRESENCE | MOSAICO_MODULE_CHANGE_DESCRIPTOR)) {
-        update_quick_slot_from_module(&event->info);
-    }
-    if (event->info.presence != MOSAICO_MODULE_PRESENCE_PRESENT ||
-        event->info.descriptor_state != MOSAICO_MODULE_DESCRIPTOR_VALID ||
-        !(event->changes & (MOSAICO_MODULE_CHANGE_PRESENCE | MOSAICO_MODULE_CHANGE_DESCRIPTOR))) return;
-    if (mosaic_loader_app() != mosaic_app_root()) return;
-    static const struct {
-        mosaico_board_type_t type;
-        const char *name, *capability, *app;
-    } notices[] = {
-        {MOSAICO_BOARD_TYPE_CAMERA, "Camera", "Photo / Video", "camera"},
-        {MOSAICO_BOARD_TYPE_INTERACT, "Interaction", "LED / Touch / IR / Sensors", "interact"},
-    };
-    for (size_t i = 0; i < sizeof(notices) / sizeof(notices[0]); ++i) {
-        if (event->info.eeprom.board_type != notices[i].type) continue;
-        mosaic_hub_request_board_insert(event->info.slot == MOSAICO_MODULE_MGR_SLOT_RIGHT ? 'R' : 'L',
-                                        notices[i].name, notices[i].capability, notices[i].app);
-        break;
-    }
+    mosaic_hub_update_module(&event->info);
 }
 
 static void on_camera_availability_notice(char slot, bool available, void *user_ctx)
@@ -562,7 +531,7 @@ esp_err_t mosaic_ui_start(void)
         mosaico_module_mgr_info_t info = {0};
         esp_err_t err = mosaico_module_mgr_get_info(slot, &info);
         if (err == ESP_OK) {
-            update_quick_slot_from_module(&info);
+            mosaic_hub_update_module(&info);
         } else {
             ESP_LOGW(TAG, "Read initial module slot %d failed: %s", slot, esp_err_to_name(err));
         }

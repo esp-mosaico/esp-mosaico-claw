@@ -907,7 +907,7 @@ def write_scene(path: Path, screen: str, objects):
     # Match the shared scene writer's immediate product Back behavior.
     for obj in objects:
         for event in obj.get('events', []):
-            if event.get('action') == 'stack_pop':
+            if event.get('action') == 'stack_pop' and obj.get('name') != 'insert_dismiss':
                 event['animated'] = False
     scene = {
         'screen': screen,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise actual Hub refresh callbacks with controlled motion and providers."""
+"""Exercise Hub callbacks, module notices, backdrop and performance sampling."""
 import os
 from pathlib import Path
 import subprocess
@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix="mosaico-hub-test-") as directory:
                "-Wno-unused-parameter", "-Wno-unused-function", "-ffunction-sections", "-fdata-sections",
                "-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-include", str(HOST / "host_compat.h")]
     command += ["-I" + str(path) for path in
-                (HERE / "include", HERE.parent / "ui_probe/include", UI / "include", UI / "common",
+                (HERE / "include", HERE.parent / "include", UI / "include", UI / "common",
                  UI / "hub", GENERATED, GSP, HOST,
                  ROOT / "managed_components/mosaico_module_mgr/include")]
     command += [str(HERE / "test_hub_refresh.c"), str(UI / "common/mosaic_settings_model.c"),
@@ -45,5 +45,15 @@ with tempfile.TemporaryDirectory(prefix="mosaico-hub-test-") as directory:
                "-fno-omit-frame-pointer"]
     command += ["-I" + str(path) for path in (GENERATED, GSP, HOST)]
     command += [str(HERE / "test_backdrop.c"), "-Wl,--gc-sections", "-o", str(binary)]
+    subprocess.run(command, check=True)
+    subprocess.run([str(binary)], check=True)
+
+    binary = Path(directory) / "test_probe"
+    command = [os.environ.get("CC", "cc"), "-std=c11", "-g", "-Wall", "-Wextra", "-Werror",
+               "-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
+    command += ["-I" + str(path) for path in
+                (HERE.parent / "include", UI / "core", HOST, GSP)]
+    command += [str(HERE / "test_probe.c"), str(UI / "core/mosaic_ui_probe.c"),
+                "-o", str(binary)]
     subprocess.run(command, check=True)
     subprocess.run([str(binary)], check=True)

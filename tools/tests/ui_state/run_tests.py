@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise actual Battery/Album/Weather presentation with controlled GSP sinks."""
+"""Exercise Battery/Settings/Weather callbacks and Album scene defaults."""
 import json
 import os
 from pathlib import Path
@@ -15,7 +15,7 @@ if not (BUILD / "esp-idf/mosaic_ui/mosaic_gen/hub/mosaic_hub_actions.h").is_file
     raise SystemExit("Generate UI headers with an IDF build first, or set MOSAICO_TEST_BUILD_DIR to that build directory")
 with tempfile.TemporaryDirectory(prefix="mosaico-ui-state-") as directory:
     for name, app in (("battery", "settings"), ("settings_refresh", "settings"),
-                      ("album", "album"), ("weather", "weather")):
+                      ("weather", "weather")):
         binary = Path(directory) / name
         command = [os.environ.get("CC", "cc"), "-std=gnu11", "-g", "-Wall", "-Wextra", "-Werror",
                    "-Wno-unused-function", "-Wno-unused-parameter", "-ffunction-sections", "-fdata-sections",
@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix="mosaico-ui-state-") as directory:
         if name == "weather":
             command += ["-DESP_PLATFORM", "-I" + str(ROOT / "components/weather_service/include")]
         command += ["-I" + str(path) for path in
-                    (HERE / "include", HERE.parent / "ui_probe/include", UI / "include", UI / "common",
+                    (HERE / "include", HERE.parent / "include", UI / "include", UI / "common",
                      UI / "common/qrcodegen", UI / "runtime",
                      BUILD / f"esp-idf/mosaic_ui/mosaic_gen/{app}",
                      BUILD / "esp-idf/mosaic_ui/mosaic_gen/hub",

@@ -19,7 +19,6 @@ enum { ESP_OK = 0, ESP_FAIL = -1, ESP_ERR_NO_MEM = 257,
 #define ESP_RETURN_ON_ERROR(expr, ...) do { int error = (expr); if (error) return error; } while (0)
 typedef struct test_ui { bool alive; } *esp_gsp_handle_t;
 typedef struct { esp_gsp_handle_t hub, app; } esp_gsp_esp_lcd_session_t;
-#if TEST_SESSION_RESULTS
 /* Public API shape for product fault gates; target compilation separately
  * verifies the actual SDK declaration and binary ABI. */
 enum { ESP_GSP_ESP_LCD_SESSION_UNCHANGED, ESP_GSP_ESP_LCD_SESSION_APP_RETAINED,
@@ -29,7 +28,6 @@ typedef struct { uint32_t struct_size; int stage, outcome;
                  esp_err_t operation_error, recovery_error;
                  esp_gsp_handle_t app, hub; } esp_gsp_esp_lcd_session_result_t;
 #define ESP_GSP_ESP_LCD_SESSION_RESULT_INIT() { .struct_size = sizeof(esp_gsp_esp_lcd_session_result_t) }
-#endif
 typedef struct { esp_gsp_handle_t ui; } esp_gsp_esp_lcd_pause_t;
 typedef void *mmap_assets_handle_t;
 typedef void gsp_font_catalog_t;
@@ -156,7 +154,6 @@ static int esp_gsp_esp_lcd_resume(esp_gsp_esp_lcd_session_t *session,
     if (resume_error) return resume_error;
     *out = session->hub; free(session); return ESP_OK;
 }
-#if TEST_SESSION_RESULTS
 static int esp_gsp_esp_lcd_start_on_session_prepared_ex(esp_gsp_esp_lcd_session_t **session,
     const esp_gsp_config_t *config, void (*prepare)(esp_gsp_handle_t, void *),
     void *ctx, esp_gsp_handle_t *out, esp_gsp_esp_lcd_session_result_t *result)
@@ -217,7 +214,6 @@ static int esp_gsp_esp_lcd_replace_on_session_prepared_ex(esp_gsp_esp_lcd_sessio
     result->app = err ? current : *out;
     return err;
 }
-#endif
 static int esp_gsp_esp_lcd_session_destroy(esp_gsp_esp_lcd_session_t *session)
 {
     assert(session && !session->app); ++sdk_destroy_calls;
@@ -381,7 +377,7 @@ static void test_delete_and_camera_barriers(void)
     assert(mosaic_esp_platform_delete(p) == ESP_OK && sdk_destroy_calls == 2);
     puts("PASS Camera retirement blocks UI destruction; failed SDK destruction retains all borrowed resources");
 }
-static void test_replace_success_and_legacy_ambiguity(void)
+static void test_replace_success_and_retained_failure(void)
 {
     reset(); mosaic_esp_platform_handle_t p = create();
     void *app = open_app(p, &camera); void *next = NULL;
@@ -389,24 +385,12 @@ static void test_replace_success_and_legacy_ambiguity(void)
     assert(next && next == p->active && trim_calls == 1);
     replace_error = ESP_ERR_TIMEOUT;
     assert(platform_replace_app(p, next, &camera, callback, p, &app) == ESP_ERR_TIMEOUT);
-#if TEST_SESSION_RESULTS
     assert(app == p->active && !p->lifecycle_uncertain && !p->uncertain_next);
-#else
-    assert(app == p->active && p->lifecycle_uncertain && p->uncertain_next);
-    assert(platform_close_app(p, app) == ESP_ERR_NOT_SUPPORTED);
-    assert(mosaic_esp_platform_pause_screen(p, 1000) == ESP_ERR_INVALID_STATE);
-    assert(mosaic_esp_platform_quiesce(p, 1000) == ESP_ERR_INVALID_STATE);
-    assert(mosaic_esp_platform_delete(p) == ESP_ERR_NOT_SUPPORTED && borrowed_owners == 2);
-    /* The mock knows this was a pre-suspend failure. Only the test may use
-     * that knowledge to release its fixture; the product never guesses. */
-    free(p->uncertain_next); p->uncertain_next = NULL; p->lifecycle_uncertain = false;
-#endif
     replace_error = 0;
     assert(platform_close_app(p, app) == ESP_OK);
     assert(mosaic_esp_platform_delete(p) == ESP_OK);
-    puts("PASS successful replacement remains direct; ambiguous legacy failures never probe or free unknown owners");
+    puts("PASS successful replacement remains direct; retained failures preserve the active owner");
 }
-#if TEST_SESSION_RESULTS
 static void test_explicit_replacement_results(void)
 {
     for (unsigned stage = 1; stage <= 4; ++stage) {
@@ -427,7 +411,6 @@ static void test_explicit_replacement_results(void)
     }
     puts("PASS identical SDK errors select retained, empty, consumed and unchanged lifetimes through public results");
 }
-#endif
 static void test_retained_hub_callback_barrier(void)
 {
     reset(); mosaic_esp_platform_handle_t p = create();
@@ -495,13 +478,11 @@ int main(void)
     test_pre_start_recovery();
     test_start_and_close_failures();
     test_delete_and_camera_barriers();
-    test_replace_success_and_legacy_ambiguity();
+    test_replace_success_and_retained_failure();
     test_retained_hub_callback_barrier();
     test_partial_pause_cannot_commit_or_handoff();
     test_camera_replacement_cache_gate();
-#if TEST_SESSION_RESULTS
     test_explicit_replacement_results();
-#endif
     reset();
     return 0;
 }

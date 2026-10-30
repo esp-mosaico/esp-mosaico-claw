@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify product ownership around public SDK lifecycle failures."""
+"""Verify product ownership around the pinned GSP Session-result API."""
 import os
 from pathlib import Path
 import re
@@ -36,12 +36,10 @@ with tempfile.TemporaryDirectory(prefix='mosaico-platform-lifecycle-') as direct
              'mosaic_esp_platform_resume_screen')
     (temporary / 'platform_under_test.h').write_text(
         '\n'.join(function(name) for name in names))
-    for results in (False, True):
-        binary = temporary / ('results' if results else 'legacy')
-        command = [os.environ.get('CC', 'cc'), '-std=c11', '-g', '-O1', '-Wall',
-                   '-Wextra', '-Werror', '-fsanitize=address,undefined',
-                   '-fno-omit-frame-pointer', '-I' + str(temporary),
-                   '-DTEST_SESSION_RESULTS=' + str(int(results)),
-                   str(HERE / 'test_lifecycle.c'), '-o', str(binary)]
-        subprocess.run(command, check=True)
-        subprocess.run([str(binary)], check=True)
+    binary = temporary / 'session_results'
+    command = [os.environ.get('CC', 'cc'), '-std=c11', '-g', '-O1', '-Wall',
+               '-Wextra', '-Werror', '-fsanitize=address,undefined',
+               '-fno-omit-frame-pointer', '-I' + str(temporary),
+               str(HERE / 'test_lifecycle.c'), '-o', str(binary)]
+    subprocess.run(command, check=True)
+    subprocess.run([str(binary)], check=True)

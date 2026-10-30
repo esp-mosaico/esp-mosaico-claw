@@ -1,5 +1,13 @@
 # Mosaic UI assets
 
+The product pins ESP-GSP 1.9.0 with GSPC 0.10.0 and Presenter ^1.2.0.
+It uses the released Session trim and ownership-result APIs. The remaining
+product input/backdrop adapters are documented in
+[the adapter notes](../../tools/gsp_fixes/README.md); they are applied to the
+build archive without editing `managed_components`.
+
+## Assets and generation
+
 Hub and every App remain independent source and intermediate `.gspb` packages.
 Product builds add one shared Font Catalog to the same `ui_apps` mmap partition:
 
@@ -8,48 +16,112 @@ Product builds add one shared Font Catalog to the same `ui_apps` mmap partition:
 - `common/generated/common-fonts.gspb` is the Launcher-owned Catalog.
 - `common/generated/font-link-report.md` records dependencies and size savings.
 
-Run `python regenerate_font_catalog.py --gspc /path/to/gspc` from this directory
-after changing a scene (`gspc.exe` on Windows). It regenerates every
-intermediate and rebuilds all linked entries, offsets, alignment, and CRC; it
-does not append bytes to an existing binary.
+Run this from the component directory after changing a scene (`gspc.exe` on
+Windows):
 
-For a single app, run, for example:
-
-```text
-python tools/generate_bundle.py --module-dir apps/settings --gspc /path/to/gspc
+```sh
+python3 regenerate_font_catalog.py --gspc /path/to/gspc
 ```
-Configuration checks Pillow and the `esp-gsp-tools` API independently. If the compiler manager is missing or incompatible, run
-`python -m pip install -U esp-gsp-tools` with that same interpreter. GSPC is a
-separate executable whose version is selected by the component; upgrading the
-manager does not replace a missing compiler release for the host platform.
+
+It regenerates every intermediate and rebuilds all linked entries, offsets,
+alignment and CRC. For one App:
+
+```sh
+python3 tools/generate_bundle.py --module-dir apps/settings --gspc /path/to/gspc
+```
+
+Configuration checks Pillow and the `esp-gsp-tools` API independently. If the
+compiler manager is missing or incompatible, run `python3 -m pip install -U esp-gsp-tools`
+with that same interpreter. GSPC is a separate executable selected by the
+component; updating the manager does not replace a missing compiler release.
 
 The Loader opens the Catalog once and passes it to each App Context. Context
 creation resolves local fonts first and Catalog fonts second. Rendering retains
-a direct scene-local `font_ref` table and performs no Catalog lookup per frame.
-Standalone/third-party Apps keep the default `embedded` policy. Mosaic scenes
-use `auto`; large numeric and App-specific fonts remain embedded unless another
-App has the exact same Font Asset ID.
+a direct scene-local `font_ref` table without a Catalog lookup per frame.
+Standalone Apps keep the default `embedded` policy. Mosaic scenes use `auto`;
+large numeric and App-specific fonts remain embedded unless another App has
+the exact same Font Asset ID.
 
-Scene generators describe each font size with one of three charset policies:
+Scene generators use three charset policies:
 
-- `shared_charset(...)` keeps a stable common set, normally printable ASCII at
-  16/18px, so different Apps produce the same Catalog Asset ID.
-- `auto_charset()` collects only static label text and the charsets declared by
-  dynamic labels at that font and size.
-- `explicit_charset(...)` documents a deliberately small dynamic set, such as
-  `:0123456789` for a clock or `-.0123456789` for a sensor value.
+- `shared_charset(...)`: a stable common set, normally printable ASCII at 16/18px.
+- `auto_charset()`: static labels and the declared dynamic charsets at that size.
+- `explicit_charset(...)`: a small dynamic set, such as `:0123456789` for a clock.
 
-Dynamic labels must still carry `font_charset` on the label itself. Asset-only
-scenes do not seed fonts; this prevents their build from replacing the primary
-scene's per-size subsets with a broad fallback set.
+Dynamic labels must also carry `font_charset`. Asset-only scenes do not seed
+fonts, so their builds cannot replace the primary scene's subsets with a broad
+fallback set.
 
-## Hub navigation and Lock Screen
+## Navigation, power and module feedback
 
-`hub_stack` contains only ordinary navigation: Launcher, Settings,
-Notification Center, and Insert Notice. Launcher owns its nested PageFlow.
-AOD and CHRG are two mutually exclusive modes of the top-level `lock_screen`
-visibility group; they are not StackView pages and never participate in
-PageFlow transforms. While visible, the Hub input interceptor consumes every
-pointer sample, with only the demo mode button and drag-follow swipe-up unlock
-handled locally. Hiding Lock Screen after the exit animation therefore resumes
-the exact StackView/PageFlow state that was present before locking.
+`hub_stack` contains Launcher, Notification Center and the extension-board
+introduction. Launcher owns its nested PageFlow. AOD and CHRG are mutually
+exclusive modes inside the native Drawer; the Drawer owns drag/settle input
+and composition. Closing it resumes the retained StackView/PageFlow state.
+
+Idle screen-off pauses the foreground App without opening Lock Screen. Music
+and Bluetooth background ticks continue; an active camera preview inhibits
+screen-off. Wake restores the current page and consumes the waking contact
+until release. DFS and automatic light sleep remain disabled.
+
+Module discovery at boot is silent. After a stable slot baseline, a confirmed
+absent-to-present transition schedules the original side animation and
+single-board introduction on the awake Launcher. Left/right insertions share
+a 400 ms feedback window. Different App targets queue until the current page
+and Done/Back animation finish; equal targets share one notice. Removal cancels
+queued feedback and invalidates its Open target. Descriptor retries and ownership
+restoration do not count as insertions.
+
+App changes, an open Drawer, Lock Screen and screen-off discard pending feedback;
+brief rendering/input motion defers it. An existing introduction survives idle
+screen-off. The UI timer drives this policy using fixed slot snapshots, without
+a new task, persistent setting or I2C scan. Discovery remains active.
+
+## Camera and resource ownership
+
+Camera completes native open and STREAMON before reserving its two RGB565
+preview outputs. During capture, the published source frame remains immutable;
+only the other output, after GSP releases it, is lent to the JPEG encoder.
+This avoids a third 460,800-byte allocation while retaining preview double
+buffering, 480x480 photographs and JPEG quality 90.
+
+Start failures retire canvas readers before freeing preview memory or retrying
+native open. Initialization retries are bounded. Exhaustion exposes the existing
+shutter retry hint; a retry first completes checked cleanup. Deferred starts carry
+a visit generation, and cancelled work cannot start a later App visit.
+
+Stop failures retain buffers, synchronization objects and callback owners until
+cleanup succeeds. Native close errors keep the session and power vote alive for
+another close attempt. Save failures release the borrowed output and preserve
+existing files. See [camera profiles](../mosaico_camera_service/README.md) for
+the default SC101IOT equivalent sensor window and its memory budget.
+
+The platform retains empty Sessions, pause tokens and shared font/MMAP sources
+when recovery or destruction fails. Callback removal needs a successful flush
+before its owner is freed. An incomplete pause cannot become successful
+screen-off or presenter handoff. Camera admission trims inactive snapshot caches;
+direct App replacement pauses, trims and resumes the exact new Camera UI before
+native START. These barriers can add entry latency and preserve resource ownership.
+PSRAM XIP remains enabled.
+
+## Scrolling and diagnostics
+
+Settings compares displayed row values before publishing. Unchanged notifications
+preserve scrolling snapshots; changed rows update immediately. Rejected commands
+and asynchronous binding failures retry through the App tick. Hub refreshes defer
+ordinary updates during motion, while battery sampling runs outside the UI timer.
+The backdrop coalesces full-width RGB565 tiles and retains cleanup fences.
+
+Display staging uses 16 rows with TE and two compose buffers. Compared with
+10 rows, the two staging buffers cost 11,520 additional bytes. The selected
+configuration preserves the existing scenes and module-detection effects.
+
+CLI builds expose `ui_perf start 3500` and `ui_perf read` through the normal
+console transport. Capture runs for 500–4000 ms on an active, awake UI and records
+at most 256 render-task timer intervals, P50/P95/max, frame-count delta and drag
+snapshot counters. Stopping or suspending the UI cancels sampling.
+
+Render-task service gaps include scheduling, rendering and submission delays;
+they do not establish physical LCD FPS, touch-to-photon latency, Bluetooth
+continuity or measured battery current. Use the same device, firmware/configuration
+and workload for comparisons, and reject incomplete synthetic gesture playback.

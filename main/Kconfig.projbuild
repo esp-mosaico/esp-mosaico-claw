@@ -13,6 +13,46 @@ menu "App Config"
             generic LVGL system UI. Board defaults must disable
             APP_CLAW_SYSTEM_UI_ENABLE when this option is selected.
 
+menu "ESP-Mosaico battery gauge"
+    depends on ESP_BOARD_ESP_MOSAICO
+
+    config MOSAICO_BATTERY_OVERRIDE_CHARGE_TERMINATION
+        bool "Apply characterized BQ27220 charge termination parameters"
+        default n
+        help
+            Enable only after the cell maximum charge voltage and the charger
+            termination current have been confirmed. The nominal 3.7 V / 65 mAh
+            rating alone does not determine these parameters. Disabled builds
+            retain the gauge's existing charge termination configuration.
+
+    config MOSAICO_BATTERY_CHARGING_VOLTAGE_MV
+        int "BQ27220 Charging Voltage (mV)"
+        range 2500 4600
+        default 4200
+        depends on MOSAICO_BATTERY_OVERRIDE_CHARGE_TERMINATION
+
+    config MOSAICO_BATTERY_TAPER_CURRENT_MA
+        int "BQ27220 Taper Current (mA)"
+        range 1 1000
+        default 100
+        depends on MOSAICO_BATTERY_OVERRIDE_CHARGE_TERMINATION
+        help
+            Gauge termination detection only; this does not set charger current.
+            The default is TI's reference value, not a characterized value for
+            the Mosaico cell. Match this to the cell and charger. Valid charge
+            termination also requires two 40 s windows with over 0.25 mAh in
+            each window, and voltage above Charging Voltage minus Taper Voltage.
+
+    config MOSAICO_BATTERY_TAPER_VOLTAGE_MV
+        int "BQ27220 Taper Voltage margin (mV)"
+        range 0 1000
+        default 100
+        depends on MOSAICO_BATTERY_OVERRIDE_CHARGE_TERMINATION
+        help
+            Voltage margin below Charging Voltage, not an absolute cell voltage.
+            This applies to the board's existing RAM CEDV profile 1.
+endmenu
+
 menu "Default Wi-Fi Settings"
 
     config APP_WIFI_SSID

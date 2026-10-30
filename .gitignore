@@ -1,6 +1,7 @@
 # Build output
 build
 build_*
+!tools/gsp_fixes/build_patch.py
 build-*/
 build-host/
 tmp/

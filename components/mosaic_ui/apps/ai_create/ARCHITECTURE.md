@@ -117,8 +117,8 @@ this option before validating the real Agent integration.
    commands; rejected commands keep the previous state and expose a notice.
 3. **Voice-only input**: no keyboard, camera, source, or attachment action is
    emitted; voice is rejected outside welcome/chat and while a request is active.
-4. **Shared simulation**: the host target links the production Controller and
-   Presenter, with fake ports only. Host unit and scene interaction tests pass.
+4. **Shared simulation**: Controller and Presenter use the same snapshot contract
+   in firmware and host simulation.
 5. **Firmware integration**: AI Create, presenter, voice-session, and ASR
    objects cross-compile for the selected board. A full firmware build and
    device smoke test close this stage.
@@ -132,11 +132,3 @@ this option before validating the real Agent integration.
    pause, then release while speaking the final word. The submitted text keeps
    every finalized sentence; the PCM summary reports `queue_dropped=0`,
    `capture_dropped=0`, and `captured=sent`.
-
-Run simulator verification from the repository root:
-
-```sh
-cmake -S simulator -B build-host/mosaic-sim
-cmake --build build-host/mosaic-sim --parallel 4
-ctest --test-dir build-host/mosaic-sim --output-on-failure
-```

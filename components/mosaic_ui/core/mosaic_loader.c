@@ -7,6 +7,7 @@
 #include "mosaic_loader.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -18,11 +19,13 @@
 #include "mosaic_hub_objects.h"
 #include "mosaic_runtime.h"
 #include "mosaic_ui.h"
+#include "mosaic_ui_probe.h"
 
 #define MOSAIC_LOADER_QUEUE_DEPTH 32U
 #define MOSAIC_LOADER_STEP_MS 16U
 #define MOSAIC_LOADER_TASK_STACK 12288U
 #define MOSAIC_LOADER_TASK_PRIORITY 5U
+#define MOSAIC_LOADER_MAX_DEFERRED 4U
 
 typedef enum {
     MOSAIC_LOADER_COMMAND_UI_EVENT = 0,
@@ -58,14 +61,19 @@ typedef struct {
     } data;
 } mosaic_loader_command_t;
 
+typedef struct {
+    mosaic_loader_deferred_cb_t callback;
+    void* user_ctx;
+} mosaic_loader_deferred_t;
+
 static mosaic_loader_config_t s_config;
 static mosaic_esp_platform_handle_t s_platform;
 static mosaic_runtime_handle_t s_runtime;
 static QueueHandle_t s_command_queue;
 static SemaphoreHandle_t s_runtime_lock;
 static TaskHandle_t s_loader_task;
-static mosaic_loader_deferred_cb_t s_deferred_callback;
-static void* s_deferred_user_ctx;
+static mosaic_loader_deferred_t s_deferred[MOSAIC_LOADER_MAX_DEFERRED];
+static size_t s_deferred_count;
 static bool s_runtime_started;
 static bool s_hub_foreground;
 static bool s_quiesced;
@@ -141,7 +149,7 @@ static void process_command(const mosaic_loader_command_t* command)
         return;
     }
     if (command->type == MOSAIC_LOADER_COMMAND_POINTER) {
-        if (mosaic_ui_absorb_wake_pointer(command->data.pointer.pressed)) {
+        if (mosaic_ui_pointer_guarded()) {
             return;
         }
         (void)mosaic_esp_platform_deliver_pointer(s_platform, s_runtime,
@@ -169,7 +177,13 @@ static void process_command(const mosaic_loader_command_t* command)
         const mosaic_app_descriptor_t* active =
             mosaic_runtime_active_app(s_runtime);
         esp_gsp_handle_t ui = mosaic_esp_platform_ui(s_platform);
-        if (active == NULL || ui == NULL) {
+        if (active == NULL) {
+            /* Recovery intentionally hides the stopped App. Back still
+             * rearms its bounded owner-task retries without touching that UI. */
+            (void)mosaic_runtime_back(s_runtime);
+            return;
+        }
+        if (ui == NULL) {
             return;
         }
         if (active->on_back != NULL &&
@@ -182,15 +196,22 @@ static void process_command(const mosaic_loader_command_t* command)
                     ui, active->root_stack_key, &page) == ESP_GSP_OK &&
                 page != 0) {
             (void)esp_gsp_stack_view_pop(
-                ui, active->root_stack_key, true);
+                ui, active->root_stack_key, false);
             return;
         }
         if (active == mosaic_app_root()) {
+            esp_gsp_component_motion_t drawer = {0};
+            if (esp_gsp_component_get_motion(ui, GSP_OBJ_KEY_QUICK_DRAWER,
+                    &drawer) == ESP_GSP_OK &&
+                    (drawer.value != 0 || drawer.dragging || drawer.settling)) {
+                (void)esp_gsp_drawer_close(ui, GSP_OBJ_KEY_QUICK_DRAWER, true);
+                return;
+            }
             if (esp_gsp_stack_view_get_top(
                     ui, GSP_OBJ_KEY_HUB_STACK, &page) == ESP_GSP_OK &&
                     page != 0) {
                 (void)esp_gsp_stack_view_pop(
-                    ui, GSP_OBJ_KEY_HUB_STACK, true);
+                    ui, GSP_OBJ_KEY_HUB_STACK, page == MOSAIC_HUB_INSERT_PAGE);
                 return;
             }
             if (esp_gsp_page_flow_get_page(
@@ -218,17 +239,16 @@ static void process_command(const mosaic_loader_command_t* command)
 
 static void process_deferred(void)
 {
-    if (s_deferred_callback == NULL || mosaic_loader_poll()) {
+    if (s_deferred_count == 0 || mosaic_loader_poll()) {
         return;
     }
-    mosaic_loader_deferred_cb_t callback = s_deferred_callback;
-    void* user_ctx = s_deferred_user_ctx;
-
-    s_deferred_callback = NULL;
-    s_deferred_user_ctx = NULL;
-    if (callback != NULL) {
-        callback(user_ctx);
-    }
+    const mosaic_loader_deferred_t work = s_deferred[0];
+    --s_deferred_count;
+    memmove(s_deferred, s_deferred + 1, s_deferred_count * sizeof(*s_deferred));
+    s_deferred[s_deferred_count] = (mosaic_loader_deferred_t) {0};
+    /* One job per iteration preserves navigation priority and bounds work
+     * even when a callback queues another deferred operation. */
+    work.callback(work.user_ctx);
 }
 
 static void loader_task(void* arg)
@@ -238,6 +258,15 @@ static void loader_task(void* arg)
         mosaic_loader_command_t command;
         const BaseType_t received = xQueueReceive(
             s_command_queue, &command, pdMS_TO_TICKS(MOSAIC_LOADER_STEP_MS));
+        /* Resume outside the runtime lock: screen_power takes that same lock
+         * to resume the retained UI. Timers continue below for audio polling. */
+        if (received == pdTRUE &&
+                (command.type == MOSAIC_LOADER_COMMAND_REQUEST_APP ||
+                 command.type == MOSAIC_LOADER_COMMAND_BACK) &&
+                mosaic_ui_wake_screen(2000) != ESP_OK) {
+            printf("mosaic_loader: screen resume timed out before navigation\n");
+            continue;
+        }
         xSemaphoreTake(s_runtime_lock, portMAX_DELAY);
         if (s_quiesced) {
             if (received == pdTRUE) {
@@ -261,7 +290,7 @@ static void loader_task(void* arg)
                 mosaic_runtime_active_app(s_runtime) == mosaic_app_root();
             if (hub_foreground != s_hub_foreground) {
                 s_hub_foreground = hub_foreground;
-                mosaic_ui_set_hub_foreground(hub_foreground);
+                mosaic_ui_note_screen_activity();
             }
         }
         xSemaphoreGive(s_runtime_lock);
@@ -271,14 +300,18 @@ static void loader_task(void* arg)
 
 static void cleanup_partial_init(void)
 {
-    s_deferred_callback = NULL;
-    s_deferred_user_ctx = NULL;
+    memset(s_deferred, 0, sizeof(s_deferred));
+    s_deferred_count = 0;
     if (s_runtime != NULL) {
-        mosaic_runtime_delete(s_runtime);
+        if (mosaic_runtime_delete(s_runtime) != ESP_OK) {
+            return;
+        }
         s_runtime = NULL;
     }
     if (s_platform != NULL) {
-        mosaic_esp_platform_delete(s_platform);
+        if (mosaic_esp_platform_delete(s_platform) != ESP_OK) {
+            return;
+        }
         s_platform = NULL;
     }
     if (s_runtime_lock != NULL) {
@@ -294,7 +327,9 @@ static void cleanup_partial_init(void)
 esp_err_t mosaic_loader_init(const mosaic_loader_config_t* config)
 {
     if (config == NULL || config->presenter == NULL
-        || config->producer_generation == 0 || s_runtime != NULL) {
+        || config->producer_generation == 0 || s_runtime != NULL ||
+            s_platform != NULL || s_runtime_lock != NULL ||
+            s_command_queue != NULL || s_loader_task != NULL) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!mosaic_app_catalog_validate()) {
@@ -354,7 +389,7 @@ esp_err_t mosaic_loader_start_hub(void)
         err = mosaic_runtime_step(s_runtime, esp_timer_get_time());
         if (err == ESP_OK) {
             s_hub_foreground = true;
-            mosaic_ui_set_hub_foreground(true);
+            mosaic_ui_note_screen_activity();
         }
     }
     xSemaphoreGive(s_runtime_lock);
@@ -430,11 +465,13 @@ esp_err_t mosaic_loader_defer(
         || xTaskGetCurrentTaskHandle() != s_loader_task) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (s_deferred_callback != NULL) {
+    if (s_deferred_count >= MOSAIC_LOADER_MAX_DEFERRED) {
         return ESP_ERR_TIMEOUT;
     }
-    s_deferred_callback = callback;
-    s_deferred_user_ctx = user_ctx;
+    s_deferred[s_deferred_count++] = (mosaic_loader_deferred_t) {
+        .callback = callback,
+        .user_ctx = user_ctx,
+    };
     return ESP_OK;
 }
 
@@ -501,7 +538,7 @@ esp_err_t mosaic_loader_activate(
     return err;
 }
 
-esp_err_t mosaic_loader_lock_and_pause_hub(uint32_t timeout_ms)
+esp_err_t mosaic_loader_pause_screen(uint32_t timeout_ms)
 {
     if (timeout_ms == 0 || s_runtime_lock == NULL || !s_runtime_started) {
         return ESP_ERR_INVALID_STATE;
@@ -510,19 +547,14 @@ esp_err_t mosaic_loader_lock_and_pause_hub(uint32_t timeout_ms)
         return ESP_ERR_TIMEOUT;
     }
 
-    esp_err_t err = mosaic_runtime_active_app(s_runtime) == mosaic_app_root()
-        ? ESP_OK : ESP_ERR_INVALID_STATE;
-    if (err == ESP_OK) {
-        mosaic_hub_lock_screen();
-        /* The panel retains its last GRAM contents while it is off. Fence the
-         * asynchronous Lock Screen setters so Display On cannot expose the
-         * previous Hub/Home frame. */
-        esp_gsp_handle_t ui = mosaic_esp_platform_ui(s_platform);
-        const esp_gsp_err_t flush_err = esp_gsp_flush(ui, timeout_ms);
-        err = flush_err == ESP_GSP_OK ? ESP_OK : (esp_err_t)flush_err;
-        if (err == ESP_OK) {
-            err = mosaic_esp_platform_pause_screen(s_platform, timeout_ms);
-        }
+    /* Pause the current producer without changing its StackView, scroll
+     * position or App lifecycle. Audio services remain owned and running. */
+    esp_err_t err = mosaic_esp_platform_pause_screen(s_platform, timeout_ms);
+    if (err == ESP_OK && mosaic_runtime_active_app(s_runtime) == mosaic_app_root() &&
+            mosaic_hub_quiet_module_notice(mosaic_esp_platform_ui(s_platform)) != ESP_GSP_OK) {
+        /* Retain the pause token: the existing screen recovery path can
+         * resume it, rather than committing sleep with unfinished feedback. */
+        err = ESP_FAIL;
     }
     xSemaphoreGive(s_runtime_lock);
     return err;
@@ -533,8 +565,22 @@ esp_err_t mosaic_loader_resume_screen(void)
     if (s_runtime_lock == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    xSemaphoreTake(s_runtime_lock, portMAX_DELAY);
+    if (xSemaphoreTake(s_runtime_lock, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
     esp_err_t err = mosaic_esp_platform_resume_screen(s_platform);
+    xSemaphoreGive(s_runtime_lock);
+    return err;
+}
+
+esp_err_t mosaic_loader_profile_active(uint32_t duration_ms)
+{
+    if (s_runtime_lock == NULL) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_runtime_lock, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_gsp_handle_t ui = mosaic_esp_platform_ui(s_platform);
+    const esp_err_t err = mosaic_ui_probe_start(ui, duration_ms);
     xSemaphoreGive(s_runtime_lock);
     return err;
 }

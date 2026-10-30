@@ -10,4 +10,5 @@ idf_component_register(
         freertos
         nvs_flash
         wifi_manager
+    PRIV_REQUIRES esp_timer
 )

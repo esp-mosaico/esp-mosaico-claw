@@ -43,6 +43,17 @@
 #endif
 
 static const char *TAG = "cap_system_platform";
+static cap_system_platform_get_info_fn s_battery_provider;
+static void *s_battery_provider_ctx;
+
+esp_err_t app_cap_system_platform_set_battery_provider(
+    cap_system_platform_get_info_fn get_info, void *user_ctx)
+{
+    if (get_info == NULL) return ESP_ERR_INVALID_ARG;
+    s_battery_provider_ctx = user_ctx;
+    s_battery_provider = get_info;
+    return ESP_OK;
+}
 
 #define APP_CAP_SYSTEM_POWER_PROFILE_KEY "sys_pwr_prof"
 #define APP_CAP_SYSTEM_DEFAULT_POWER_PROFILE "balanced"
@@ -386,6 +397,9 @@ static esp_err_t app_cap_system_get_info(const char *section,
 #endif
         err = ESP_OK;
     } else if (strcmp(section, "battery") == 0) {
+        if (s_battery_provider != NULL) {
+            return s_battery_provider(section, output, output_size, s_battery_provider_ctx);
+        }
         root = cJSON_CreateObject();
         cJSON_AddBoolToObject(root, "supported", false);
         cJSON_AddStringToObject(root, "message",

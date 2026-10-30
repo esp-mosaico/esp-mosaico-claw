@@ -33,7 +33,9 @@ esp_err_t mosaic_loader_invalidate_app(uint16_t app_id, uint32_t revision);
 /** Thread-safe request for a transient notice above the active App. */
 esp_err_t mosaic_loader_show_system_notice(
     mosaic_system_notice_t notice, uint32_t duration_ms);
-/** Run work on the loader task after the current runtime lock is released. */
+/** Queue bounded FIFO work from the loader task for execution after its
+ * runtime lock is released. Keep user_ctx alive until the callback runs;
+ * queued work may outlive the current App. Returns ESP_ERR_TIMEOUT when full. */
 esp_err_t mosaic_loader_defer(
     mosaic_loader_deferred_cb_t callback, void* user_ctx);
 bool mosaic_loader_poll(void);
@@ -42,7 +44,9 @@ esp_gsp_handle_t mosaic_loader_ui(void);
 esp_err_t mosaic_loader_quiesce(uint32_t timeout_ms);
 esp_err_t mosaic_loader_activate(
     struct esp_display_presenter* presenter, uint32_t producer_generation);
-/** Render and flush Hub Lock Screen, then pause that exact frame. */
-esp_err_t mosaic_loader_lock_and_pause_hub(uint32_t timeout_ms);
+/** Pause the foreground UI while retaining its page and App/audio ownership. */
+esp_err_t mosaic_loader_pause_screen(uint32_t timeout_ms);
 esp_err_t mosaic_loader_resume_screen(void);
+/** Start bounded render-task cadence diagnostics on the foreground App. */
+esp_err_t mosaic_loader_profile_active(uint32_t duration_ms);
 uint16_t mosaic_loader_hub_scene(void);

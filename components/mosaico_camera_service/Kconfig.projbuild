@@ -1,0 +1,16 @@
+menu "Mosaico Camera Service"
+
+    config MOSAICO_CAMERA_EQUIVALENT_ROI
+        bool "Use the equivalent SC101IOT preview window"
+        depends on CAMERA_SC101IOT
+        default y
+        help
+            Configure the current 1280x720 UYVY sensor mode to output only
+            the 768x720 window consumed by Mosaic preview and photographs.
+            Keeps the mode's clock, frame rate and image-processing registers.
+            Other sensors and unrecognized modes retain their native format.
+            Requires the GSP public Session trim and ownership-result APIs;
+            the product checks this during configuration. GSP 1.9.0 provides
+            the required public APIs.
+
+endmenu

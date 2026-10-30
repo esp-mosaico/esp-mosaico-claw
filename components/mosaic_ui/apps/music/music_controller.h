@@ -15,6 +15,7 @@ typedef enum {
     MUSIC_PLAYBACK_PLAYING,
     MUSIC_PLAYBACK_STOPPED,
     MUSIC_PLAYBACK_ERROR,
+    MUSIC_PLAYBACK_LOADING,
 } music_playback_state_t;
 
 typedef struct {

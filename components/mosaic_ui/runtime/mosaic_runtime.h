@@ -72,6 +72,9 @@ typedef void (*mosaic_platform_ui_event_cb_t)(
  * logic (Lua or native C) is owned by the returned platform app session.
  */
 typedef struct {
+    /** On any result, ret_app identifies the still-owned App, if any.
+     * A failed replacement may retain current or return a partially opened
+     * next App. The caller must close that handle before opening another. */
     esp_err_t (*open_app)(void* ctx, const mosaic_app_descriptor_t* app,
         mosaic_platform_ui_event_cb_t event_cb, void* event_ctx,
         mosaic_platform_app_handle_t* ret_app);
@@ -87,6 +90,8 @@ typedef struct {
         const mosaic_event_t* event);
     esp_err_t (*feed_pointer)(void* ctx, mosaic_platform_app_handle_t app,
         int32_t x, int32_t y, bool pressed);
+    /** Retry a retained platform session after its App has been closed. */
+    esp_err_t (*recover)(void* ctx);
 } mosaic_platform_ops_t;
 
 typedef struct {
@@ -98,7 +103,8 @@ typedef struct {
 
 esp_err_t mosaic_runtime_create(const mosaic_runtime_config_t* config,
     mosaic_runtime_handle_t* ret_runtime);
-void mosaic_runtime_delete(mosaic_runtime_handle_t runtime);
+/** Failure retains the runtime and its callback context for retry. */
+esp_err_t mosaic_runtime_delete(mosaic_runtime_handle_t runtime);
 
 esp_err_t mosaic_runtime_start(
     mosaic_runtime_handle_t runtime, const char* initial_app);
@@ -122,6 +128,7 @@ esp_err_t mosaic_runtime_timer_start(mosaic_runtime_handle_t runtime,
 esp_err_t mosaic_runtime_timer_cancel(
     mosaic_runtime_handle_t runtime, const char* id);
 
+/** NULL while an owned App is stopped or undergoing recovery. */
 const mosaic_app_descriptor_t* mosaic_runtime_active_app(
     mosaic_runtime_handle_t runtime);
 

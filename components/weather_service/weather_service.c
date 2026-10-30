@@ -20,6 +20,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -51,8 +52,11 @@
 #define WEATHER_MIN_VALID_EPOCH    INT64_C(1704067200)
 #define WEATHER_NVS_NAMESPACE      "weather_cache"
 #define WEATHER_NVS_KEY            "snapshot"
+#define WEATHER_LOCATION_KEY       "location"
+#define WEATHER_LOCATION_VERSION   1U
+#define WEATHER_CITY_SEARCH_URL CONFIG_WEATHER_CITY_SEARCH_URL
 #define WEATHER_CACHE_MAGIC        UINT32_C(0x57454154)
-#define WEATHER_CACHE_VERSION      3U
+#define WEATHER_CACHE_VERSION      4U
 #define WEATHER_HEADER_LEN         64U
 
 typedef struct {
@@ -99,6 +103,11 @@ typedef struct {
     bool initialized;
     bool running;
     bool connected;
+    bool refresh_requested;
+    uint32_t location_revision;
+    weather_city_search_t search;
+    char search_query[WEATHER_SERVICE_QUERY_LEN];
+    bool search_pending;
 } weather_service_state_t;
 
 static const char *TAG = "weather_service";
@@ -335,6 +344,9 @@ static esp_err_t weather_parse_location(const char *json, weather_service_snapsh
         snapshot->latitude = latitude->valuedouble;
         snapshot->longitude = longitude->valuedouble;
         snapshot->location_valid = true;
+        snapshot->location_stale = false;
+        snapshot->location_source = WEATHER_LOCATION_IP;
+        snapshot->location_updated_epoch = (int64_t)time(NULL);
 
         const char *city = weather_json_string(root, "city");
         const char *region = weather_json_string(root, "regionName");
@@ -605,6 +617,7 @@ static void weather_cache_load(void)
         s_service.snapshot = record->snapshot;
         s_service.snapshot.online = false;
         s_service.snapshot.stale = true;
+        s_service.snapshot.location_stale = true;
         s_service.snapshot.last_error = ESP_ERR_INVALID_STATE;
         s_service.snapshot.sequence++;
         strlcpy(s_service.last_modified, record->last_modified, sizeof(s_service.last_modified));
@@ -663,30 +676,50 @@ esp_err_t weather_service_erase_cache(void)
     return err;
 }
 
-static void weather_publish(const weather_service_snapshot_t *snapshot, const char *last_modified)
+/* Commit state while its revision/connection change is still under the same
+ * mutex. HTTP workers must never observe a new revision with the old city. */
+static void weather_commit_locked(weather_service_snapshot_t *published,
+                                 const char *last_modified,
+                                 weather_observer_t *observers)
+{
+    published->online = s_service.connected;
+    if (!published->online && published->weather_valid) {
+        published->stale = true;
+    }
+    published->sequence = s_service.snapshot.sequence + 1U;
+    s_service.snapshot = *published;
+    if (last_modified != NULL) {
+        strlcpy(s_service.last_modified, last_modified, sizeof(s_service.last_modified));
+    }
+    memcpy(observers, s_service.observers, sizeof(s_service.observers));
+}
+
+static void weather_notify(const weather_service_snapshot_t *published,
+                           const weather_observer_t *observers)
+{
+    for (size_t i = 0; i < WEATHER_SERVICE_SUBSCRIBER_MAX; ++i) {
+        if (observers[i].callback != NULL) {
+            observers[i].callback(published, observers[i].user_ctx);
+        }
+    }
+}
+
+static bool weather_publish(const weather_service_snapshot_t *snapshot, const char *last_modified,
+                            uint32_t location_revision)
 {
     weather_observer_t observers[WEATHER_SERVICE_SUBSCRIBER_MAX] = {0};
     weather_service_snapshot_t published = *snapshot;
     if (xSemaphoreTake(s_service.lock, portMAX_DELAY) != pdTRUE) {
-        return;
+        return false;
     }
-    published.online = s_service.connected;
-    if (!published.online && published.weather_valid) {
-        published.stale = true;
+    if (location_revision != s_service.location_revision) {
+        xSemaphoreGive(s_service.lock);
+        return false;
     }
-    published.sequence = s_service.snapshot.sequence + 1U;
-    s_service.snapshot = published;
-    if (last_modified != NULL) {
-        strlcpy(s_service.last_modified, last_modified, sizeof(s_service.last_modified));
-    }
-    memcpy(observers, s_service.observers, sizeof(observers));
+    weather_commit_locked(&published, last_modified, observers);
     xSemaphoreGive(s_service.lock);
-
-    for (size_t i = 0; i < WEATHER_SERVICE_SUBSCRIBER_MAX; ++i) {
-        if (observers[i].callback != NULL) {
-            observers[i].callback(&published, observers[i].user_ctx);
-        }
-    }
+    weather_notify(&published, observers);
+    return true;
 }
 
 static esp_err_t weather_fetch_location(weather_service_snapshot_t *snapshot)
@@ -756,17 +789,21 @@ static esp_err_t weather_refresh_once(void)
     }
     next = s_service.snapshot;
     next.online = s_service.connected;
+    const uint32_t location_revision = s_service.location_revision;
+    s_service.refresh_requested = false;
     strlcpy(previous_last_modified, s_service.last_modified, sizeof(previous_last_modified));
     xSemaphoreGive(s_service.lock);
 
     const double old_latitude = next.latitude;
     const double old_longitude = next.longitude;
     const bool had_location = next.location_valid;
-    esp_err_t location_err = weather_fetch_location(&next);
+    esp_err_t location_err = next.location_source == WEATHER_LOCATION_MANUAL
+        ? ESP_OK : weather_fetch_location(&next);
+    if (location_err != ESP_OK) next.location_stale = true;
     if (location_err != ESP_OK && !had_location) {
         next.last_error = location_err;
         next.stale = next.weather_valid;
-        weather_publish(&next, NULL);
+        weather_publish(&next, NULL, location_revision);
         return location_err;
     }
 
@@ -796,19 +833,204 @@ static esp_err_t weather_refresh_once(void)
         }
         next.last_error = forecast_err;
         next.stale = next.weather_valid;
-        weather_publish(&next, NULL);
+        weather_publish(&next, NULL, location_revision);
         return forecast_err;
     }
 
     next.online = true;
-    next.stale = false;
+    next.stale = location_err != ESP_OK;
     next.last_error = location_err == ESP_OK ? ESP_OK : location_err;
     next.last_updated_epoch = (int64_t)time(NULL);
-    weather_publish(&next, last_modified);
+    if (!weather_publish(&next, last_modified, location_revision)) return ESP_ERR_INVALID_STATE;
     weather_cache_store(&next, last_modified);
     ESP_LOGI(TAG, "Weather updated: %s %d C %s", next.city, (int)next.temperature_c,
              next.condition);
+    return location_err;
+}
+
+typedef struct {
+    uint32_t version;
+    weather_location_source_t source;
+    weather_city_t city;
+} weather_location_record_t;
+
+static void clear_forecast(weather_service_snapshot_t *snapshot)
+{
+    snapshot->weather_valid = false;
+    snapshot->stale = false;
+    snapshot->temperature_c = 0;
+    snapshot->symbol_code[0] = snapshot->condition[0] = '\0';
+    memset(snapshot->forecast, 0, sizeof(snapshot->forecast));
+    snapshot->last_updated_epoch = 0;
+}
+
+static void copy_city(weather_service_snapshot_t *snapshot, const weather_city_t *city)
+{
+    snapshot->latitude = city->latitude;
+    snapshot->longitude = city->longitude;
+    strlcpy(snapshot->city, city->city, sizeof(snapshot->city));
+    strlcpy(snapshot->region, city->region, sizeof(snapshot->region));
+    strlcpy(snapshot->timezone, city->timezone, sizeof(snapshot->timezone));
+    snapshot->public_ip[0] = '\0';
+    snapshot->location_valid = true;
+    snapshot->location_stale = false;
+    snapshot->location_source = WEATHER_LOCATION_MANUAL;
+    snapshot->location_updated_epoch = (int64_t)time(NULL);
+}
+
+static void load_manual_location(void)
+{
+    weather_location_record_t record = {0};
+    size_t bytes = sizeof(record);
+    nvs_handle_t nvs;
+    if (nvs_open(WEATHER_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) return;
+    esp_err_t err = nvs_get_blob(nvs, WEATHER_LOCATION_KEY, &record, &bytes);
+    nvs_close(nvs);
+    if (err != ESP_OK || bytes != sizeof(record) || record.version != WEATHER_LOCATION_VERSION) return;
+    if (record.source == WEATHER_LOCATION_IP) {
+        /* An explicit reset must override an older manual-city weather cache,
+         * including a reboot before the first network refresh completes. */
+        if (s_service.snapshot.location_source == WEATHER_LOCATION_MANUAL) {
+            clear_forecast(&s_service.snapshot);
+            s_service.snapshot.location_valid = false;
+            s_service.snapshot.city[0] = '\0';
+            s_service.snapshot.last_updated_epoch = 0;
+        }
+        s_service.snapshot.location_source = WEATHER_LOCATION_IP;
+        return;
+    }
+    if (record.source != WEATHER_LOCATION_MANUAL || record.city.city[0] == '\0' ||
+            memchr(record.city.city, '\0', sizeof(record.city.city)) == NULL ||
+            memchr(record.city.region, '\0', sizeof(record.city.region)) == NULL ||
+            memchr(record.city.timezone, '\0', sizeof(record.city.timezone)) == NULL ||
+            !weather_location_valid(record.city.latitude, record.city.longitude)) return;
+    if (s_service.snapshot.location_source != WEATHER_LOCATION_MANUAL ||
+            fabs(s_service.snapshot.latitude-record.city.latitude) > 0.00005 ||
+            fabs(s_service.snapshot.longitude-record.city.longitude) > 0.00005) {
+        clear_forecast(&s_service.snapshot);
+    }
+    copy_city(&s_service.snapshot, &record.city);
+}
+
+static esp_err_t set_location(const weather_city_t *city)
+{
+    if (!s_service.initialized) return ESP_ERR_INVALID_STATE;
+    if (city != NULL && (!weather_location_valid(city->latitude,city->longitude) ||
+            city->city[0] == '\0' || memchr(city->city,'\0',sizeof(city->city)) == NULL ||
+            memchr(city->region,'\0',sizeof(city->region)) == NULL ||
+            memchr(city->timezone,'\0',sizeof(city->timezone)) == NULL)) return ESP_ERR_INVALID_ARG;
+    weather_location_record_t record = {.version=WEATHER_LOCATION_VERSION,
+        .source=city != NULL ? WEATHER_LOCATION_MANUAL : WEATHER_LOCATION_IP};
+    weather_observer_t observers[WEATHER_SERVICE_SUBSCRIBER_MAX] = {0};
+    if (city != NULL) record.city=*city;
+    xSemaphoreTake(s_service.lock, portMAX_DELAY);
+    nvs_handle_t nvs;
+    esp_err_t err=nvs_open(WEATHER_NVS_NAMESPACE,NVS_READWRITE,&nvs);
+    if (err == ESP_OK) {
+        err=nvs_set_blob(nvs,WEATHER_LOCATION_KEY,&record,sizeof(record));
+        if (err == ESP_OK) err=nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+    if (err != ESP_OK) { xSemaphoreGive(s_service.lock); return err; }
+    weather_service_snapshot_t next=s_service.snapshot;
+    clear_forecast(&next);
+    if (city != NULL) copy_city(&next,city);
+    else {
+        next.location_valid=false; next.location_stale=true;
+        next.location_source=WEATHER_LOCATION_IP; next.location_updated_epoch=0;
+        next.city[0]=next.region[0]=next.timezone[0]=next.public_ip[0]='\0';
+    }
+    next.last_error=ESP_OK;
+    ++s_service.location_revision;
+    weather_commit_locked(&next,"",observers);
+    s_service.refresh_requested=true;
+    TaskHandle_t task=s_service.task;
+    xSemaphoreGive(s_service.lock);
+    weather_notify(&next,observers);
+    if (task != NULL) xTaskNotifyGive(task);
     return ESP_OK;
+}
+
+esp_err_t weather_service_set_city(const weather_city_t *city)
+{
+    return city != NULL ? set_location(city) : ESP_ERR_INVALID_ARG;
+}
+esp_err_t weather_service_use_network_location(void) { return set_location(NULL); }
+
+esp_err_t weather_service_request_refresh(void)
+{
+    if (!s_service.initialized) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_service.lock,portMAX_DELAY);
+    s_service.refresh_requested=true;
+    TaskHandle_t task=s_service.task;
+    xSemaphoreGive(s_service.lock);
+    if (task != NULL) xTaskNotifyGive(task);
+    return ESP_OK;
+}
+
+esp_err_t weather_service_search_city(const char *query)
+{
+    if (!s_service.initialized) return ESP_ERR_INVALID_STATE;
+    if (query == NULL || strlen(query)<2 || strlen(query)>=WEATHER_SERVICE_QUERY_LEN) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_service.lock,portMAX_DELAY);
+    strlcpy(s_service.search_query,query,sizeof(s_service.search_query));
+    ++s_service.search.revision;
+    s_service.search.state=WEATHER_SEARCH_PENDING;
+    s_service.search.last_error=ESP_OK;
+    s_service.search_pending=true;
+    TaskHandle_t task=s_service.task;
+    xSemaphoreGive(s_service.lock);
+    if (task != NULL) xTaskNotifyGive(task);
+    return ESP_OK;
+}
+
+esp_err_t weather_service_get_city_search(weather_city_search_t *out)
+{
+    if (!s_service.initialized || out == NULL) return ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(s_service.lock,portMAX_DELAY);
+    *out=s_service.search;
+    xSemaphoreGive(s_service.lock);
+    return ESP_OK;
+}
+
+static esp_err_t fetch_cities(const char *query, weather_city_search_t *search)
+{
+    char url[sizeof(WEATHER_CITY_SEARCH_URL)+WEATHER_SERVICE_QUERY_LEN*3];
+    size_t at=strlen(WEATHER_CITY_SEARCH_URL);
+    memcpy(url,WEATHER_CITY_SEARCH_URL,at);
+    static const char hex[]="0123456789ABCDEF";
+    for (const unsigned char *p=(const unsigned char *)query;*p;++p) {
+        url[at++]='%';url[at++]=hex[*p>>4];url[at++]=hex[*p&15];
+    }
+    url[at]='\0';
+    weather_http_response_t response={0};
+    esp_err_t err=weather_http_get(url,NULL,false,&response);
+    if (err != ESP_OK) return err;
+    cJSON *root=response.status_code==200 ? cJSON_Parse(response.body) : NULL;
+    if (root == NULL) { weather_http_response_free(&response); return ESP_ERR_INVALID_RESPONSE; }
+    if (!cJSON_IsObject(root)) { cJSON_Delete(root); weather_http_response_free(&response); return ESP_ERR_INVALID_RESPONSE; }
+    cJSON *rows=cJSON_GetObjectItemCaseSensitive(root,"results");
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root,"error")) ||
+            (rows != NULL && !cJSON_IsArray(rows))) err=ESP_ERR_INVALID_RESPONSE;
+    else if (cJSON_IsArray(rows)) {
+        const int count=cJSON_GetArraySize(rows);
+        for (int i=0;i<count && search->count<WEATHER_SERVICE_CITY_RESULTS;++i) {
+            cJSON *item=cJSON_GetArrayItem(rows,i);
+            cJSON *lat=cJSON_GetObjectItemCaseSensitive(item,"latitude");
+            cJSON *lon=cJSON_GetObjectItemCaseSensitive(item,"longitude");
+            const char *name=weather_json_string(item,"name");
+            if (!name || !name[0] || !cJSON_IsNumber(lat) || !cJSON_IsNumber(lon) ||
+                    !weather_location_valid(lat->valuedouble,lon->valuedouble)) continue;
+            weather_city_t *city=&search->cities[search->count++];
+            city->latitude=lat->valuedouble;city->longitude=lon->valuedouble;
+            strlcpy(city->city,name,sizeof(city->city));
+            strlcpy(city->region,weather_json_string(item,"admin1") ?: "",sizeof(city->region));
+            strlcpy(city->country,weather_json_string(item,"country_code") ?: "",sizeof(city->country));
+            strlcpy(city->timezone,weather_json_string(item,"timezone") ?: "",sizeof(city->timezone));
+        }
+    }
+    cJSON_Delete(root);weather_http_response_free(&response);
+    return err;
 }
 
 static uint32_t weather_retry_delay(unsigned retry)
@@ -828,46 +1050,56 @@ static uint32_t weather_retry_delay(unsigned retry)
 static void weather_worker(void *arg)
 {
     (void)arg;
-    unsigned retry = 0U;
-    while (true) {
-        bool running = false;
-        bool connected = false;
-        if (xSemaphoreTake(s_service.lock, portMAX_DELAY) == pdTRUE) {
-            running = s_service.running;
-            connected = s_service.connected;
-            xSemaphoreGive(s_service.lock);
+    unsigned retry=0;
+    int64_t next_refresh_us=0;
+    for (;;) {
+        char query[WEATHER_SERVICE_QUERY_LEN]={0};
+        uint32_t search_revision=0;
+        xSemaphoreTake(s_service.lock,portMAX_DELAY);
+        const bool running=s_service.running, connected=s_service.connected;
+        const bool search=s_service.search_pending;
+        if (search) {
+            strlcpy(query,s_service.search_query,sizeof(query));
+            search_revision=s_service.search.revision;
+            s_service.search_pending=false;
         }
-        if (!running) {
-            break;
+        const bool refresh=s_service.refresh_requested;
+        s_service.refresh_requested=false;
+        xSemaphoreGive(s_service.lock);
+        if (!running) break;
+        if (refresh) next_refresh_us=0;
+        if (search) {
+            weather_city_search_t result={.revision=search_revision};
+            result.last_error=connected ? fetch_cities(query,&result) : ESP_ERR_INVALID_STATE;
+            result.state=result.last_error==ESP_OK ? WEATHER_SEARCH_COMPLETE : WEATHER_SEARCH_FAILED;
+            xSemaphoreTake(s_service.lock,portMAX_DELAY);
+            if (s_service.search.revision==search_revision) s_service.search=result;
+            xSemaphoreGive(s_service.lock);
+            continue;
         }
         if (!connected) {
-            (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            (void)ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
             continue;
         }
         if (!weather_time_valid()) {
-            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(WEATHER_TIME_RETRY_MS));
+            (void)ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(WEATHER_TIME_RETRY_MS));
             continue;
         }
-
-        (void)ulTaskNotifyTake(pdTRUE, 0);
-        esp_err_t err = weather_refresh_once();
-        uint32_t delay_ms;
-        if (err == ESP_OK) {
-            retry = 0U;
-            delay_ms =
-                s_service.config.refresh_interval_ms + esp_random() % (WEATHER_JITTER_MAX_MS + 1U);
-        } else {
-            delay_ms = weather_retry_delay(retry++);
-            ESP_LOGW(TAG, "Weather refresh failed: %s; retry in %u ms", esp_err_to_name(err),
-                     (unsigned)delay_ms);
+        const int64_t remaining=next_refresh_us-esp_timer_get_time();
+        if (remaining>0) {
+            (void)ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS((remaining+999)/1000));
+            continue;
         }
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(delay_ms));
+        const esp_err_t err=weather_refresh_once();
+        const uint32_t delay_ms=err==ESP_OK ? s_service.config.refresh_interval_ms +
+            esp_random()%(WEATHER_JITTER_MAX_MS+1U) : weather_retry_delay(retry++);
+        if (err==ESP_OK) retry=0;
+        else ESP_LOGW(TAG,"Weather refresh failed: %s",esp_err_to_name(err));
+        next_refresh_us=esp_timer_get_time()+(int64_t)delay_ms*1000;
     }
-
-    if (xSemaphoreTake(s_service.lock, portMAX_DELAY) == pdTRUE) {
-        s_service.task = NULL;
-        xSemaphoreGive(s_service.lock);
-    }
+    xSemaphoreTake(s_service.lock,portMAX_DELAY);
+    s_service.task=NULL;
+    xSemaphoreGive(s_service.lock);
     vTaskDelete(NULL);
 }
 
@@ -880,22 +1112,26 @@ static void weather_wifi_event(const wifi_manager_event_t *event, void *user_ctx
     bool changed = false;
     TaskHandle_t task = NULL;
     weather_service_snapshot_t snapshot = {0};
+    weather_observer_t observers[WEATHER_SERVICE_SUBSCRIBER_MAX] = {0};
     if (xSemaphoreTake(s_service.lock, portMAX_DELAY) == pdTRUE) {
         changed = s_service.connected != event->sta_connected;
         s_service.connected = event->sta_connected;
         task = s_service.task;
-        snapshot = s_service.snapshot;
+        if (changed) {
+            snapshot = s_service.snapshot;
+            if (!event->sta_connected && snapshot.weather_valid) {
+                snapshot.stale = true;
+                snapshot.last_error = ESP_ERR_INVALID_STATE;
+            }
+            weather_commit_locked(&snapshot, NULL, observers);
+            if (event->sta_connected) s_service.refresh_requested=true;
+        }
         xSemaphoreGive(s_service.lock);
     }
     if (!changed) {
         return;
     }
-    snapshot.online = event->sta_connected;
-    if (!event->sta_connected && snapshot.weather_valid) {
-        snapshot.stale = true;
-        snapshot.last_error = ESP_ERR_INVALID_STATE;
-    }
-    weather_publish(&snapshot, NULL);
+    weather_notify(&snapshot, observers);
     if (task != NULL) {
         xTaskNotifyGive(task);
     }
@@ -923,6 +1159,7 @@ esp_err_t weather_service_init(const weather_service_config_t *config)
     s_service.config.user_agent = s_service.user_agent;
     s_service.snapshot.last_error = ESP_ERR_INVALID_STATE;
     weather_cache_load();
+    load_manual_location();
     s_service.initialized = true;
     return ESP_OK;
 }

@@ -18,7 +18,8 @@
 
 #define RAD_TO_DEG 57.2957795f
 #define BMI270_GYRO_500DPS_SCALE 65.536f
-#define IMU_COMPLEMENTARY_ALPHA 0.96f
+/* 95% correction in about 0.75 s, independent of the UI sampling cadence. */
+#define IMU_CORRECTION_TIME_CONSTANT_S 0.25f
 #define IMU_INIT_RETRY_INTERVAL_US (5LL * 1000 * 1000)
 
 static const char *TAG = "mosaic_imu";
@@ -103,10 +104,11 @@ static esp_err_t read_orientation(mosaic_imu_sample_t *out, void *user_ctx)
         const float gx = raw.gyr.x / BMI270_GYRO_500DPS_SCALE;
         const float gy = raw.gyr.y / BMI270_GYRO_500DPS_SCALE;
         const float gz = raw.gyr.z / BMI270_GYRO_500DPS_SCALE;
-        s_imu.roll = IMU_COMPLEMENTARY_ALPHA * (s_imu.roll + gx * dt) +
-                     (1.0f - IMU_COMPLEMENTARY_ALPHA) * acc_roll;
-        s_imu.pitch = IMU_COMPLEMENTARY_ALPHA * (s_imu.pitch + gy * dt) +
-                      (1.0f - IMU_COMPLEMENTARY_ALPHA) * acc_pitch;
+        const float alpha = expf(-dt / IMU_CORRECTION_TIME_CONSTANT_S);
+        s_imu.roll = alpha * (s_imu.roll + gx * dt) +
+                     (1.0f - alpha) * acc_roll;
+        s_imu.pitch = alpha * (s_imu.pitch + gy * dt) +
+                      (1.0f - alpha) * acc_pitch;
         s_imu.yaw = wrap_heading(s_imu.yaw + gz * dt);
     }
     s_imu.timestamp_us = now_us;

@@ -13,6 +13,7 @@
 #include "gen_board_device_custom.h"
 #include "i2c_bus.h"
 #include "bq27220.h"
+#include "battery_charge_config.h"
 
 static const char *TAG = "MOSAICO_BATT";
 
@@ -57,7 +58,8 @@ static int battery_monitor_init(void *config, int cfg_size, void **device_handle
 
     static const gauging_config_t default_config = {
         .CCT = 1,
-        .CSYNC = 0,
+        /* TI TRM 4.4.1: synchronize RM with FCC at qualified termination. */
+        .CSYNC = 1,
         .EDV_CMP = 0,
         .SC = 1,
         .FIXED_EDV0 = 0,
@@ -82,6 +84,17 @@ static int battery_monitor_init(void *config, int cfg_size, void **device_handle
         .clk_flags = 0,
     };
     i2c_bus_handle_t i2c_bus = i2c_bus_create(cfg->i2c_port, &i2c_bus_conf);
+    ESP_RETURN_ON_FALSE(i2c_bus != NULL, ESP_ERR_NO_MEM, TAG, "create battery I2C wrapper failed");
+    uint16_t learned_capacity = 0;
+    const esp_err_t learned_err = mosaico_battery_read_learned_capacity(
+        i2c_bus, design_cap, &learned_capacity);
+    if (learned_err == ESP_OK) {
+        default_cedv.full_charge_cap = learned_capacity;
+    } else if (learned_err != ESP_ERR_INVALID_STATE) {
+        /* A failed read is not evidence that the stored model needs writing. */
+        i2c_bus_delete(&i2c_bus);
+        return learned_err;
+    }
 
     bq27220_config_t bq27220_cfg = {
         .i2c_bus = i2c_bus,
@@ -93,8 +106,22 @@ static int battery_monitor_init(void *config, int cfg_size, void **device_handle
     if (!bq27220_hdl) {
         ESP_LOGE(TAG, "Failed to initialize BQ27220");
         i2c_bus_delete(&i2c_bus);
-        return false;
+        return ESP_FAIL;
     }
+#if CONFIG_MOSAICO_BATTERY_OVERRIDE_CHARGE_TERMINATION
+    const mosaico_battery_charge_config_t charge = {
+        .charging_voltage_mv = CONFIG_MOSAICO_BATTERY_CHARGING_VOLTAGE_MV,
+        .taper_current_ma = CONFIG_MOSAICO_BATTERY_TAPER_CURRENT_MA,
+        .taper_voltage_mv = CONFIG_MOSAICO_BATTERY_TAPER_VOLTAGE_MV,
+    };
+    esp_err_t charge_err = mosaico_battery_apply_charge_config(i2c_bus, bq27220_hdl, &charge);
+    if (charge_err != ESP_OK) {
+        ESP_LOGE(TAG, "verify BQ27220 charge termination config failed: %s", esp_err_to_name(charge_err));
+        bq27220_delete(bq27220_hdl);
+        i2c_bus_delete(&i2c_bus);
+        return charge_err;
+    }
+#endif
     *device_handle = (void *)bq27220_hdl;
     ESP_LOGI(TAG, "Battery monitor initialized successfully");
     return 0;

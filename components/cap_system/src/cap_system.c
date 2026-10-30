@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include "cap_system.h"
+#include "cap_system_cpu.h"
 
 #include <stdbool.h>
 #include <inttypes.h>
@@ -448,18 +449,16 @@ static cJSON *cap_system_build_cpu_json(void)
         }
     }
 
-    if (total_runtime > 0 && idle_runtime <= total_runtime) {
-        usage_percent = 100.0 - (((double)idle_runtime * 100.0) / (double)total_runtime);
+    const bool valid = count != 0 && cap_system_cpu_usage(
+        total_runtime, idle_runtime, portNUM_PROCESSORS, &usage_percent);
+    cJSON_AddBoolToObject(root, "supported", valid);
+    if (valid) {
+        cJSON_AddNumberToObject(root, "usage_percent", usage_percent);
+    } else {
+        cJSON_AddNullToObject(root, "usage_percent");
+        cJSON_AddStringToObject(root, "message", "Runtime counters are unavailable or inconsistent; retry the query");
     }
-    if (usage_percent < 0) {
-        usage_percent = 0;
-    }
-    if (usage_percent > 100.0) {
-        usage_percent = 100.0;
-    }
-
-    cJSON_AddBoolToObject(root, "supported", true);
-    cJSON_AddNumberToObject(root, "usage_percent", usage_percent);
+    cJSON_AddStringToObject(root, "usage_basis", "cumulative_runtime_counters");
     cJSON_AddNumberToObject(root, "task_count", count);
     cJSON_AddNumberToObject(root, "runtime_total_ticks", (double)total_runtime);
     cJSON_AddNumberToObject(root, "runtime_idle_ticks", (double)idle_runtime);
@@ -487,6 +486,12 @@ static cJSON *cap_system_build_version_json(void)
     cJSON_AddStringToObject(root, "esp_claw", claw_get_version());
     cJSON_AddStringToObject(root, "esp_claw_git", claw_get_git_version());
     cJSON_AddStringToObject(root, "edge_agent", esp_app_get_description()->version);
+    char elf_sha256[65];
+    const uint8_t *elf_sha = esp_app_get_description()->app_elf_sha256;
+    for (size_t i = 0; i < 32; ++i) {
+        snprintf(elf_sha256 + i * 2, 3, "%02x", elf_sha[i]);
+    }
+    cJSON_AddStringToObject(root, "app_elf_sha256", elf_sha256);
     cJSON_AddStringToObject(root, "esp_idf", esp_get_idf_version());
     return root;
 }

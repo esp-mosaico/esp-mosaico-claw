@@ -11,6 +11,11 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mosaico_module_mgr.h"
+#include "sdkconfig.h"
+
+#ifdef CONFIG_MOSAICO_CAMERA_EQUIVALENT_ROI
+#include "mosaico_camera_roi.h"
+#endif
 
 static const char *TAG = "camera_service";
 
@@ -71,6 +76,11 @@ static esp_err_t create_supported_camera(mosaico_module_mgr_slot_t slot,
         mosaico_camera_handle_t camera = NULL;
         mosaico_camera_info_t camera_info = {0};
         esp_err_t ret = mosaico_camera_new(&config, &camera);
+#ifdef CONFIG_MOSAICO_CAMERA_EQUIVALENT_ROI
+        if (ret == ESP_OK && profile->width == 0) {
+            ret = mosaico_camera_configure_equivalent_roi(camera);
+        }
+#endif
         if (ret == ESP_OK) {
             ret = mosaico_camera_open(camera);
         }
@@ -84,8 +94,10 @@ static esp_err_t create_supported_camera(mosaico_module_mgr_slot_t slot,
 
         const bool retry_vga = ret == ESP_OK && profile->width == 0 && camera_info.width == 640 && camera_info.height == 480;
         if (ret == ESP_OK && !retry_vga) {
-            ESP_LOGI(TAG, "Camera profile accepted: %ux%u buffers=%u", (unsigned)camera_info.width,
-                     (unsigned)camera_info.height, (unsigned)camera_info.buffer_count);
+            ESP_LOGI(TAG, "Camera profile accepted: %ux%u buffers=%u stride=%u frame=%zu",
+                     (unsigned)camera_info.width, (unsigned)camera_info.height,
+                     (unsigned)camera_info.buffer_count, (unsigned)camera_info.bytes_per_line,
+                     camera_info.frame_buffer_size);
             *out_camera = camera;
             return ESP_OK;
         }

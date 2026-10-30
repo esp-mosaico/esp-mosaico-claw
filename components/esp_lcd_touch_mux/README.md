@@ -21,22 +21,3 @@ ESP_ERROR_CHECK(esp_lcd_touch_mux_new(physical_touch, &config, &touch));
 ```
 
 An injected gesture is a `begin`, one or more complete frames, and `end`. `end` appends the release frame. Use `cancel` on every playback error path.
-
-## Compatibility status
-
-The independent test app in `test_apps/basic` compiles with ESP-IDF 6.2 for the targets below. Compilation verifies both low/high GPIO register branches where applicable; it is not a substitute for board validation of software-triggered GPIO interrupt delivery.
-
-| Target | Compile | Hardware W1TS validation |
-| --- | --- | --- |
-| ESP32 | Passed | Not run |
-| ESP32-S3 | Passed | Not run |
-| ESP32-C3 | Passed | Not run |
-| ESP32-C6 | Passed | Not run |
-| ESP32-P4 | Passed | Not run |
-| ESP32-S31 | Passed | Passed on esp_mosaico (GPIO6) |
-
-Build the standalone test app with a target-specific sdkconfig path so one target does not overwrite another:
-
-```sh
-idf.py -B build_esp32s3 -DIDF_TARGET=esp32s3 -DSDKCONFIG=sdkconfig.esp32s3 build
-```

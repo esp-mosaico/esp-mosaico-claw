@@ -4,11 +4,12 @@
  */
 
 #include "mosaic_battery_platform.h"
+#include "mosaic_power_platform.h"
 
 #include <stdbool.h>
 #include <string.h>
+#include "cJSON.h"
 
-#include "driver/gpio.h"
 #include "esp_board_manager_includes.h"
 #include "bq27220.h"
 #include "esp_check.h"
@@ -22,8 +23,6 @@
 #define MOSAIC_BATTERY_CHARGE_CONFIRM_SAMPLES 3U
 #define MOSAIC_BATTERY_LOW_SHUTDOWN_SOC 2U
 #define MOSAIC_BATTERY_LOW_SHUTDOWN_CONFIRM_SAMPLES 3U
-#define MOSAIC_BATTERY_POWER_OFF_GPIO GPIO_NUM_57
-#define MOSAIC_BATTERY_POWER_OFF_PULSE_MS 100U
 #define MOSAIC_BATTERY_TELEMETRY_SAMPLES 8U
 #define MOSAIC_BATTERY_MIN_VALID_MV 2500U
 #define MOSAIC_BATTERY_MAX_VALID_MV 5000U
@@ -46,32 +45,12 @@ static void battery_low_shutdown_task(void *arg)
     (void)arg;
     ESP_LOGW(TAG, "battery SoC below %u%%; requesting hardware power-off",
              (unsigned)MOSAIC_BATTERY_LOW_SHUTDOWN_SOC);
-#if CONFIG_ESP_BOARD_ESP_MOSAICO
-    const gpio_config_t power_off_cfg = {
-        .pin_bit_mask = 1ULL << MOSAIC_BATTERY_POWER_OFF_GPIO,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    esp_err_t gpio_err = gpio_config(&power_off_cfg);
-    if (gpio_err != ESP_OK) {
-        ESP_LOGE(TAG, "power-off GPIO config failed: %s",
-                 esp_err_to_name(gpio_err));
-        vTaskDelete(NULL);
-        return;
+    esp_err_t err = mosaic_power_platform_request_shutdown();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "board power-off request failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGW(TAG, "power-off pulse sent through BSP open-drain control");
     }
-
-    /* The board power controller is active-low: pulse GPIO57 low, then release. */
-    (void)gpio_set_level(MOSAIC_BATTERY_POWER_OFF_GPIO, 1);
-    (void)gpio_set_level(MOSAIC_BATTERY_POWER_OFF_GPIO, 0);
-    vTaskDelay(pdMS_TO_TICKS(MOSAIC_BATTERY_POWER_OFF_PULSE_MS));
-    (void)gpio_set_level(MOSAIC_BATTERY_POWER_OFF_GPIO, 1);
-    ESP_LOGW(TAG, "power-off pulse sent on GPIO57 (%u ms)",
-             (unsigned)MOSAIC_BATTERY_POWER_OFF_PULSE_MS);
-#else
-    ESP_LOGE(TAG, "low-battery power-off is unsupported on this board");
-#endif
     vTaskDelete(NULL);
 }
 
@@ -79,6 +58,7 @@ static void battery_low_shutdown_check(
     const mosaic_settings_battery_t *battery)
 {
     if (battery == NULL || !battery->available || battery->charging ||
+            battery->stale ||
             battery->state_of_charge >= MOSAIC_BATTERY_LOW_SHUTDOWN_SOC) {
         s_low_shutdown_samples = 0;
         return;
@@ -175,6 +155,7 @@ static bool read_battery(mosaic_settings_battery_t *out_battery)
     }
 
     out_battery->available = true;
+    out_battery->sampled_at_us = esp_timer_get_time();
     out_battery->charging = s_charging_latched;
     out_battery->state_of_charge = state_of_charge;
     out_battery->voltage_mv = voltage_mv;
@@ -211,6 +192,7 @@ static bool battery_changed(const mosaic_settings_battery_t *a,
                             const mosaic_settings_battery_t *b)
 {
     return a->available != b->available ||
+           a->stale != b->stale || a->last_error != b->last_error ||
            a->charging != b->charging ||
            a->state_of_charge != b->state_of_charge ||
            a->voltage_mv != b->voltage_mv ||
@@ -225,13 +207,15 @@ static void sample_and_publish(bool force)
 {
     mosaic_settings_battery_t sample = {0};
     if (!read_battery(&sample)) {
+        s_low_shutdown_samples = 0;
         portENTER_CRITICAL(&s_sample_lock);
-        const bool have_last = s_sample_valid;
-        mosaic_settings_battery_t published = s_sample;
+        const bool publish = force || (s_sample_valid && !s_sample.stale) ||
+            s_sample.last_error != ESP_FAIL;
+        s_sample.stale = s_sample_valid;
+        s_sample.last_error = ESP_FAIL;
+        const mosaic_settings_battery_t published = s_sample;
         portEXIT_CRITICAL(&s_sample_lock);
-        if (force && !have_last) {
-            mosaic_settings_notify_battery(&(mosaic_settings_battery_t){0});
-        } else if (force && have_last) {
+        if (publish) {
             mosaic_settings_notify_battery(&published);
         }
         return;
@@ -242,10 +226,9 @@ static void sample_and_publish(bool force)
     if (!s_sample_valid || battery_changed(&s_sample, &sample)) {
         publish = true;
     }
-    if (publish) {
-        s_sample = sample;
-        s_sample_valid = true;
-    }
+    /* Keep freshness current even when unchanged values need no UI publish. */
+    s_sample = sample;
+    s_sample_valid = true;
     mosaic_settings_battery_t published = s_sample;
     portEXIT_CRITICAL(&s_sample_lock);
     if (publish) {
@@ -287,13 +270,41 @@ esp_err_t mosaic_battery_platform_get(
     ESP_RETURN_ON_FALSE(ret_battery != NULL, ESP_ERR_INVALID_ARG, TAG,
                         "invalid output");
     portENTER_CRITICAL(&s_sample_lock);
-    if (s_sample_valid) {
-        *ret_battery = s_sample;
-        portEXIT_CRITICAL(&s_sample_lock);
-        return ESP_OK;
-    }
+    *ret_battery = s_sample;
     portEXIT_CRITICAL(&s_sample_lock);
-    memset(ret_battery, 0, sizeof(*ret_battery));
-    (void)read_battery(ret_battery);
+    if (ret_battery->available && esp_timer_get_time() - ret_battery->sampled_at_us >
+            (int64_t)MOSAIC_BATTERY_SAMPLE_MS * 3000) {
+        ret_battery->stale = true;
+        if (ret_battery->last_error == ESP_OK) ret_battery->last_error = ESP_ERR_TIMEOUT;
+    }
     return ESP_OK;
+}
+
+esp_err_t mosaic_battery_platform_get_info(const char *section,
+    char *output, size_t output_size, void *user_ctx)
+{
+    (void)section;
+    (void)user_ctx;
+    if (output == NULL || output_size == 0) return ESP_ERR_INVALID_ARG;
+    mosaic_settings_battery_t battery;
+    const esp_err_t err = mosaic_battery_platform_get(&battery);
+    if (err != ESP_OK) return err;
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL) return ESP_ERR_NO_MEM;
+    cJSON_AddBoolToObject(root, "supported", esp_board_manager_check_name("battery_monitor"));
+    cJSON_AddBoolToObject(root, "available", battery.available);
+    cJSON_AddBoolToObject(root, "stale", battery.stale);
+    cJSON_AddNumberToObject(root, "last_error", battery.last_error);
+    if (battery.available) {
+        cJSON_AddBoolToObject(root, "charging", battery.charging);
+        cJSON_AddNumberToObject(root, "state_of_charge", battery.state_of_charge);
+        cJSON_AddNumberToObject(root, "voltage_mv", battery.voltage_mv);
+        cJSON_AddNumberToObject(root, "current_ma", battery.current_ma);
+        cJSON_AddNumberToObject(root, "sampled_at_us", battery.sampled_at_us);
+        cJSON_AddNumberToObject(root, "sample_age_ms",
+            (esp_timer_get_time() - battery.sampled_at_us) / 1000);
+    }
+    const bool rendered = cJSON_PrintPreallocated(root, output, output_size, false);
+    cJSON_Delete(root);
+    return rendered ? ESP_OK : ESP_ERR_INVALID_SIZE;
 }

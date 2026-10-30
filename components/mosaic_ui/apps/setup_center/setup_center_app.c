@@ -141,6 +141,9 @@ typedef struct {
     char connected_ssid[MOSAIC_SETTINGS_SSID_LEN];
     bool network_join_success;
     bool network_scan_ready;
+    bool network_scan_waiting;
+    uint32_t network_scan_revision;
+    uint32_t network_scan_request_revision;
     int64_t network_scan_deadline_us;
     int64_t operation_started_us;
     int64_t operation_deadline_us;
@@ -658,6 +661,19 @@ static bool setup_network_refresh_scan(void)
         setup_network_seed_mock();
         return true;
     }
+    SETUP_MODEL_LOCK();
+    const mosaic_settings_network_t status = s_setup.network_status;
+    const bool waiting = s_setup.network_scan_waiting;
+    const uint32_t requested_revision = s_setup.network_scan_request_revision;
+    SETUP_MODEL_UNLOCK();
+    /* A successful cache read may still belong to the previous scan. The
+     * device provider publishes a nonzero completion revision, including
+     * empty/error results. Revision-zero synchronous providers remain valid. */
+    if (status.scan_revision != 0U &&
+            ((waiting && status.scan_revision == requested_revision) ||
+             status.scan_error != ESP_OK)) {
+        return false;
+    }
     if (mosaic_settings_scan_wifi(records, MOSAIC_SETTINGS_WIFI_SCAN_MAX,
             &count) != ESP_OK) {
         return false;
@@ -670,16 +686,23 @@ static bool setup_network_refresh_scan(void)
         memcpy(s_setup.networks, records, count * sizeof(records[0]));
     }
     s_setup.network_count = count;
+    s_setup.network_scan_revision = status.scan_revision;
+    s_setup.network_scan_waiting = false;
     SETUP_MODEL_UNLOCK();
     return true;
 }
 
 static void setup_network_request_scan(int64_t now_us)
 {
+    mosaic_settings_network_t status = {0};
+    if (mosaic_settings_get_wifi(&status) == ESP_OK) {
+        setup_network_event(&status, NULL);
+    }
     s_setup.network_scan_ready = false;
     s_setup.network_scan_deadline_us = now_us + SETUP_NETWORK_SCAN_US;
     SETUP_MODEL_LOCK();
-    s_setup.network_count = 0;
+    s_setup.network_scan_request_revision = s_setup.network_status.scan_revision;
+    s_setup.network_scan_waiting = true;
     SETUP_MODEL_UNLOCK();
     const esp_err_t err = mosaic_settings_request_wifi_scan();
     if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
@@ -1930,11 +1953,44 @@ static uint8_t setup_operation_progress(int64_t now_us)
         SETUP_PROGRESS_COUNT) / duration);
 }
 
+static void setup_network_scan_step(int64_t now_us)
+{
+    SETUP_MODEL_LOCK();
+    const uint32_t completed_revision = s_setup.network_status.scan_revision;
+    SETUP_MODEL_UNLOCK();
+    if (s_setup.network_scan_ready &&
+            completed_revision == s_setup.network_scan_revision) {
+        return;
+    }
+    if (mosaic_settings_wifi_backend_available()) {
+        if (setup_network_refresh_scan()) {
+            s_setup.network_scan_ready = true;
+            setup_network_render();
+        } else if (!s_setup.network_scan_ready &&
+                now_us >= s_setup.network_scan_deadline_us) {
+            /* Wi-Fi starts after Mosaic during boot.  Retry until the
+             * radio is ready instead of presenting a pending scan as an
+             * empty network list. */
+            setup_network_request_scan(now_us);
+        }
+    } else if (now_us >= s_setup.network_scan_deadline_us) {
+        setup_network_seed_mock();
+        s_setup.network_scan_ready = true;
+        setup_network_render();
+    }
+}
+
 static void setup_step(int64_t now_us)
 {
     setup_wechat_apply_model(now_us);
     setup_network_apply_model(now_us);
     setup_region_step(now_us);
+    if (s_setup.network_phase == SETUP_NETWORK_SCAN &&
+            s_setup.network_scan_ready) {
+        /* A late worker completion must update a displayed empty/old cache;
+         * it does not require leaving and re-entering the Network page. */
+        setup_network_scan_step(now_us);
+    }
     if (s_setup.page == SETUP_PAGE_WECHAT &&
             s_setup.wechat_phase == SETUP_WECHAT_BINDING &&
             now_us >= s_setup.navigation_guard_until_us &&
@@ -1967,21 +2023,7 @@ static void setup_step(int64_t now_us)
     }
     if (s_setup.network_phase == SETUP_NETWORK_SCAN &&
             !s_setup.network_scan_ready) {
-        if (mosaic_settings_wifi_backend_available()) {
-            if (setup_network_refresh_scan()) {
-                s_setup.network_scan_ready = true;
-                setup_network_render();
-            } else if (now_us >= s_setup.network_scan_deadline_us) {
-                /* Wi-Fi starts after Mosaic during boot.  Retry until the
-                 * radio is ready instead of presenting a pending scan as an
-                 * empty network list. */
-                setup_network_request_scan(now_us);
-            }
-        } else if (now_us >= s_setup.network_scan_deadline_us) {
-            setup_network_seed_mock();
-            s_setup.network_scan_ready = true;
-            setup_network_render();
-        }
+        setup_network_scan_step(now_us);
     } else if (s_setup.network_phase == SETUP_NETWORK_JOINING &&
             !mosaic_settings_wifi_backend_available()) {
         const uint8_t progress = setup_operation_progress(now_us);

@@ -11,5 +11,3 @@
 `已安装` 同时读取 DATA 和 SYSTEM 中的 Launcher 清单。目录中的外设需求仅供用户判断，不代表设备一定具有对应硬件。大小是目录估算值，下载仍可能因存储不足失败。
 
 清理安装临时目录使用固件的 `storage.remove_tree()`，需要包含该接口的固件版本。清理失败会保留原始安装错误，分别记录 staging 和已安装目录的回滚错误。
-
-主机集成验证：在项目根目录运行 `python3 third-party/esp-claw/components/lua_modules/lua_module_storage/test/run_host.py --lua-dir managed_components/georgik__lua/lua --app-store-test tests/app_store_storage.lua`。该测试调用真实 C storage 模块，网络与发布能力使用替身，覆盖残留目录清理、安装、下载/发布失败回滚和重试。

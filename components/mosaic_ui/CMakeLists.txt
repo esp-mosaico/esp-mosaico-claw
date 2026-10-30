@@ -16,6 +16,7 @@ idf_component_register(
          "core/mosaic_camera.c"
          "core/mosaic_loader.c"
          "core/mosaic_esp_platform.c"
+         "core/mosaic_ui_probe.c"
          "logic/mosaic_logic.c"
          "logic/mosaic_native_logic.c"
          "logic/mosaic_lua_logic.c"
@@ -61,6 +62,8 @@ if(CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO)
         "-Wl,--wrap=esp_a2d_sink_init;-Wl,--wrap=esp_a2d_register_callback;-Wl,--wrap=esp_a2d_sink_deinit;-Wl,-u,__wrap_esp_a2d_sink_init"
         APPEND)
 endif()
+
+include("${MOSAIC_MAIN_DIR}/common/mosaic_gsp_product_fixes.cmake")
 
 # Mosaic loads its dynamic CJK fallback from the read-only SYSTEM filesystem.
 # Enable the optional esp-gsp FreeType provider without embedding another copy

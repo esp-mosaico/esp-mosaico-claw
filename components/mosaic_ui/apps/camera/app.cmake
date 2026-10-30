@@ -6,3 +6,5 @@ set(MOSAIC_APP_BUNDLE generated/camera.gspb)
 set(MOSAIC_APP_SCENE_DIR scene)
 set(MOSAIC_APP_SCENE_JSON scene/camera_480.json)
 set(MOSAIC_APP_GENERATOR scene/gen_scene.py)
+# Poll capture completion on the existing loader task, with no extra GSP timer.
+set(MOSAIC_APP_TICK_MS 250)

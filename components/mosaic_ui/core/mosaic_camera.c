@@ -7,6 +7,8 @@
 #include "mosaic_camera.h"
 
 #include <inttypes.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -16,6 +18,7 @@
 #include "camera_binds.h"
 #include "camera_vision.h"
 #if defined(ESP_PLATFORM)
+#include "mosaic_ui.h"
 #include "driver/jpeg_encode.h"
 #include "driver/ppa.h"
 #include "esp_err.h"
@@ -35,6 +38,9 @@
 #define MOSAIC_CAMERA_STRIDE (MOSAIC_CAMERA_W * 2U)
 #define MOSAIC_CAMERA_FRAME_BYTES ((size_t)MOSAIC_CAMERA_STRIDE * MOSAIC_CAMERA_H)
 #define MOSAIC_CAMERA_BUFFERS 2U
+#define MOSAIC_CAMERA_START_ATTEMPTS 3U
+#define MOSAIC_CAMERA_START_RETRY_MS 500U
+#define MOSAIC_CAMERA_FRAME_DEADLINE_US (10LL * 1000000)
 #define MOSAIC_CAMERA_OUTPUT_W 450U
 #define MOSAIC_CAMERA_OUTPUT_X ((MOSAIC_CAMERA_W - MOSAIC_CAMERA_OUTPUT_W) / 2U)
 #define MOSAIC_CAMERA_THUMBNAIL_SIZE 48U
@@ -43,7 +49,6 @@
 
 #if defined(ESP_PLATFORM)
 
-#define MOSAIC_CAMERA_BUFFER_ALIGN 64U
 #define MOSAIC_CAMERA_STOP_TIMEOUT_MS 35000
 #define MOSAIC_CAMERA_TASK_STACK 6144
 #define MOSAIC_CAMERA_TASK_PRIORITY 3
@@ -52,6 +57,7 @@
 #define MOSAIC_CAMERA_CAPTURE_PATH_MAX 256U
 #define MOSAIC_CAMERA_JPEG_QUALITY 90U
 #define MOSAIC_CAMERA_JPEG_TIMEOUT_MS 1000
+#define MOSAIC_CAMERA_JPEG_BUFFER_WAIT_US (1000LL * 1000)
 #define MOSAIC_CAMERA_FLASH_WAIT_FRAMES 10U
 #define MOSAIC_CAMERA_CAPTURE_FREEZE_MS 300
 #define MOSAIC_CAMERA_QR_INTERVAL_US 100000
@@ -84,9 +90,15 @@ typedef struct {
     SemaphoreHandle_t task_done;
     SemaphoreHandle_t submit_lock;
     TaskHandle_t task;
+    bool task_joined;
     uint32_t sequence;
     int64_t preview_resume_time_us;
     char capture_path[MOSAIC_CAMERA_CAPTURE_PATH_MAX];
+    bool preview_ready;
+    uint32_t capture_sequence;
+    esp_err_t capture_result;
+    esp_err_t startup_result;
+    esp_err_t shutdown_result;
     bool started;
     bool stopping;
     bool capture_pending;
@@ -100,6 +112,8 @@ static mosaic_camera_state_t s_camera = {
     .lock = portMUX_INITIALIZER_UNLOCKED,
 };
 
+static void camera_submit_preview(esp_gsp_handle_t ui, bool force);
+
 static bool camera_is_stopping(void)
 {
     bool stopping;
@@ -107,6 +121,58 @@ static bool camera_is_stopping(void)
     stopping = s_camera.stopping;
     portEXIT_CRITICAL(&s_camera.lock);
     return stopping;
+}
+
+static void camera_set_startup_result(esp_err_t result)
+{
+    portENTER_CRITICAL(&s_camera.lock);
+    s_camera.startup_result = result;
+    portEXIT_CRITICAL(&s_camera.lock);
+}
+
+static void camera_finish_capture(esp_err_t result)
+{
+    portENTER_CRITICAL(&s_camera.lock);
+    if (s_camera.capture_pending) {
+        s_camera.capture_result = result;
+        s_camera.capture_pending = false;
+        s_camera.capture_use_flash = false;
+        s_camera.capture_path[0] = '\0';
+    }
+    portEXIT_CRITICAL(&s_camera.lock);
+}
+
+static void camera_clear_preview_ready(void)
+{
+    portENTER_CRITICAL(&s_camera.lock);
+    s_camera.preview_ready = false;
+    /* A queued request has no frame to consume; a request already being
+     * saved keeps ownership until camera_finish_capture(). */
+    if (s_camera.capture_pending && s_camera.capture_path[0] != '\0') {
+        s_camera.capture_pending = false;
+        s_camera.capture_use_flash = false;
+        s_camera.capture_path[0] = '\0';
+        s_camera.capture_result = ESP_ERR_INVALID_STATE;
+    }
+    portEXIT_CRITICAL(&s_camera.lock);
+}
+
+esp_err_t mosaic_camera_get_capture_status(mosaic_camera_capture_status_t *status)
+{
+    if (status == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    portENTER_CRITICAL(&s_camera.lock);
+    *status = (mosaic_camera_capture_status_t) {
+        .sequence = s_camera.started ? s_camera.capture_sequence : 0,
+        .pending = s_camera.capture_pending,
+        .ready = s_camera.started && s_camera.preview_ready && !s_camera.stopping,
+        .result = s_camera.capture_result,
+        .startup_result = !s_camera.started && s_camera.startup_result == ESP_OK
+            ? ESP_ERR_INVALID_STATE : s_camera.startup_result,
+    };
+    portEXIT_CRITICAL(&s_camera.lock);
+    return ESP_OK;
 }
 
 static bool camera_board_present(void)
@@ -124,13 +190,18 @@ static void camera_set_missing_hint(esp_gsp_handle_t ui, bool visible)
 
 static uint8_t *camera_alloc_preview_pixels(void)
 {
-    uint8_t *pixels = heap_caps_aligned_calloc(
-        MOSAIC_CAMERA_BUFFER_ALIGN, 1, MOSAIC_CAMERA_FRAME_BYTES,
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (pixels == NULL) {
-        pixels = heap_caps_aligned_calloc(
-            MOSAIC_CAMERA_BUFFER_ALIGN, 1, MOSAIC_CAMERA_FRAME_BYTES,
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    /* A released preview buffer also carries JPEG output during a photo.
+     * Use the codec's allocator so its DMA/cache requirements hold on each
+     * target, while retaining both buffers for normal preview. */
+    const jpeg_encode_memory_alloc_cfg_t memory = {
+        .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
+    };
+    size_t capacity = 0;
+    uint8_t *pixels = jpeg_alloc_encoder_mem(
+        MOSAIC_CAMERA_FRAME_BYTES, &memory, &capacity);
+    if (pixels != NULL && capacity < MOSAIC_CAMERA_FRAME_BYTES) {
+        free(pixels);
+        pixels = NULL;
     }
     return pixels;
 }
@@ -277,14 +348,25 @@ static esp_err_t camera_ensure_preview_buffers(size_t count)
     if (count > MOSAIC_CAMERA_BUFFERS) {
         count = MOSAIC_CAMERA_BUFFERS;
     }
+    uint8_t *pending[MOSAIC_CAMERA_BUFFERS] = {0};
     for (size_t i = 0; i < count; ++i) {
         if (s_camera.frames[i].pixels != NULL) {
             continue;
         }
-        uint8_t *pixels = camera_alloc_preview_pixels();
-        if (pixels == NULL) {
+        pending[i] = camera_alloc_preview_pixels();
+        if (pending[i] == NULL) {
             ESP_LOGE(TAG, "failed to allocate preview frame %u", (unsigned)i);
+            /* Nothing from this attempt has been published to the UI yet. */
+            for (size_t j = 0; j < count; ++j) {
+                heap_caps_free(pending[j]);
+            }
             return ESP_ERR_NO_MEM;
+        }
+    }
+    for (size_t i = 0; i < count; ++i) {
+        uint8_t *pixels = pending[i];
+        if (pixels == NULL) {
+            continue;
         }
         portENTER_CRITICAL(&s_camera.lock);
         if (s_camera.frames[i].pixels == NULL) {
@@ -297,6 +379,43 @@ static esp_err_t camera_ensure_preview_buffers(size_t count)
         heap_caps_free(pixels);
     }
     return ESP_OK;
+}
+
+static void camera_free_working_buffers(void)
+{
+    for (size_t i = 0; i < MOSAIC_CAMERA_BUFFERS; ++i) {
+        heap_caps_free(s_camera.frames[i].pixels);
+        s_camera.frames[i].pixels = NULL;
+        s_camera.frames[i].state = MOSAIC_FRAME_FREE;
+        s_camera.frames[i].sequence = 0;
+    }
+}
+
+static esp_err_t camera_retire_working_buffers(esp_gsp_handle_t ui)
+{
+    xSemaphoreTake(s_camera.submit_lock, portMAX_DELAY);
+    if (camera_is_stopping()) {
+        xSemaphoreGive(s_camera.submit_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Failed starts must restore the allocation layout before opening the
+     * native frames again. An earlier preview can still own these pixels. */
+    esp_gsp_err_t err = esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_CANVAS);
+    if (err == ESP_GSP_OK) {
+        err = esp_gsp_flush(ui, 1000);
+    }
+    bool borrowed = false;
+    portENTER_CRITICAL(&s_camera.lock);
+    for (size_t i = 0; i < MOSAIC_CAMERA_BUFFERS; ++i) {
+        borrowed |= s_camera.frames[i].state == MOSAIC_FRAME_IN_FLIGHT ||
+                    s_camera.frames[i].state == MOSAIC_FRAME_WRITING;
+    }
+    portEXIT_CRITICAL(&s_camera.lock);
+    if (err == ESP_GSP_OK && !borrowed) {
+        camera_free_working_buffers();
+    }
+    xSemaphoreGive(s_camera.submit_lock);
+    return err == ESP_GSP_OK && !borrowed ? ESP_OK : ESP_ERR_NOT_FINISHED;
 }
 
 static void frame_released(void *ctx)
@@ -339,6 +458,7 @@ static void frame_finish_write(size_t slot, bool ready)
         if (ready && !s_camera.stopping) {
             s_camera.frames[slot].sequence = ++s_camera.sequence;
             s_camera.frames[slot].state = MOSAIC_FRAME_READY;
+            s_camera.preview_ready = true;
         } else {
             s_camera.frames[slot].state = MOSAIC_FRAME_FREE;
         }
@@ -476,14 +596,14 @@ static bool camera_take_capture_request(
 {
     bool pending = false;
     portENTER_CRITICAL(&s_camera.lock);
-    if (s_camera.capture_pending) {
+    if (s_camera.capture_pending && s_camera.capture_path[0] != '\0') {
         const size_t copy_size =
             path_size < sizeof(s_camera.capture_path)
                 ? path_size : sizeof(s_camera.capture_path);
         memcpy(path, s_camera.capture_path, copy_size);
         path[copy_size - 1U] = '\0';
         *use_flash = s_camera.capture_use_flash;
-        s_camera.capture_pending = false;
+        /* Keep pending set until this capture has completed. */
         s_camera.capture_use_flash = false;
         s_camera.capture_path[0] = '\0';
         pending = true;
@@ -539,30 +659,33 @@ static void camera_update_recognition_result(esp_gsp_handle_t ui, const camera_v
     }
 }
 
-static void camera_stop_registered_stream(void)
+static esp_err_t camera_stop_registered_stream(void)
 {
+    camera_clear_preview_ready();
     mosaico_camera_handle_t camera = NULL;
     esp_err_t err = mosaico_camera_service_get_default(&camera);
+    if (err == ESP_ERR_NOT_FOUND || err == ESP_ERR_INVALID_STATE) {
+        mosaic_ui_set_camera_preview_active(false);
+        return ESP_OK;
+    }
     if (err == ESP_OK) {
         err = mosaico_camera_close(camera);
     }
-    if (err != ESP_OK && err != ESP_ERR_NOT_FOUND &&
-            err != ESP_ERR_INVALID_STATE) {
+    if (err != ESP_OK) {
         ESP_LOGW(TAG, "failed to close camera: %s",
                  esp_err_to_name(err));
+        mosaic_ui_set_camera_preview_active(true);
+        return err;
     }
+    mosaic_ui_set_camera_preview_active(false);
+    return ESP_OK;
 }
 
-static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels)
+static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels,
+                                 uint8_t *output, size_t output_capacity)
 {
-    const jpeg_encode_memory_alloc_cfg_t memory = {
-        .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER,
-    };
-    size_t output_capacity = 0;
-    uint8_t *output = jpeg_alloc_encoder_mem(
-        MOSAIC_CAMERA_FRAME_BYTES, &memory, &output_capacity);
-    if (output == NULL) {
-        return ESP_ERR_NO_MEM;
+    if (output == NULL || output_capacity < MOSAIC_CAMERA_FRAME_BYTES) {
+        return ESP_ERR_INVALID_STATE;
     }
 
     const jpeg_encode_engine_cfg_t engine_config = {
@@ -587,12 +710,24 @@ static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels)
     }
 
     FILE *file = NULL;
+    bool file_created = false;
     if (ret == ESP_OK) {
-        file = fopen(path, "wb");
-        if (file == NULL) {
-            ret = ESP_FAIL;
-        } else if (fwrite(output, 1, output_size, file) != output_size) {
-            ret = ESP_FAIL;
+        if (output_size == 0 || output_size > output_capacity) {
+            ret = ESP_ERR_INVALID_SIZE;
+        } else {
+            const int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0664);
+            if (fd < 0) {
+                ret = ESP_FAIL;
+            } else {
+                file_created = true;
+                file = fdopen(fd, "wb");
+                if (file == NULL) {
+                    close(fd);
+                    ret = ESP_FAIL;
+                } else if (fwrite(output, 1, output_size, file) != output_size) {
+                    ret = ESP_FAIL;
+                }
+            }
         }
     }
     if (file != NULL && fclose(file) != 0 && ret == ESP_OK) {
@@ -604,7 +739,11 @@ static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels)
             ret = delete_err;
         }
     }
-    free(output);
+    if (ret != ESP_OK && file_created) {
+        if (unlink(path) != 0) {
+            ESP_LOGW(TAG, "failed to remove incomplete photo: %s", path);
+        }
+    }
 
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "Photo saved: %s (%" PRIu32 " bytes)",
@@ -614,6 +753,60 @@ static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels)
                  path, esp_err_to_name(ret));
     }
     return ret;
+}
+
+static esp_err_t camera_save_frame(esp_gsp_handle_t ui, const char *path, size_t source)
+{
+    if (source >= MOSAIC_CAMERA_BUFFERS) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* Publish the captured RGB frame first. GSP releases the previous frame
+     * when it no longer reads those pixels; only then may JPEG overwrite it.
+     * This capture task is the sole pixel writer and does not acquire another
+     * input frame until encoding and the file write have both finished. */
+    frame_finish_write(source, true);
+    const int64_t deadline = esp_timer_get_time() + MOSAIC_CAMERA_JPEG_BUFFER_WAIT_US;
+    size_t output = MOSAIC_CAMERA_BUFFERS;
+    while (!camera_is_stopping()) {
+        camera_submit_preview(ui, true);
+        portENTER_CRITICAL(&s_camera.lock);
+        if (!s_camera.stopping) {
+            for (size_t i = 0; i < MOSAIC_CAMERA_BUFFERS; ++i) {
+                if (i != source && s_camera.frames[i].pixels != NULL &&
+                        s_camera.frames[i].state == MOSAIC_FRAME_FREE) {
+                    s_camera.frames[i].state = MOSAIC_FRAME_WRITING;
+                    output = i;
+                    break;
+                }
+            }
+            /* Queue rejection releases the source immediately. Retry its
+             * publication without ever lending its pixels to the encoder. */
+            if (output == MOSAIC_CAMERA_BUFFERS &&
+                    s_camera.frames[source].state == MOSAIC_FRAME_FREE) {
+                s_camera.frames[source].sequence = ++s_camera.sequence;
+                s_camera.frames[source].state = MOSAIC_FRAME_READY;
+            }
+        }
+        portEXIT_CRITICAL(&s_camera.lock);
+        if (output != MOSAIC_CAMERA_BUFFERS) {
+            break;
+        }
+        if (esp_timer_get_time() >= deadline) {
+            ESP_LOGW(TAG, "timed out waiting for a released JPEG output buffer");
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(MOSAIC_CAMERA_FRAME_DELAY_MS));
+    }
+    if (output == MOSAIC_CAMERA_BUFFERS) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_err_t err = camera_save_jpeg(path, s_camera.frames[source].pixels,
+                                          s_camera.frames[output].pixels,
+                                          MOSAIC_CAMERA_FRAME_BYTES);
+    /* JPEG bytes are never submitted as preview pixels. The next conversion
+     * overwrites this free slot before it can become READY again. */
+    frame_finish_write(output, false);
+    return err;
 }
 
 static void camera_restore_after_flash(
@@ -630,6 +823,7 @@ static void camera_restore_after_flash(
 
 static bool camera_restart_after_timeout(mosaico_camera_handle_t camera, uint32_t *skip_frames)
 {
+    camera_clear_preview_ready();
     ESP_LOGW(TAG, "camera frame timeout; restarting stream");
     const esp_err_t err = mosaico_camera_restart(camera);
     if (err != ESP_OK) {
@@ -649,6 +843,8 @@ static void camera_capture_task(void *ctx)
     bool waiting_logged = false;
     bool detection_error_logged = false;
     bool preview_frame_logged = false;
+    uint32_t start_attempts = 0;
+    int64_t frame_deadline_us = 0;
     uint32_t invalid_frame_count = 0;
     camera_vision_mode_t previous_mode = CAMERA_VISION_MODE_OFF;
     camera_vision_result_t recognition = {0};
@@ -661,6 +857,7 @@ static void camera_capture_task(void *ctx)
     esp_err_t err = ppa_register_client(&ppa_config, &ppa);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "failed to register PPA client: %s", esp_err_to_name(err));
+        camera_set_startup_result(err);
         goto done;
     }
 
@@ -668,12 +865,24 @@ static void camera_capture_task(void *ctx)
         mosaico_camera_handle_t camera = NULL;
         err = mosaico_camera_service_get_default(&camera);
         if (err != ESP_OK) {
+            camera_clear_preview_ready();
+            mosaic_ui_set_camera_preview_active(false);
             if (!waiting_logged && !camera_is_stopping()) {
                 ESP_LOGI(TAG, "Waiting for CameraBoard insertion");
                 camera_set_missing_hint(ui, true);
                 waiting_logged = true;
             }
             last_camera = NULL;
+            start_attempts = 0;
+            frame_deadline_us = 0;
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        mosaic_ui_set_camera_preview_active(true);
+        if (mosaic_ui_wake_screen(2000) != ESP_OK) {
+            camera_clear_preview_ready();
+            mosaic_ui_set_camera_preview_active(false);
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -682,31 +891,45 @@ static void camera_capture_task(void *ctx)
             camera_set_missing_hint(ui, false);
             waiting_logged = false;
         }
+        if (frame_deadline_us == 0) {
+            frame_deadline_us = esp_timer_get_time() + MOSAIC_CAMERA_FRAME_DEADLINE_US;
+        }
+        if (esp_timer_get_time() >= frame_deadline_us) {
+            ESP_LOGE(TAG, "camera did not produce a valid preview before deadline");
+            camera_set_startup_result(ESP_ERR_TIMEOUT);
+            break;
+        }
 
         if (camera != last_camera) {
+            camera_set_startup_result(ESP_ERR_NOT_FINISHED);
             err = mosaico_camera_open(camera);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "failed to open camera device: %s",
-                         esp_err_to_name(err));
-                last_camera = NULL;
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
+            if (err == ESP_OK) {
+                err = mosaico_camera_start_stream(camera);
             }
-            err = camera_ensure_preview_buffers(MOSAIC_CAMERA_BUFFERS);
+            if (err == ESP_OK) {
+                /* STREAMON allocates the DVP backup, so it must precede all
+                 * preview/JPEG reservations as part of the native working set. */
+                err = camera_ensure_preview_buffers(MOSAIC_CAMERA_BUFFERS);
+            }
             if (err != ESP_OK) {
-                ESP_LOGE(TAG, "failed to allocate preview buffers: %s", esp_err_to_name(err));
+                ESP_LOGE(TAG, "camera start attempt %u failed: %s",
+                         (unsigned)(start_attempts + 1U), esp_err_to_name(err));
                 camera_stop_registered_stream();
                 last_camera = NULL;
-                vTaskDelay(pdMS_TO_TICKS(100));
-                continue;
-            }
-            err = mosaico_camera_start_stream(camera);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "failed to start camera stream: %s",
-                         esp_err_to_name(err));
-                camera_stop_registered_stream();
-                last_camera = NULL;
-                vTaskDelay(pdMS_TO_TICKS(100));
+                const esp_err_t retire_err = camera_retire_working_buffers(ui);
+                if (camera_is_stopping()) {
+                    break;
+                }
+                if (retire_err != ESP_OK) {
+                    camera_set_startup_result(retire_err);
+                    break;
+                }
+                if (++start_attempts >= MOSAIC_CAMERA_START_ATTEMPTS) {
+                    camera_set_startup_result(err);
+                    break;
+                }
+                mosaic_ui_set_camera_preview_active(true);
+                vTaskDelay(pdMS_TO_TICKS(MOSAIC_CAMERA_START_RETRY_MS));
                 continue;
             }
             if (camera_flash_enabled()) {
@@ -791,6 +1014,7 @@ static void camera_capture_task(void *ctx)
                          esp_err_to_name(err));
                 camera_restore_after_flash(camera, &flash_state);
                 frame_finish_write((size_t)slot, false);
+                camera_finish_capture(err);
                 continue;
             }
         }
@@ -803,6 +1027,9 @@ static void camera_capture_task(void *ctx)
                 camera_restore_after_flash(camera, &flash_state);
             }
             frame_finish_write((size_t)slot, false);
+            if (capture_requested) {
+                camera_finish_capture(err);
+            }
             if (err == ESP_ERR_INVALID_SIZE) {
                 invalid_frame_count++;
                 if (invalid_frame_count == 1U || (invalid_frame_count % 300U) == 0U) {
@@ -838,11 +1065,15 @@ static void camera_capture_task(void *ctx)
             ESP_LOGE(TAG, "camera frame release failed: %s",
                      esp_err_to_name(release_err));
         }
-        if (err == ESP_OK && capture_requested) {
-            const esp_err_t save_err = camera_save_jpeg(capture_path, s_camera.frames[slot].pixels);
+        if (capture_requested) {
+            esp_err_t save_err = err;
             if (save_err == ESP_OK) {
-                camera_publish_thumbnail(ui, s_camera.frames[slot].pixels);
+                save_err = camera_save_frame(ui, capture_path, (size_t)slot);
+                if (save_err == ESP_OK) {
+                    camera_publish_thumbnail(ui, s_camera.frames[slot].pixels);
+                }
             }
+            camera_finish_capture(save_err);
         }
         if (capture_requested && use_flash) {
             (void)mosaico_camera_flash_stop(camera);
@@ -859,7 +1090,7 @@ static void camera_capture_task(void *ctx)
         }
         const int64_t now_us = esp_timer_get_time();
         const int64_t interval_us = mode == CAMERA_VISION_MODE_QRCODE ? MOSAIC_CAMERA_QR_INTERVAL_US : MOSAIC_CAMERA_COLOR_INTERVAL_US;
-        if (err == ESP_OK && mode != CAMERA_VISION_MODE_OFF && (last_detection_us == 0 || now_us - last_detection_us >= interval_us)) {
+        if (!capture_requested && err == ESP_OK && mode != CAMERA_VISION_MODE_OFF && (last_detection_us == 0 || now_us - last_detection_us >= interval_us)) {
             last_detection_us = now_us;
             const esp_err_t detect_err = camera_vision_detect(mode, s_camera.frames[slot].pixels, MOSAIC_CAMERA_W, MOSAIC_CAMERA_H,
                                                               &recognition);
@@ -871,7 +1102,7 @@ static void camera_capture_task(void *ctx)
                 detection_error_logged = true;
             }
         }
-        if (err == ESP_OK && mode != CAMERA_VISION_MODE_OFF && camera_recognition_mode() == mode) {
+        if (!capture_requested && err == ESP_OK && mode != CAMERA_VISION_MODE_OFF && camera_recognition_mode() == mode) {
             camera_vision_draw_result(s_camera.frames[slot].pixels, MOSAIC_CAMERA_W, MOSAIC_CAMERA_H, &recognition);
         }
         frame_finish_write((size_t)slot, err == ESP_OK);
@@ -884,12 +1115,27 @@ static void camera_capture_task(void *ctx)
             ESP_LOGI(TAG, "First camera preview frame converted");
             preview_frame_logged = true;
         }
+        start_attempts = 0;
+        frame_deadline_us = esp_timer_get_time() + MOSAIC_CAMERA_FRAME_DEADLINE_US;
+        camera_set_startup_result(ESP_OK);
         mosaic_camera_tick(ui);
         vTaskDelay(pdMS_TO_TICKS(MOSAIC_CAMERA_FRAME_DELAY_MS));
     }
 
 done:
-    camera_stop_registered_stream();
+    camera_clear_preview_ready();
+    if (!camera_is_stopping()) {
+        portENTER_CRITICAL(&s_camera.lock);
+        if (s_camera.startup_result == ESP_OK ||
+                s_camera.startup_result == ESP_ERR_NOT_FINISHED) {
+            s_camera.startup_result = ESP_FAIL;
+        }
+        portEXIT_CRITICAL(&s_camera.lock);
+    }
+    const esp_err_t close_err = camera_stop_registered_stream();
+    portENTER_CRITICAL(&s_camera.lock);
+    s_camera.shutdown_result = close_err;
+    portEXIT_CRITICAL(&s_camera.lock);
     if (ppa != NULL) {
         const esp_err_t ppa_err = ppa_unregister_client(ppa);
         if (ppa_err != ESP_OK) {
@@ -910,6 +1156,12 @@ esp_err_t mosaic_camera_start(esp_gsp_handle_t ui)
         portEXIT_CRITICAL(&s_camera.lock);
         return ESP_ERR_INVALID_STATE;
     }
+    s_camera.preview_ready = false;
+    s_camera.capture_sequence = 0;
+    s_camera.capture_result = ESP_OK;
+    s_camera.startup_result = ESP_ERR_NOT_FINISHED;
+    s_camera.shutdown_result = ESP_OK;
+    s_camera.task_joined = false;
     s_camera.started = true;
     s_camera.stopping = false;
     s_camera.sequence = 0;
@@ -942,6 +1194,7 @@ esp_err_t mosaic_camera_start(esp_gsp_handle_t ui)
     return ESP_OK;
 
 fail:
+    camera_set_startup_result(ESP_ERR_NO_MEM);
     camera_release_thumbnail_buffers();
     if (s_camera.submit_lock != NULL) {
         vSemaphoreDelete(s_camera.submit_lock);
@@ -977,13 +1230,17 @@ esp_err_t mosaic_camera_capture_photo(const char *path, bool use_flash)
     const int64_t preview_resume_time_us = esp_timer_get_time() + (int64_t)MOSAIC_CAMERA_CAPTURE_FREEZE_MS * 1000;
     esp_err_t ret = ESP_OK;
     portENTER_CRITICAL(&s_camera.lock);
-    if (!s_camera.started || s_camera.stopping ||
-            s_camera.capture_pending) {
+    if (!s_camera.started || !s_camera.preview_ready ||
+            s_camera.stopping || s_camera.capture_pending) {
         ret = ESP_ERR_INVALID_STATE;
     } else {
         memcpy(s_camera.capture_path, path, path_length + 1U);
         s_camera.capture_use_flash = use_flash;
         s_camera.capture_pending = true;
+        if (++s_camera.capture_sequence == 0) {
+            ++s_camera.capture_sequence;
+        }
+        s_camera.capture_result = ESP_ERR_NOT_FINISHED;
         s_camera.preview_resume_time_us = preview_resume_time_us;
     }
     portEXIT_CRITICAL(&s_camera.lock);
@@ -1046,14 +1303,14 @@ esp_err_t mosaic_camera_set_recognition_mode(camera_vision_mode_t mode)
     return ESP_OK;
 }
 
-void mosaic_camera_tick(esp_gsp_handle_t ui)
+static void camera_submit_preview(esp_gsp_handle_t ui, bool force)
 {
     size_t selected = MOSAIC_CAMERA_BUFFERS;
     uint32_t newest_sequence = 0;
     const int64_t now_us = esp_timer_get_time();
     SemaphoreHandle_t submit_lock = s_camera.submit_lock;
     if (submit_lock == NULL ||
-            xSemaphoreTake(submit_lock, portMAX_DELAY) != pdTRUE) {
+            xSemaphoreTake(submit_lock, force ? 0 : portMAX_DELAY) != pdTRUE) {
         return;
     }
 
@@ -1063,7 +1320,7 @@ void mosaic_camera_tick(esp_gsp_handle_t ui)
         xSemaphoreGive(submit_lock);
         return;
     }
-    if (now_us < s_camera.preview_resume_time_us) {
+    if (!force && now_us < s_camera.preview_resume_time_us) {
         /* Keep the displayed frame while allowing capture buffers to recycle. */
         for (size_t i = 0; i < MOSAIC_CAMERA_BUFFERS; ++i) {
             if (s_camera.frames[i].state == MOSAIC_FRAME_READY) {
@@ -1108,7 +1365,12 @@ void mosaic_camera_tick(esp_gsp_handle_t ui)
     xSemaphoreGive(submit_lock);
 }
 
-void mosaic_camera_stop(esp_gsp_handle_t ui)
+void mosaic_camera_tick(esp_gsp_handle_t ui)
+{
+    camera_submit_preview(ui, false);
+}
+
+esp_err_t mosaic_camera_stop(esp_gsp_handle_t ui)
 {
     SemaphoreHandle_t submit_lock = s_camera.submit_lock;
     if (submit_lock != NULL) {
@@ -1120,25 +1382,60 @@ void mosaic_camera_stop(esp_gsp_handle_t ui)
         if (submit_lock != NULL) {
             xSemaphoreGive(submit_lock);
         }
-        return;
+        return ESP_OK;
     }
     s_camera.stopping = true;
+    s_camera.preview_ready = false;
     portEXIT_CRITICAL(&s_camera.lock);
 
-    (void)esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_CANVAS);
-    (void)esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL);
+    const esp_gsp_err_t canvas_err = esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_CANVAS);
+    const esp_gsp_err_t thumbnail_err = esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL);
     if (submit_lock != NULL) {
         xSemaphoreGive(submit_lock);
     }
 
-    if (s_camera.task_done != NULL &&
+    if (s_camera.task_done != NULL && !s_camera.task_joined &&
             xSemaphoreTake(
                 s_camera.task_done,
                 pdMS_TO_TICKS(MOSAIC_CAMERA_STOP_TIMEOUT_MS)) != pdTRUE) {
         ESP_LOGE(TAG, "timed out waiting for camera capture task");
-        return;
+        return ESP_ERR_TIMEOUT;
     }
-
+    s_camera.task_joined = true;
+    if (s_camera.shutdown_result != ESP_OK) {
+        /* The capture task may have failed to stop the sensor over SCCB.
+         * Keep its native/preview ownership until a checked close succeeds. */
+        const esp_err_t close_err = camera_stop_registered_stream();
+        portENTER_CRITICAL(&s_camera.lock);
+        s_camera.shutdown_result = close_err;
+        portEXIT_CRITICAL(&s_camera.lock);
+        if (close_err != ESP_OK) {
+            (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_STATUS,
+                "Camera busy. Try Back again");
+            return close_err;
+        }
+    }
+    if (canvas_err != ESP_GSP_OK || thumbnail_err != ESP_GSP_OK) {
+        return ESP_FAIL;
+    }
+    const esp_gsp_err_t flush_err = esp_gsp_flush(ui, 1000);
+    if (flush_err != ESP_GSP_OK) {
+        ESP_LOGW(TAG, "camera release flush failed: %d", (int)flush_err);
+        return ESP_ERR_NOT_FINISHED;
+    }
+    bool borrowed = false;
+    portENTER_CRITICAL(&s_camera.lock);
+    for (size_t i = 0; i < MOSAIC_CAMERA_BUFFERS; ++i) {
+        borrowed |= s_camera.frames[i].state == MOSAIC_FRAME_IN_FLIGHT ||
+                    s_camera.frames[i].state == MOSAIC_FRAME_WRITING;
+    }
+    for (size_t i = 0; i < MOSAIC_CAMERA_THUMBNAIL_BUFFERS; ++i) {
+        borrowed |= s_camera.thumbnails[i].busy;
+    }
+    portEXIT_CRITICAL(&s_camera.lock);
+    if (borrowed) {
+        return ESP_ERR_NOT_FINISHED;
+    }
     if (s_camera.task_done != NULL) {
         vSemaphoreDelete(s_camera.task_done);
         s_camera.task_done = NULL;
@@ -1147,18 +1444,9 @@ void mosaic_camera_stop(esp_gsp_handle_t ui)
         vSemaphoreDelete(s_camera.submit_lock);
         s_camera.submit_lock = NULL;
     }
-    const esp_gsp_err_t flush_err = esp_gsp_flush(ui, 1000);
-    if (flush_err != ESP_GSP_OK) {
-        ESP_LOGW(TAG, "thumbnail release flush failed: %d", (int)flush_err);
-    }
+    camera_free_working_buffers();
     camera_release_thumbnail_buffers();
     s_camera.task = NULL;
-    for (size_t i = 0; i < MOSAIC_CAMERA_BUFFERS; ++i) {
-        heap_caps_free(s_camera.frames[i].pixels);
-        s_camera.frames[i].pixels = NULL;
-        s_camera.frames[i].state = MOSAIC_FRAME_FREE;
-        s_camera.frames[i].sequence = 0;
-    }
     portENTER_CRITICAL(&s_camera.lock);
     s_camera.started = false;
     s_camera.stopping = false;
@@ -1172,6 +1460,7 @@ void mosaic_camera_stop(esp_gsp_handle_t ui)
     s_camera.recognition_mode = CAMERA_VISION_MODE_OFF;
     portEXIT_CRITICAL(&s_camera.lock);
     camera_vision_deinit();
+    return ESP_OK;
 }
 
 #else
@@ -1293,6 +1582,15 @@ esp_err_t mosaic_camera_start(esp_gsp_handle_t ui)
     return s_streaming ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+esp_err_t mosaic_camera_get_capture_status(mosaic_camera_capture_status_t *status)
+{
+    if (status == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    *status = (mosaic_camera_capture_status_t) {.ready = s_streaming, .result = ESP_ERR_NOT_SUPPORTED};
+    return ESP_OK;
+}
+
 esp_err_t mosaic_camera_capture_photo(const char *path, bool use_flash)
 {
     (void)path;
@@ -1320,10 +1618,11 @@ esp_err_t mosaic_camera_set_recognition_mode(camera_vision_mode_t mode)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-void mosaic_camera_stop(esp_gsp_handle_t ui)
+esp_err_t mosaic_camera_stop(esp_gsp_handle_t ui)
 {
     stream_close(ui);
     (void)esp_gsp_canvas_stop(ui, GSP_BIND_CAMERA_ALBUM_THUMBNAIL);
+    return ESP_OK;
 }
 
 void mosaic_camera_tick(esp_gsp_handle_t ui)

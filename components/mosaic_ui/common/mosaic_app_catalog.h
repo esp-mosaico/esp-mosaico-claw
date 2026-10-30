@@ -56,6 +56,9 @@ typedef struct mosaic_app_descriptor {
     void (*on_stopping)(esp_gsp_handle_t ui);
     /** Optional business hook; always runs on the Mosaic runtime owner. */
     void (*on_event)(esp_gsp_handle_t ui, const struct mosaic_event *event);
+    /** Business-only periodic work while the display renderer is paused.
+     * Must not call GSP setters or issue display commands. */
+    void (*on_background_tick)(int64_t timestamp_us);
     /** Optional physical Back hook; true means one App-local level was consumed. */
     bool (*on_back)(esp_gsp_handle_t ui, int64_t timestamp_us);
 } mosaic_app_descriptor_t;

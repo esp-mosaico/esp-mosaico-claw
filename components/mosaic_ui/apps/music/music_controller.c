@@ -185,10 +185,10 @@ static esp_err_t play_current(music_controller_handle_t controller)
     const music_track_t *track = &controller->tracks[controller->track_index];
     const esp_err_t err = music_audio_play(
         controller->audio, track->path, track->bytes);
-    controller->state = err == ESP_OK
-        ? MUSIC_PLAYBACK_PLAYING : MUSIC_PLAYBACK_ERROR;
+    controller->state = err == ESP_OK ? MUSIC_PLAYBACK_PLAYING :
+        err == ESP_ERR_NOT_FINISHED ? MUSIC_PLAYBACK_LOADING : MUSIC_PLAYBACK_ERROR;
     changed(controller);
-    return err;
+    return err == ESP_ERR_NOT_FINISHED ? ESP_OK : err;
 }
 
 esp_err_t music_controller_create(music_controller_handle_t *ret_controller)
@@ -263,6 +263,7 @@ esp_err_t music_controller_step(
         }
         return ESP_OK;
     }
+    if (controller->state == MUSIC_PLAYBACK_LOADING) return play_current(controller);
     music_audio_status_t audio_status;
     const esp_err_t err = music_audio_status(controller->audio, &audio_status);
     if (err != ESP_OK) {
@@ -312,6 +313,9 @@ esp_err_t music_controller_toggle(music_controller_handle_t controller)
         if (err == ESP_OK) {
             controller->state = MUSIC_PLAYBACK_PLAYING;
         }
+    } else if (controller->state == MUSIC_PLAYBACK_LOADING) {
+        controller->state = MUSIC_PLAYBACK_STOPPED;
+        err = ESP_OK;
     } else {
         err = play_current(controller);
     }

@@ -57,6 +57,11 @@ def main():
     page = len(objs)
     objs.append(layer(content, 0, 0, CONTENT_W, CONTENT_H, name="camera_root"))
     build_camera_page(objs, page, ASSETS, CAMERA_ASSETS)
+    # Keep static pixels in Flash so capture/JPEG can use contiguous PSRAM.
+    # The small thumbnail seed stays compressed to fit the existing partition.
+    for obj in objs:
+        if obj.get("type") == "image" and not obj.get("image", "").endswith("black_placeholder.png"):
+            obj.update(codec="raw", cache_policy="mmap_direct")
     write_scene(scene_out_path(HERE, "camera_480.json"), "camera", objs, font=FONT)
     asset_scene(scene_out_path(HERE, "camera_assets_480.json"), "camera_assets", IMAGES,
                 FONT_POLICIES, BOLD, FONT)

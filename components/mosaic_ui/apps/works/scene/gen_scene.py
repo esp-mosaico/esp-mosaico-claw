@@ -158,7 +158,7 @@ def build_pager(objs, parent):
         name="works_pager",
     ))
     objs.append(button(
-        pager, 124, 5, 70, 43, "‹", bg="#181819", fg="#D6D6DE",
+        pager, 124, 2, 70, 48, "‹", bg="#181819", fg="#D6D6DE",
         radius=22, size=31, events=call_event("works_page_prev"),
     ))
     objs.append(label(
@@ -167,7 +167,7 @@ def build_pager(objs, parent):
         font_charset=ASCII_PRINTABLE,
     ))
     objs.append(button(
-        pager, 286, 5, 70, 43, "›", bg="#181819", fg="#D6D6DE",
+        pager, 286, 2, 70, 48, "›", bg="#181819", fg="#D6D6DE",
         radius=22, size=31, events=call_event("works_page_next"),
     ))
 

@@ -25,6 +25,8 @@
 #include "mosaic_setup.h"
 #include "mosaic_ui.h"
 #include "mosaic_button_platform.h"
+#include "mosaic_ui_diagnostics.h"
+#include "mosaic_battery_platform.h"
 #include "weather_service.h"
 #if CONFIG_ESP_BOARD_ESP_MOSAICO
 #include "mosaic_imu_platform.h"
@@ -1144,6 +1146,10 @@ void app_main(void)
             .reg = main_register_ai_create_capability,
         }));
 #endif
+#if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
+    ESP_ERROR_CHECK(app_cap_system_platform_set_battery_provider(
+        mosaic_battery_platform_get_info, NULL));
+#endif
     ESP_ERROR_CHECK(app_cap_system_platform_init(s_app_settings));
     ESP_ERROR_CHECK(app_claw_set_save_config_callback(main_save_claw_config, NULL));
     ESP_ERROR_CHECK(app_claw_set_network_ready_callback(main_network_ready, NULL));
@@ -1168,6 +1174,9 @@ void app_main(void)
 #endif
     ESP_ERROR_CHECK(app_claw_start(s_claw_config, s_hw_registry));
 #if CONFIG_APP_CLAW_MOSAIC_GSP_ENABLE
+#if CONFIG_APP_CLAW_ENABLE_CLI
+    ESP_ERROR_CHECK_WITHOUT_ABORT(mosaic_ui_diagnostics_register());
+#endif
     ESP_ERROR_CHECK(weather_service_start());
 #endif
     ESP_ERROR_CHECK(main_apply_asr_config(s_config));

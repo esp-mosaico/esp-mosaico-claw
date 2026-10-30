@@ -16,6 +16,7 @@
 #include "camera_binds.h"
 #include "camera_vision.h"
 #if defined(ESP_PLATFORM)
+#include "mosaic_ui.h"
 #include "driver/jpeg_encode.h"
 #include "driver/ppa.h"
 #include "esp_err.h"
@@ -551,6 +552,7 @@ static void camera_stop_registered_stream(void)
         ESP_LOGW(TAG, "failed to close camera: %s",
                  esp_err_to_name(err));
     }
+    mosaic_ui_set_camera_preview_active(false);
 }
 
 static esp_err_t camera_save_jpeg(const char *path, const uint8_t *pixels)
@@ -668,12 +670,20 @@ static void camera_capture_task(void *ctx)
         mosaico_camera_handle_t camera = NULL;
         err = mosaico_camera_service_get_default(&camera);
         if (err != ESP_OK) {
+            mosaic_ui_set_camera_preview_active(false);
             if (!waiting_logged && !camera_is_stopping()) {
                 ESP_LOGI(TAG, "Waiting for CameraBoard insertion");
                 camera_set_missing_hint(ui, true);
                 waiting_logged = true;
             }
             last_camera = NULL;
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+        mosaic_ui_set_camera_preview_active(true);
+        if (mosaic_ui_wake_screen(2000) != ESP_OK) {
+            mosaic_ui_set_camera_preview_active(false);
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -688,6 +698,7 @@ static void camera_capture_task(void *ctx)
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "failed to open camera device: %s",
                          esp_err_to_name(err));
+                mosaic_ui_set_camera_preview_active(false);
                 last_camera = NULL;
                 vTaskDelay(pdMS_TO_TICKS(100));
                 continue;

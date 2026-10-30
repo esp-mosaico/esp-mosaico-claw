@@ -86,12 +86,13 @@ static void on_battery_notice(
     }
 }
 
-static uint32_t s_screen_timeout_ms = 30000;
+static atomic_uint s_screen_timeout_ms = 30000;
 static atomic_uint s_screen_cmd;
 static atomic_bool s_screen_asleep;
 static atomic_bool s_ignore_wake_pointer;
-static atomic_bool s_hub_foreground;
-static atomic_bool s_hub_presenter_active = true;
+static atomic_bool s_contact_pressed;
+static atomic_bool s_presenter_active = true;
+static atomic_bool s_camera_preview_active;
 static TaskHandle_t s_screen_task;
 static esp_timer_handle_t s_screen_idle_timer;
 
@@ -118,13 +119,13 @@ static void screen_rearm_idle_timer(void)
         return;
     }
     (void)esp_timer_stop(s_screen_idle_timer);
-    if (s_screen_timeout_ms == 0U || atomic_load(&s_screen_asleep) ||
-            !atomic_load(&s_hub_foreground) ||
-            !atomic_load(&s_hub_presenter_active)) {
+    if (atomic_load(&s_screen_timeout_ms) == 0U || atomic_load(&s_screen_asleep) ||
+            atomic_load(&s_camera_preview_active) || atomic_load(&s_contact_pressed) ||
+            !atomic_load(&s_presenter_active)) {
         return;
     }
     esp_err_t err = esp_timer_start_once(
-        s_screen_idle_timer, (uint64_t)s_screen_timeout_ms * 1000U);
+        s_screen_idle_timer, (uint64_t)atomic_load(&s_screen_timeout_ms) * 1000U);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "arm screen idle timer failed: %s", esp_err_to_name(err));
     }
@@ -156,41 +157,57 @@ static void screen_apply_wake(void)
         (void)display_service_set_panel_enabled(false);
         return;
     }
-    atomic_store(&s_ignore_wake_pointer, false);
+    /* A touch which woke the panel still belongs to the wake gesture. Only
+     * its UP sample may release the input guard. Software/button wakes do
+     * not set the guard and therefore do not consume a later, new touch. */
     atomic_store(&s_screen_asleep, false);
     screen_rearm_idle_timer();
     ESP_LOGI(TAG, "screen wake: Display On complete");
 }
 
+static void screen_recover_failed_sleep(void)
+{
+    /* A failed SDK pause can retain a suspended producer and its recovery
+     * handle (ESP_ERR_NOT_FINISHED). Do not declare that producer awake. */
+    const esp_err_t err = mosaic_loader_resume_screen();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "screen sleep recovery failed: %s", esp_err_to_name(err));
+        (void)display_service_set_panel_enabled(false);
+        return; /* Keep asleep/input guard set so a later wake retries resume. */
+    }
+    atomic_store(&s_screen_asleep, false);
+    screen_rearm_idle_timer();
+}
+
 static void screen_apply_sleep(void)
 {
-    if (s_screen_timeout_ms == 0U || atomic_load(&s_screen_asleep) ||
+    if (atomic_load(&s_screen_timeout_ms) == 0U || atomic_load(&s_screen_asleep) ||
             !display_service_panel_enabled() ||
-            !atomic_load(&s_hub_foreground) ||
-            !atomic_load(&s_hub_presenter_active)) {
+            atomic_load(&s_camera_preview_active) || atomic_load(&s_contact_pressed) ||
+            !atomic_load(&s_presenter_active)) {
         return;
     }
     (void)esp_timer_stop(s_screen_idle_timer);
     atomic_store(&s_screen_asleep, true);
-    atomic_store(&s_ignore_wake_pointer, true);
+    /* Close the race with a DOWN accepted immediately before this store. */
+    if (atomic_load(&s_contact_pressed)) {
+        atomic_store(&s_screen_asleep, false);
+        screen_rearm_idle_timer();
+        return;
+    }
     const esp_err_t pause_err =
-        mosaic_loader_lock_and_pause_hub(SCREEN_PAUSE_TIMEOUT_MS);
+        mosaic_loader_pause_screen(SCREEN_PAUSE_TIMEOUT_MS);
     if (pause_err != ESP_OK) {
         ESP_LOGE(TAG, "screen sleep GSP pause failed: %s",
                  esp_err_to_name(pause_err));
-        atomic_store(&s_screen_asleep, false);
-        atomic_store(&s_ignore_wake_pointer, false);
-        screen_rearm_idle_timer();
+        screen_recover_failed_sleep();
         return;
     }
     const esp_err_t err = display_service_set_panel_enabled(false);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "screen sleep Display Off failed: %s",
                  esp_err_to_name(err));
-        (void)mosaic_loader_resume_screen();
-        atomic_store(&s_screen_asleep, false);
-        atomic_store(&s_ignore_wake_pointer, false);
-        screen_rearm_idle_timer();
+        screen_recover_failed_sleep();
         return;
     }
     ESP_LOGI(TAG, "screen sleep: Display Off complete");
@@ -201,10 +218,24 @@ void mosaic_ui_note_screen_activity(void)
     screen_post(SCREEN_CMD_REARM, false);
 }
 
-void mosaic_ui_set_hub_foreground(bool foreground)
+bool mosaic_ui_screen_asleep(void) { return atomic_load(&s_screen_asleep); }
+
+void mosaic_ui_set_camera_preview_active(bool active)
 {
-    atomic_store(&s_hub_foreground, foreground);
-    screen_post(SCREEN_CMD_REARM, false);
+    if (atomic_exchange(&s_camera_preview_active, active) != active) {
+        screen_post(SCREEN_CMD_REARM, false);
+    }
+}
+
+esp_err_t mosaic_ui_wake_screen(uint32_t timeout_ms)
+{
+    if (!atomic_load(&s_screen_asleep)) return ESP_OK;
+    screen_post(SCREEN_CMD_WAKE, false);
+    const int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
+    while (atomic_load(&s_screen_asleep) && esp_timer_get_time() < deadline) {
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return atomic_load(&s_screen_asleep) ? ESP_ERR_TIMEOUT : ESP_OK;
 }
 
 void mosaic_ui_screen_wake_from_isr(void *user_ctx)
@@ -214,20 +245,38 @@ void mosaic_ui_screen_wake_from_isr(void *user_ctx)
     if (!atomic_load(&s_screen_asleep)) {
         return;
     }
+    atomic_store(&s_ignore_wake_pointer, true);
     screen_post(SCREEN_CMD_WAKE, true);
 }
 
-bool mosaic_ui_absorb_wake_pointer(bool pressed)
+static bool absorb_wake_pointer(bool pressed)
 {
     if (!atomic_load(&s_ignore_wake_pointer) &&
             !atomic_load(&s_screen_asleep)) {
         return false;
     }
     mosaic_ui_note_screen_activity();
+    if (pressed) {
+        atomic_store(&s_ignore_wake_pointer, true);
+    }
     if (!pressed) {
         atomic_store(&s_ignore_wake_pointer, false);
     }
     return true;
+}
+
+bool mosaic_ui_pointer_guarded(void)
+{
+    return atomic_load(&s_screen_asleep) || atomic_load(&s_ignore_wake_pointer);
+}
+
+/* Called at the GSP input entry, before hit testing, gestures or observers. */
+bool mosaic_ui_filter_pointer(bool pressed)
+{
+    if (atomic_exchange(&s_contact_pressed, pressed) != pressed) {
+        mosaic_ui_note_screen_activity();
+    }
+    return absorb_wake_pointer(pressed);
 }
 
 static void screen_power_task(void *arg)
@@ -247,7 +296,7 @@ static void screen_power_task(void *arg)
 
 void mosaic_ui_set_screen_timeout(uint32_t timeout_ms)
 {
-    s_screen_timeout_ms = timeout_ms;
+    atomic_store(&s_screen_timeout_ms, timeout_ms);
     screen_post(SCREEN_CMD_REARM, false);
 }
 
@@ -330,6 +379,10 @@ esp_err_t mosaic_welcome_open(void)
 
 esp_err_t mosaic_ui_back(void)
 {
+    if (mosaic_ui_screen_asleep()) {
+        screen_post(SCREEN_CMD_WAKE, false);
+        return ESP_OK;
+    }
     esp_err_t err = display_service_request_exit();
     if (err != ESP_ERR_NOT_FOUND) {
         return err;
@@ -352,7 +405,7 @@ static esp_err_t present_quiesce(void *ctx, uint32_t timeout_ms)
     (void)ctx;
     const esp_err_t err = mosaic_loader_quiesce(timeout_ms);
     if (err == ESP_OK) {
-        atomic_store(&s_hub_presenter_active, false);
+        atomic_store(&s_presenter_active, false);
         screen_post(SCREEN_CMD_REARM, false);
     }
     return err;
@@ -368,7 +421,7 @@ static esp_err_t present_activate(
     }
     const esp_err_t err = mosaic_loader_activate(presenter, generation);
     if (err == ESP_OK) {
-        atomic_store(&s_hub_presenter_active, true);
+        atomic_store(&s_presenter_active, true);
         screen_post(SCREEN_CMD_REARM, false);
     }
     return err;

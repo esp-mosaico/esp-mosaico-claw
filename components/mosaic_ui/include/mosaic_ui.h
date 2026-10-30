@@ -32,16 +32,23 @@ esp_err_t mosaic_ui_start(void);
 esp_err_t mosaic_ui_back(void);
 /** Queue AI Create as the active App; safe to call from a board-button callback. */
 esp_err_t mosaic_ui_open_ai_create(void);
-/** Set Hub inactivity timeout used to lock and turn the panel off (0 = never). */
+/** Set foreground inactivity timeout; retain the current page (0 = never). */
 void mosaic_ui_set_screen_timeout(uint32_t timeout_ms);
-/** Reset the inactivity timer after one mapped Mosaic pointer sample. */
+/** True while display suspension or resume is in progress, and while asleep. */
+bool mosaic_ui_screen_asleep(void);
+/** Wake before a task changes the active App or starts camera preview.
+ * Do not call while holding the Mosaic runtime lock. */
+esp_err_t mosaic_ui_wake_screen(uint32_t timeout_ms);
+/** Camera stream owns the only preview-specific screen-on vote. */
+void mosaic_ui_set_camera_preview_active(bool active);
+/** Reset the inactivity timer after interaction or a foreground transition. */
 void mosaic_ui_note_screen_activity(void);
-/** Loader-owned foreground notification; only Hub participates in screen timeout. */
-void mosaic_ui_set_hub_foreground(bool foreground);
 /** ISR-safe CST9217 interrupt hook; posts a wake only while the panel is off. */
 void mosaic_ui_screen_wake_from_isr(void *user_ctx);
-/** Drop pointer samples while the panel is asleep or resuming. */
-bool mosaic_ui_absorb_wake_pointer(bool pressed);
+/** Input-entry hook: consume the entire wake contact, including its UP. */
+bool mosaic_ui_filter_pointer(bool pressed);
+/** Read-only guard for already queued business pointer notifications. */
+bool mosaic_ui_pointer_guarded(void);
 
 /** Configure the shared ASR instance before or after mosaic_ui_start(). */
 esp_err_t mosaic_ui_set_ai_create_asr(asr_service_handle_t asr);

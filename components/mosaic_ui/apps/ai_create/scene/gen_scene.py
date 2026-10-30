@@ -369,12 +369,12 @@ def build_ai_create():
     # The picker immediately covers this entry row, so its default selection
     # colors can remain static and do not consume scarce runtime bind slots.
     objs.append(button(
-        welcome, 24, 180, 210, 40, "New Session",
+        welcome, 24, 176, 210, 48, "New Session",
         bg="#E64501", fg="#FCFCFF",
         radius=20, size=15, callback="ai_new",
     ))
     objs.append(button(
-        welcome, 246, 180, 210, 40, "Continue",
+        welcome, 246, 176, 210, 48, "Continue",
         bg="#18181A", fg="#FCFCFF",
         radius=20, size=15, callback="ai_resume_work",
     ))
@@ -440,9 +440,9 @@ def build_ai_create():
             # cards, completes the input field's 432 px alignment, and is an
             # honest affordance: tap and swipe both change pages.
             hint_text = "›" if index == 0 else "‹"
-            hint_x = 402 if index == 0 else 0
+            hint_x = 384 if index == 0 else 0
             objs.append(button(
-                feature_page, hint_x, 2, 30, 48, hint_text,
+                feature_page, hint_x, 2, 48, 48, hint_text,
                 bg="#18181A", fg="#91919B", radius=15, size=22,
                 align="center",
                 name=f"{flow_name}_hint_{index}",

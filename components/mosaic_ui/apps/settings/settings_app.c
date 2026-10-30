@@ -220,6 +220,7 @@ typedef enum {
 
 static settings_detail_kind_t s_detail_kind = SETTINGS_DETAIL_ABOUT;
 static const char *TAG = "settings_app";
+static void settings_refresh_battery_detail(esp_gsp_handle_t ui);
 static void settings_wlan_request_scan(void);
 static void settings_wlan_phone_refresh(esp_gsp_handle_t ui);
 static void settings_wlan_complete_phone_setup(esp_gsp_handle_t ui);
@@ -432,19 +433,16 @@ esp_err_t mosaic_settings_get_battery(mosaic_settings_battery_t *ret_battery)
     const bool cached = s_battery_cache_valid;
     mosaic_settings_battery_t local = s_battery_cache;
     MOSAIC_BATTERY_UNLOCK();
+    if (s_state.ops.get_battery != NULL) {
+        esp_err_t err = s_state.ops.get_battery(s_state.ops.user_ctx, ret_battery);
+        if (err == ESP_OK) ret_battery->sequence = local.sequence;
+        return err;
+    }
     if (cached) {
         *ret_battery = local;
         return ESP_OK;
     }
 
-    if (s_state.ops.get_battery != NULL) {
-        esp_err_t err =
-            s_state.ops.get_battery(s_state.ops.user_ctx, ret_battery);
-        if (err == ESP_OK) {
-            mosaic_settings_notify_battery(ret_battery);
-        }
-        return err;
-    }
     if (s_state.ops.get_snapshot == NULL) {
         return ESP_ERR_NOT_SUPPORTED;
     }
@@ -833,12 +831,6 @@ static const settings_detail_row_t s_safe_rows[] = {
     {"Exit Safe Mode", "Restart", false, true, true},
 };
 
-static const settings_detail_row_t s_battery_rows[] = {
-    {"Charge", "--", false, false, false},
-    {"Voltage", "--", false, false, false},
-    {"Current", "--", false, false, false},
-};
-
 static const settings_detail_row_t *settings_detail_rows(size_t *count)
 {
     switch (s_detail_kind) {
@@ -846,8 +838,8 @@ static const settings_detail_row_t *settings_detail_rows(size_t *count)
         *count = sizeof(s_safe_rows) / sizeof(s_safe_rows[0]);
         return s_safe_rows;
     case SETTINGS_DETAIL_BATTERY:
-        *count = sizeof(s_battery_rows) / sizeof(s_battery_rows[0]);
-        return s_battery_rows;
+        *count = 0;
+        return NULL;
     case SETTINGS_DETAIL_ABOUT:
     default:
         *count = sizeof(s_about_rows) / sizeof(s_about_rows[0]);
@@ -882,28 +874,6 @@ static gsp_err_t settings_detail_bind_item(
             break;
         case 4:
             value = s_state.snapshot.serial_number[0] != '\0' ? s_state.snapshot.serial_number : "--";
-            break;
-        default:
-            break;
-        }
-    } else if (s_detail_kind == SETTINGS_DETAIL_BATTERY &&
-            s_state.snapshot.battery.available) {
-        const mosaic_settings_battery_t *battery = &s_state.snapshot.battery;
-        switch (item_index) {
-        case 0:
-            snprintf(value_text, sizeof(value_text), "%u%%",
-                     battery->state_of_charge);
-            value = value_text;
-            break;
-        case 1:
-            snprintf(value_text, sizeof(value_text), "%u mV",
-                     battery->voltage_mv);
-            value = value_text;
-            break;
-        case 2:
-            snprintf(value_text, sizeof(value_text), "%d mA",
-                     (int)battery->current_ma);
-            value = value_text;
             break;
         default:
             break;
@@ -945,13 +915,20 @@ static void settings_open_detail(esp_gsp_handle_t ui,
 {
     static const char *titles[] = {"About", "Safe Mode", "Battery"};
     s_detail_kind = kind;
-    size_t count = 0;
-    (void)settings_detail_rows(&count);
-    settings_detail_list_attach(ui);
+    const bool battery = kind == SETTINGS_DETAIL_BATTERY;
+    (void)esp_gsp_set_visible(ui, GSP_BIND_SETTINGS_DETAIL_LIST_VISIBLE, !battery);
+    (void)esp_gsp_set_visible(ui, GSP_BIND_SETTINGS_BATTERY_DETAIL_VISIBLE, battery);
     (void)gsp_settings_nav_settings_detail_title_set_text(ui, titles[kind]);
-    (void)esp_gsp_list_set_total(ui, s_detail_list, count);
-    (void)esp_gsp_list_refresh(ui, s_detail_list);
-    (void)esp_gsp_list_scroll_to(ui, s_detail_list, 0);
+    if (battery) {
+        settings_refresh_battery_detail(ui);
+    } else {
+        size_t count = 0;
+        (void)settings_detail_rows(&count);
+        settings_detail_list_attach(ui);
+        (void)esp_gsp_list_set_total(ui, s_detail_list, count);
+        (void)esp_gsp_list_refresh(ui, s_detail_list);
+        (void)esp_gsp_list_scroll_to(ui, s_detail_list, 0);
+    }
     if (esp_gsp_stack_view_push(ui, GSP_OBJ_KEY_SETTINGS_STACK,
                                SETTINGS_DETAIL_PAGE, true) == ESP_GSP_OK) {
         mosaic_app_shell_set_root_visible(ui, false);
@@ -2145,24 +2122,33 @@ static void settings_refresh_about_detail(esp_gsp_handle_t ui)
 
 static void settings_refresh_battery_detail(esp_gsp_handle_t ui)
 {
-    if (s_state.ops.get_battery == NULL ||
-            s_detail_list == ESP_GSP_LIST_NONE) {
-        return;
-    }
     mosaic_settings_battery_t battery = {0};
-    esp_err_t err = s_state.ops.get_battery(
-        s_state.ops.user_ctx, &battery);
+    esp_err_t err = s_state.ops.get_battery != NULL
+        ? s_state.ops.get_battery(s_state.ops.user_ctx, &battery)
+        : mosaic_settings_get_battery(&battery);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "refresh Battery detail failed: %s",
                  esp_err_to_name(err));
-        return;
+        battery.available = false;
+        battery.last_error = err;
     }
     s_state.snapshot.battery = battery;
-    esp_gsp_err_t gsp_err = esp_gsp_list_refresh(
-        ui, s_detail_list);
-    if (gsp_err != ESP_GSP_OK) {
-        ESP_LOGW(TAG, "queue Battery list refresh failed: 0x%x",
-                 (unsigned)gsp_err);
+    char charge[16] = "--";
+    char voltage[24] = "--";
+    char current[24] = "--";
+    if (battery.available) {
+        snprintf(charge, sizeof(charge), "%u%%", battery.state_of_charge);
+        snprintf(voltage, sizeof(voltage), "%u mV", battery.voltage_mv);
+        snprintf(current, sizeof(current), "%d mA", (int)battery.current_ma);
+    }
+    esp_err_t result = esp_gsp_set_text(ui, GSP_BIND_SETTINGS_BATTERY_CHARGE, charge);
+    keep_first_error(&result, esp_gsp_set_text(ui, GSP_BIND_SETTINGS_BATTERY_VOLTAGE, voltage));
+    keep_first_error(&result, esp_gsp_set_text(ui, GSP_BIND_SETTINGS_BATTERY_CURRENT, current));
+    const char *status = !battery.available ? "Sensor unavailable" :
+        battery.stale ? "Cached - sensor unavailable" : "Live";
+    keep_first_error(&result, esp_gsp_set_text(ui, GSP_BIND_SETTINGS_BATTERY_STATUS, status));
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "queue Battery values failed: %s", esp_err_to_name(result));
     }
 }
 

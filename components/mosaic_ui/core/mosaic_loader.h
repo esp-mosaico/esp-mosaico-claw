@@ -42,7 +42,9 @@ esp_gsp_handle_t mosaic_loader_ui(void);
 esp_err_t mosaic_loader_quiesce(uint32_t timeout_ms);
 esp_err_t mosaic_loader_activate(
     struct esp_display_presenter* presenter, uint32_t producer_generation);
-/** Render and flush Hub Lock Screen, then pause that exact frame. */
-esp_err_t mosaic_loader_lock_and_pause_hub(uint32_t timeout_ms);
+/** Pause the foreground UI while retaining its page and App/audio ownership. */
+esp_err_t mosaic_loader_pause_screen(uint32_t timeout_ms);
 esp_err_t mosaic_loader_resume_screen(void);
+/** Start bounded render-task cadence diagnostics on the foreground App. */
+esp_err_t mosaic_loader_profile_active(uint32_t duration_ms);
 uint16_t mosaic_loader_hub_scene(void);

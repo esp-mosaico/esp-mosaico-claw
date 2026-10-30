@@ -20,6 +20,7 @@ struct music_presenter_t {
     uint32_t rendered_remaining_seconds;
     music_playback_state_t rendered_state;
     bool rendered_shuffle_enabled;
+    int32_t rendered_progress;
     bool valid;
 };
 
@@ -92,11 +93,12 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
     const int32_t cursor_x = MUSIC_PROGRESS_CURSOR_X_MIN +
         ((MUSIC_PROGRESS_CURSOR_X_MAX - MUSIC_PROGRESS_CURSOR_X_MIN) *
          progress_percent + 50) / 100;
-    (void)esp_gsp_component_set_position(
-        ui, GSP_OBJ_KEY_MUSIC_PROGRESS_CURSOR,
-        cursor_x, MUSIC_PROGRESS_CURSOR_Y);
-    esp_err_t err = esp_gsp_set_value(
-        ui, GSP_BIND_MUSIC_PROGRESS, progress_percent);
+    esp_err_t err = ESP_OK;
+    if (force || !presenter->valid || presenter->rendered_progress != progress_percent) {
+        err = esp_gsp_component_set_position(ui, GSP_OBJ_KEY_MUSIC_PROGRESS_CURSOR,
+                                             cursor_x, MUSIC_PROGRESS_CURSOR_Y);
+        if (err == ESP_OK) err = esp_gsp_set_value(ui, GSP_BIND_MUSIC_PROGRESS, progress_percent);
+    }
     const uint32_t elapsed_seconds =
         (uint32_t)(snapshot->position_ms / 1000);
     const uint32_t remaining_seconds = (uint32_t)(
@@ -111,13 +113,14 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
     const bool shuffle_changed = force || !presenter->valid ||
         presenter->rendered_shuffle_enabled != snapshot->shuffle_enabled;
 
-    if (metadata_changed) {
+    if (metadata_changed && err == ESP_OK) {
         err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_TITLE,
             snapshot->title);
     }
-    if (metadata_changed && err == ESP_OK) {
+    if ((metadata_changed || state_changed) && err == ESP_OK) {
         err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_ARTIST,
-            snapshot->artist);
+            snapshot->state == MUSIC_PLAYBACK_LOADING ? "Preparing audio..." :
+            snapshot->state == MUSIC_PLAYBACK_ERROR ? "Playback unavailable" : snapshot->artist);
     }
     if (metadata_changed && err == ESP_OK) {
         err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_ALBUM,
@@ -199,6 +202,7 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
         presenter->rendered_remaining_seconds = remaining_seconds;
         presenter->rendered_state = snapshot->state;
         presenter->rendered_shuffle_enabled = snapshot->shuffle_enabled;
+        presenter->rendered_progress = progress_percent;
         presenter->valid = true;
     } else {
         presenter->valid = false;

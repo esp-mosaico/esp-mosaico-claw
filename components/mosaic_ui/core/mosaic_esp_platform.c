@@ -6,6 +6,7 @@
 
 #include "mosaic_esp_platform.h"
 #include "mosaic_ui.h"
+#include "mosaic_ui_probe.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -672,6 +673,12 @@ static esp_err_t platform_dispatch_event(
     if (app == NULL || event == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (event->type == MOSAIC_EVENT_TIMER && mosaic_ui_screen_asleep()) {
+        if (app->package->descriptor->on_background_tick != NULL) {
+            app->package->descriptor->on_background_tick(event->timestamp_us);
+        }
+        return ESP_OK;
+    }
     if (event->type == MOSAIC_EVENT_START && !app->shell_attached
         && app->package->descriptor != mosaic_app_root()
         && !app->package->descriptor->custom_shell) {
@@ -687,6 +694,9 @@ static esp_err_t platform_dispatch_event(
          * installed. Re-arm now so the Shell remains the final top-level
          * owner of the bottom exit band on both host and ESP touch paths. */
         mosaic_app_shell_rearm(app->ui);
+    }
+    if (event->type == MOSAIC_EVENT_STOP) {
+        mosaic_ui_probe_cancel(app->ui);
     }
     esp_err_t err = mosaic_logic_dispatch(app->logic, event);
     if (err == ESP_OK && app->package->descriptor->on_event != NULL) {
@@ -842,6 +852,7 @@ esp_err_t mosaic_esp_platform_quiesce(
         platform->paused = true;
         return ESP_OK;
     }
+    mosaic_ui_probe_cancel(platform->active->ui);
     esp_err_t err = esp_gsp_esp_lcd_pause(
         platform->active->ui, timeout_ms, &platform->present_pause);
     if (err == ESP_OK) {
@@ -887,6 +898,7 @@ esp_err_t mosaic_esp_platform_pause_screen(
     if (platform->paused) {
         return ESP_ERR_INVALID_STATE;
     }
+    mosaic_ui_probe_cancel(platform->active->ui);
     return esp_gsp_esp_lcd_pause(
         platform->active->ui, timeout_ms, &platform->screen_pause);
 }

@@ -1014,6 +1014,7 @@ def _build_detail(objs, page):
         "x": 0, "y": 64, "w": 480, "h": 416,
         "item_height": 100, "item_count": 6,
         "name": "settings_detail_list",
+        "bind": "settings_detail_list_visible", "bind_target": "visible",
         "row_template": "settings_detail_row",
         "scroll_snapshot": True,
         "bg_color": BG, "fg_color": FG,
@@ -1045,6 +1046,29 @@ def _build_detail(objs, page):
     chevron["font_charset"] = SETTINGS_RUNTIME_CHARSET
     objs.append(chevron)
     objs.append(container(row, 0, 99, 480, 1, bg="#3B3C3D"))
+
+    # Battery has three fixed rows. Keep live values out of the virtual List
+    # refresh/rebind path used by the variable About/Safe Mode details.
+    battery = len(objs)
+    objs.append(layer(page, 0, 64, 480, 416, hidden=True,
+                      name="settings_battery_detail",
+                      bind="settings_battery_detail_visible"))
+    for index, (title, name) in enumerate((
+            ("Charge", "settings_battery_charge"),
+            ("Voltage", "settings_battery_voltage"),
+            ("Current", "settings_battery_current"))):
+        y = index * 100
+        objs.append(label(battery, 12, y + 27, 180, 46, title, size=32))
+        value = label(battery, 208, y + 33, 228, 34, "--", size=24,
+                      color=MUTED, align="right", name=name, bind=name)
+        value["font_charset"] = SETTINGS_RUNTIME_CHARSET
+        objs.append(value)
+        objs.append(container(battery, 0, y + 99, 480, 1, bg="#3B3C3D"))
+    status = label(battery, 12, 320, 456, 32, "Sensor unavailable", size=20,
+                   color=MUTED, align="center", name="settings_battery_status",
+                   bind="settings_battery_status")
+    status["font_charset"] = SETTINGS_RUNTIME_CHARSET
+    objs.append(status)
 
 
 def _build_factory(objs, page):

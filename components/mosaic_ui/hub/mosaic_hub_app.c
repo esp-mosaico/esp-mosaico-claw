@@ -6,6 +6,7 @@
 
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_app.h"
+#include "mosaic_hub_backdrop.h"
 #include "mosaic_hub_actions.h"
 #include "mosaic_hub_binds.h"
 #include "mosaic_hub_objects.h"
@@ -88,9 +89,18 @@ static mosaic_settings_network_t s_wifi_info;
 static bool s_wifi_pending;
 static bool s_wifi_subscribed;
 static uint8_t s_wifi_poll_ticks;
+static bool s_wifi_visual_valid;
+static bool s_wifi_visual_show;
+static uint8_t s_wifi_visual_level;
+static bool s_clock_refresh_pending;
+static struct {
+    bool valid;
+    int year, day, hour, minute;
+} s_clock_text;
 #if defined(ESP_PLATFORM)
 static weather_service_snapshot_t s_weather_info;
 static bool s_weather_pending;
+static bool s_weather_seen;
 static bool s_weather_subscribed;
 #endif
 static void *s_insert_timer;
@@ -666,13 +676,25 @@ static void mosaic_hub_status_wifi_apply(
     const bool show = network->enabled && network->connected;
     const uint8_t level = show
         ? mosaic_hub_wifi_rssi_level(true, network->rssi) : 0U;
-    (void)esp_gsp_set_visible(ui, GSP_BIND_STATUS_WIFI, show);
-    (void)esp_gsp_set_visible(ui, GSP_BIND_QUICK_STATUS_WIFI, show);
+    if (s_wifi_visual_valid && s_wifi_visual_show == show &&
+            s_wifi_visual_level == level) {
+        return;
+    }
+    s_wifi_visual_valid = false;
+    bool published = esp_gsp_set_visible(
+        ui, GSP_BIND_STATUS_WIFI, show) == ESP_GSP_OK;
+    published &= esp_gsp_set_visible(
+        ui, GSP_BIND_QUICK_STATUS_WIFI, show) == ESP_GSP_OK;
     for (uint8_t index = 0; index <= MOSAIC_STATUS_WIFI_LEVELS; ++index) {
-        (void)esp_gsp_set_visible(
-            ui, bar_binds[index], show && index == level);
-        (void)esp_gsp_set_visible(
-            ui, quick_bar_binds[index], show && index == level);
+        published &= esp_gsp_set_visible(
+            ui, bar_binds[index], show && index == level) == ESP_GSP_OK;
+        published &= esp_gsp_set_visible(
+            ui, quick_bar_binds[index], show && index == level) == ESP_GSP_OK;
+    }
+    if (published) {
+        s_wifi_visual_show = show;
+        s_wifi_visual_level = level;
+        s_wifi_visual_valid = true;
     }
 }
 
@@ -750,8 +772,14 @@ static void mosaic_hub_weather_apply(
         strlcpy(temperature, "--", sizeof(temperature));
         description = "--";
     }
+    char city_label[WEATHER_SERVICE_CITY_LEN + 12];
     city = weather->location_valid && weather->city[0] != '\0'
         ? weather->city : "--";
+    snprintf(city_label, sizeof(city_label), "%s%s", city,
+        weather->location_valid && weather->location_source == WEATHER_LOCATION_IP ? " (IP)" : "");
+    city = city_label;
+    if (weather->location_stale) description = "Check location";
+    else if (weather->weather_valid && weather->stale) description = "Cached weather";
     (void)esp_gsp_set_text(
         ui, GSP_BIND_HOME_WEATHER_TEMP, temperature);
     (void)esp_gsp_set_text(
@@ -768,8 +796,10 @@ static void mosaic_hub_weather_event_cb(
         return;
     }
     MOSAIC_HUB_WEATHER_LOCK();
-    s_weather_info = *info;
-    s_weather_pending = true;
+    if (!s_weather_seen || (int32_t)(info->sequence - s_weather_info.sequence) >= 0) {
+        s_weather_info = *info;
+        s_weather_pending = s_weather_seen = true;
+    }
     MOSAIC_HUB_WEATHER_UNLOCK();
 }
 
@@ -925,16 +955,33 @@ static void mosaic_hub_clock_apply(esp_gsp_handle_t ui)
     (void)gsp_analog_clock_set_time(ui, &s_home_clock, hour, minute, second);
 
     /* AOD = Figma 首页1-熄屏 (single bold HH:MM). */
-    (void)gsp_mosaic_hub_aod_clock_set_text(ui, aod_clock);
-    char aod_date[32];
-    snprintf(aod_date, sizeof(aod_date), "%d/%d · ",
-             local.tm_mon + 1, local.tm_mday);
-    (void)gsp_mosaic_hub_aod_date_prefix_set_text(ui, aod_date);
-    (void)gsp_mosaic_hub_aod_date_day_set_text(
-        ui, weekdays_title[local.tm_wday]);
-
-    (void)gsp_mosaic_hub_status_time_set_text(ui, status);
-    (void)gsp_mosaic_hub_quick_status_time_set_text(ui, status);
+    /* Text/visibility publications can invalidate viewport snapshots even
+     * when their payload is unchanged. Seconds only move the analogue hand. */
+    if (!s_clock_text.valid || s_clock_text.year != local.tm_year ||
+            s_clock_text.day != local.tm_yday ||
+            s_clock_text.hour != hour || s_clock_text.minute != minute) {
+        s_clock_text.valid = false;
+        bool published = gsp_mosaic_hub_aod_clock_set_text(
+            ui, aod_clock) == ESP_GSP_OK;
+        char aod_date[32];
+        snprintf(aod_date, sizeof(aod_date), "%d/%d · ",
+                 local.tm_mon + 1, local.tm_mday);
+        published &= gsp_mosaic_hub_aod_date_prefix_set_text(
+            ui, aod_date) == ESP_GSP_OK;
+        published &= gsp_mosaic_hub_aod_date_day_set_text(
+            ui, weekdays_title[local.tm_wday]) == ESP_GSP_OK;
+        published &= gsp_mosaic_hub_status_time_set_text(
+            ui, status) == ESP_GSP_OK;
+        published &= gsp_mosaic_hub_quick_status_time_set_text(
+            ui, status) == ESP_GSP_OK;
+        if (published) {
+            s_clock_text.year = local.tm_year;
+            s_clock_text.day = local.tm_yday;
+            s_clock_text.hour = hour;
+            s_clock_text.minute = minute;
+            s_clock_text.valid = true;
+        }
+    }
 #if !defined(ESP_PLATFORM)
     /* Host-only charging demo: exercise every percentage width, including
      * 100%, without allowing the fixed host battery snapshot to pin it. */
@@ -1146,12 +1193,24 @@ static bool mosaic_hub_intercept_pointer(
 {
     (void)user_ctx;
     if (mosaic_hub_lock_visible()) {
+        mosaic_hub_backdrop_contact(ui,pressed,false);
         /* Native Drawer owns the entire lock viewport, its gesture kinetics,
          * and snapshot composition. Do not consume its pointer samples. */
         s_pointer_down = pressed;
         return false;
     }
     bool drawer_open = false;
+    bool prepare_backdrop=false;
+    if (pressed && !s_pointer_down && y<=24) {
+        esp_gsp_component_motion_t drawer={0}, launcher={0};
+        uint16_t page=0;
+        prepare_backdrop=esp_gsp_component_get_motion(ui,GSP_OBJ_KEY_QUICK_DRAWER,&drawer)==ESP_GSP_OK &&
+            !drawer.dragging && !drawer.settling && drawer.value==0 &&
+            esp_gsp_component_get_motion(ui,GSP_OBJ_KEY_LAUNCHER_FLOW,&launcher)==ESP_GSP_OK &&
+            !launcher.dragging && !launcher.settling &&
+            esp_gsp_stack_view_get_top(ui,GSP_OBJ_KEY_HUB_STACK,&page)==ESP_GSP_OK && page==0;
+    }
+    mosaic_hub_backdrop_contact(ui,pressed,prepare_backdrop);
     if (pressed && !s_pointer_down) {
         if (esp_gsp_drawer_is_open(ui, GSP_OBJ_KEY_QUICK_DRAWER,
                                    &drawer_open) != ESP_GSP_OK) {
@@ -1228,15 +1287,41 @@ static bool mosaic_hub_intercept_pointer(
     return false;
 }
 
+static bool mosaic_hub_defer_refresh(esp_gsp_handle_t ui)
+{
+    if (s_pointer_down) {
+        return true;
+    }
+    esp_gsp_component_motion_t motion = {0};
+    return esp_gsp_component_get_motion(
+        ui, GSP_OBJ_KEY_QUICK_DRAWER, &motion) == ESP_GSP_OK &&
+        (motion.dragging || motion.settling);
+}
+
 static void mosaic_hub_clock_tick(esp_gsp_handle_t ui, void *user_ctx)
 {
     (void)user_ctx;
+    if (mosaic_hub_defer_refresh(ui)) {
+        s_clock_refresh_pending = true;
+        return;
+    }
+    s_clock_refresh_pending = false;
     mosaic_hub_clock_apply(ui);
 }
 
 static void mosaic_hub_battery_tick(esp_gsp_handle_t ui, void *user_ctx)
 {
     (void)user_ctx;
+    /* Keep render-task service reads and snapshot-invalidating publications
+     * out of a drag/settle. The latest pending model samples remain staged;
+     * battery sampling and shutdown policy run independently of this UI timer. */
+    if (mosaic_hub_defer_refresh(ui)) {
+        return;
+    }
+    if (s_clock_refresh_pending) {
+        s_clock_refresh_pending = false;
+        mosaic_hub_clock_apply(ui);
+    }
     mosaic_hub_insert_request_t insert_request = {0};
     if (mosaic_hub_take_insert_request(&insert_request)) {
         const bool show_notice =
@@ -1394,6 +1479,9 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
     s_lock_was_charging = false;
     s_battery_pending = false;
     s_wifi_pending = false;
+    s_wifi_visual_valid = false;
+    s_clock_text.valid = false;
+    s_clock_refresh_pending = false;
 #if defined(ESP_PLATFORM)
     s_weather_pending = false;
     (void)esp_gsp_set_visible(ui, GSP_BIND_AOD_MODE_SWITCH_VISIBLE, false);
@@ -1440,11 +1528,13 @@ static void mosaic_hub_started(esp_gsp_handle_t ui)
     (void)esp_gsp_set_input_interceptor(
         ui, mosaic_hub_intercept_pointer, NULL);
     mosaic_hub_start_timers(ui);
+    mosaic_hub_backdrop_start(ui);
 }
 
 static void mosaic_hub_stopping(esp_gsp_handle_t ui)
 {
     mosaic_hub_stop_timers(ui);
+    mosaic_hub_backdrop_stop(ui);
     if (s_battery_subscribed) {
         (void)mosaic_settings_unsubscribe_battery(
             mosaic_hub_battery_event_cb, NULL);

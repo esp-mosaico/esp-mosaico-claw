@@ -47,6 +47,25 @@ static void clear_timers(mosaic_runtime_handle_t runtime)
     memset(runtime->timers, 0, sizeof(runtime->timers));
 }
 
+static void reset_app_timers(mosaic_runtime_handle_t runtime,
+    const mosaic_app_descriptor_t* descriptor)
+{
+    clear_timers(runtime);
+    const mosaic_app_package_t* package
+        = mosaic_app_package_for_descriptor(descriptor);
+    if (package == NULL || package->tick_ms == 0) {
+        return;
+    }
+    mosaic_runtime_timer_t* timer = &runtime->timers[0];
+    timer->active = true;
+    timer->repeat = true;
+    memcpy(timer->id, "app_tick", sizeof("app_tick"));
+    timer->period_ms = package->tick_ms;
+    timer->revision = ++runtime->timer_revision;
+    timer->next_us
+        = runtime->now_us + (int64_t)package->tick_ms * 1000;
+}
+
 static esp_err_t dispatch(
     mosaic_runtime_handle_t runtime, const mosaic_event_t* event)
 {
@@ -161,20 +180,7 @@ static esp_err_t open_app(
     runtime->platform_app = platform_app;
     runtime->active = descriptor;
     runtime->pending = NULL;
-    clear_timers(runtime);
-
-    const mosaic_app_package_t* package
-        = mosaic_app_package_for_descriptor(descriptor);
-    if (package != NULL && package->tick_ms != 0) {
-        mosaic_runtime_timer_t* timer = &runtime->timers[0];
-        timer->active = true;
-        timer->repeat = true;
-        memcpy(timer->id, "app_tick", sizeof("app_tick"));
-        timer->period_ms = package->tick_ms;
-        timer->revision = ++runtime->timer_revision;
-        timer->next_us
-            = runtime->now_us + (int64_t)package->tick_ms * 1000;
-    }
+    reset_app_timers(runtime, descriptor);
 
     const mosaic_event_t event = {
         .type = MOSAIC_EVENT_START,
@@ -208,7 +214,7 @@ static esp_err_t replace_app(mosaic_runtime_handle_t runtime,
     runtime->active = descriptor;
     runtime->pending = NULL;
     runtime->stop_dispatched = false;
-    clear_timers(runtime);
+    reset_app_timers(runtime, descriptor);
     const mosaic_event_t event = {
         .type = MOSAIC_EVENT_START,
         .timestamp_us = runtime->now_us,

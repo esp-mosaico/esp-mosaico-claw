@@ -9,148 +9,175 @@
 #include <stdbool.h>
 
 #if defined(ESP_PLATFORM)
+#include <stdatomic.h>
 #include "audio_hub.h"
 #include "audio_playback.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #define MUSIC_AUDIO_CHUNK_BYTES 512U
 
-struct music_audio_t {
+typedef struct {
     audio_mixer_track_handle_t track;
     audio_playback_handle_t player;
+    SemaphoreHandle_t io_lock;
+    atomic_bool closing;
+} music_session_t;
+
+struct music_audio_t {
+    music_session_t *session;
     music_audio_status_t last_status;
 };
 
+/* Only one decoder may be retired at a time. A rapid re-open renders a
+ * loading state and retries, rather than allocating another live decoder. */
+static QueueHandle_t s_cleanup_queue;
+static atomic_bool s_cleanup_pending;
+
 static esp_err_t write_pcm(const void *data, size_t bytes, void *ctx)
 {
-    music_audio_handle_t audio = ctx;
-    if (!audio || !audio->track) {
-        return ESP_ERR_INVALID_STATE;
-    }
+    music_session_t *session = ctx;
+    if (session == NULL) return ESP_ERR_INVALID_ARG;
     const uint8_t *cursor = data;
     while (bytes > 0) {
-        const size_t chunk = bytes > MUSIC_AUDIO_CHUNK_BYTES
-            ? MUSIC_AUDIO_CHUNK_BYTES : bytes;
-        const size_t written = audio_mixer_track_write(
-            audio->track, cursor, chunk);
-        if (!written) {
-            return ESP_FAIL;
+        if (atomic_load(&session->closing)) return ESP_OK;
+        xSemaphoreTake(session->io_lock, portMAX_DELAY);
+        if (atomic_load(&session->closing) || session->track == NULL) {
+            xSemaphoreGive(session->io_lock);
+            return ESP_OK;
         }
+        const size_t chunk = bytes > MUSIC_AUDIO_CHUNK_BYTES ? MUSIC_AUDIO_CHUNK_BYTES : bytes;
+        const size_t written = audio_mixer_track_write(session->track, cursor, chunk);
+        xSemaphoreGive(session->io_lock);
+        if (!written) return ESP_FAIL;
         cursor += written;
         bytes -= written;
     }
     return ESP_OK;
 }
 
+static void destroy_session(music_session_t *session)
+{
+    if (session->player != NULL) audio_playback_delete(session->player);
+    if (session->track != NULL) audio_mixer_close_track(session->track);
+    vSemaphoreDelete(session->io_lock);
+    free(session);
+}
+
+static void cleanup_task(void *ctx)
+{
+    (void)ctx;
+    music_session_t *session;
+    for (;;) {
+        if (xQueueReceive(s_cleanup_queue, &session, portMAX_DELAY) == pdTRUE) {
+            destroy_session(session);
+            atomic_store(&s_cleanup_pending, false);
+        }
+    }
+}
+
+static esp_err_t prepare_cleanup(void)
+{
+    if (s_cleanup_queue != NULL) return ESP_OK;
+    s_cleanup_queue = xQueueCreate(1, sizeof(music_session_t *));
+    if (s_cleanup_queue == NULL) return ESP_ERR_NO_MEM;
+    if (xTaskCreate(cleanup_task, "music_cleanup", 3072, NULL, 3, NULL) != pdPASS) {
+        vQueueDelete(s_cleanup_queue);
+        s_cleanup_queue = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
 static void release_session(music_audio_handle_t audio)
 {
-    if (!audio) {
+    music_session_t *session = audio->session;
+    if (session == NULL) return;
+    audio->session = NULL;
+    atomic_store(&session->closing, true);
+    /* Fence the current PCM write, then remove queued sound and release the
+     * mixer track before the next App acquires audio ownership. */
+    xSemaphoreTake(session->io_lock, portMAX_DELAY);
+    if (session->track != NULL) {
+        audio_mixer_close_track(session->track);
+        session->track = NULL;
+    }
+    xSemaphoreGive(session->io_lock);
+    if (session->player == NULL) {
+        destroy_session(session);
         return;
     }
-    if (audio->player) {
-        audio_playback_delete(audio->player);
-        audio->player = NULL;
-    }
-    if (audio->track) {
-        audio_mixer_close_track(audio->track);
-        audio->track = NULL;
+    atomic_store(&s_cleanup_pending, true);
+    if (xQueueSend(s_cleanup_queue, &session, 0) != pdTRUE) {
+        /* The one-decoder gate makes this exceptional. Keep cleanup safe if
+         * a future caller violates it, without leaking decoder callbacks. */
+        destroy_session(session);
+        atomic_store(&s_cleanup_pending, false);
     }
 }
 
 static esp_err_t open_session(music_audio_handle_t audio)
 {
-    if (!audio) {
-        return ESP_ERR_INVALID_STATE;
-    }
+    if (atomic_load(&s_cleanup_pending)) return ESP_ERR_NOT_FINISHED;
+    music_session_t *session = calloc(1, sizeof(*session));
+    if (session == NULL) return ESP_ERR_NO_MEM;
+    atomic_init(&session->closing, false);
+    session->io_lock = xSemaphoreCreateMutex();
+    if (session->io_lock == NULL) { free(session); return ESP_ERR_NO_MEM; }
+    audio->session = session;
     audio_mixer_handle_t mixer = NULL;
     esp_err_t err = audio_hub_get_mixer(&mixer);
-    if (err != ESP_OK) {
-        ESP_LOGE("music_audio", "Get shared mixer failed: %s", esp_err_to_name(err));
-        return err;
+    if (err == ESP_OK) {
+        err = audio_mixer_open_track(mixer, AUDIO_MIXER_TRACK_SYSTEM,
+                                     "mosaic/music", &session->track);
     }
-    err = audio_mixer_open_track(mixer, AUDIO_MIXER_TRACK_SYSTEM, "mosaic/music", &audio->track);
-    if (err != ESP_OK) {
-        ESP_LOGE("music_audio", "Open SYSTEM track failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
     uint32_t rate = 0;
-    uint8_t channels = 0;
-    uint8_t bits = 0;
-    err = audio_mixer_track_info(audio->track, &rate, &channels, &bits);
+    uint8_t channels = 0, bits = 0;
+    if (err == ESP_OK) err = audio_mixer_track_info(session->track, &rate, &channels, &bits);
     if (err == ESP_OK) {
         const audio_playback_config_t config = {
-            .output_format = {.sample_rate = rate, .channels = channels, .bits = bits},
-            .write = write_pcm,
-            .write_ctx = audio,
+            .output_format = {.sample_rate=rate, .channels=channels, .bits=bits},
+            .write=write_pcm, .write_ctx=session,
         };
-        err = audio_playback_create(&config, &audio->player);
+        err = audio_playback_create(&config, &session->player);
     }
-    if (err != ESP_OK) {
-        ESP_LOGE("music_audio", "Create playback session failed: %s", esp_err_to_name(err));
-        release_session(audio);
-    }
+    if (err != ESP_OK) release_session(audio);
     return err;
 }
 
 esp_err_t music_audio_create(music_audio_handle_t *ret_audio)
 {
-    if (!ret_audio) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    if (ret_audio == NULL) return ESP_ERR_INVALID_ARG;
     *ret_audio = NULL;
-    music_audio_handle_t audio = calloc(1, sizeof(*audio));
-    if (!audio) {
-        return ESP_ERR_NO_MEM;
-    }
-    *ret_audio = audio;
-    return ESP_OK;
+    esp_err_t err = prepare_cleanup();
+    if (err != ESP_OK) return err;
+    *ret_audio = calloc(1, sizeof(**ret_audio));
+    return *ret_audio != NULL ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
 void music_audio_delete(music_audio_handle_t audio)
 {
-    if (!audio) {
-        return;
-    }
+    if (audio == NULL) return;
     release_session(audio);
     free(audio);
 }
 
-static char *path_to_uri(const char *path)
+esp_err_t music_audio_play(music_audio_handle_t audio, const char *path, uint64_t bytes)
 {
-    if (!path || path[0] != '/') {
-        return NULL;
-    }
+    if (audio == NULL || path == NULL || path[0] != '/') return ESP_ERR_INVALID_ARG;
+    esp_err_t err = audio->session != NULL ? ESP_OK : open_session(audio);
+    if (err != ESP_OK) return err;
     const size_t length = strlen("file://") + strlen(path) + 1;
     char *uri = malloc(length);
-    if (uri) {
-        snprintf(uri, length, "file://%s", path);
-    }
-    return uri;
-}
-
-esp_err_t music_audio_play(music_audio_handle_t audio,
-                           const char *path, uint64_t bytes)
-{
-    if (!audio || !path) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    release_session(audio);
-    esp_err_t err = open_session(audio);
-    if (err != ESP_OK) {
-        audio->last_status = (music_audio_status_t) {.state = MUSIC_AUDIO_ERROR, .error = err};
-        return err;
-    }
-
-    char *uri = path_to_uri(path);
-    if (!uri) {
-        release_session(audio);
-        return ESP_ERR_INVALID_ARG;
-    }
-    err = audio_playback_play(audio->player, uri, bytes, false);
+    if (uri == NULL) { release_session(audio); return ESP_ERR_NO_MEM; }
+    snprintf(uri, length, "file://%s", path);
+    err = audio_playback_play(audio->session->player, uri, bytes, false);
     free(uri);
     if (err != ESP_OK) {
-        audio->last_status = (music_audio_status_t) {.state = MUSIC_AUDIO_ERROR, .error = err};
+        audio->last_status = (music_audio_status_t){.state=MUSIC_AUDIO_ERROR,.error=err};
         release_session(audio);
     }
     return err;
@@ -158,50 +185,35 @@ esp_err_t music_audio_play(music_audio_handle_t audio,
 
 esp_err_t music_audio_stop(music_audio_handle_t audio)
 {
-    if (!audio) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    esp_err_t err = audio->player ? audio_playback_stop(audio->player) : ESP_OK;
-    audio->last_status = (music_audio_status_t) {.state = MUSIC_AUDIO_STOPPED, .error = err};
+    if (audio == NULL) return ESP_ERR_INVALID_ARG;
     release_session(audio);
-    return err;
+    audio->last_status = (music_audio_status_t){.state=MUSIC_AUDIO_STOPPED};
+    return ESP_OK;
 }
 
 esp_err_t music_audio_pause(music_audio_handle_t audio)
 {
-    return audio && audio->player ? audio_playback_pause(audio->player) : ESP_ERR_INVALID_STATE;
+    return audio != NULL && audio->session != NULL ?
+        audio_playback_pause(audio->session->player) : ESP_ERR_INVALID_STATE;
 }
-
 esp_err_t music_audio_resume(music_audio_handle_t audio)
 {
-    return audio && audio->player ? audio_playback_resume(audio->player) : ESP_ERR_INVALID_STATE;
+    return audio != NULL && audio->session != NULL ?
+        audio_playback_resume(audio->session->player) : ESP_ERR_INVALID_STATE;
 }
-
-esp_err_t music_audio_status(music_audio_handle_t audio,
-                             music_audio_status_t *out_status)
+esp_err_t music_audio_status(music_audio_handle_t audio, music_audio_status_t *out_status)
 {
-    if (!audio || !out_status) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (!audio->player) {
-        *out_status = audio->last_status;
-        return ESP_OK;
-    }
+    if (audio == NULL || out_status == NULL) return ESP_ERR_INVALID_ARG;
+    if (audio->session == NULL) { *out_status=audio->last_status; return ESP_OK; }
     audio_playback_status_t status;
-    esp_err_t err = audio_playback_get_status(audio->player, &status);
-    if (err != ESP_OK) {
-        return err;
-    }
-    audio->last_status = (music_audio_status_t) {
-        .state = (music_audio_state_t)status.state,
-        .position_ms = status.position_ms,
-        .duration_ms = status.duration_ms,
-        .error = status.last_error,
+    esp_err_t err = audio_playback_get_status(audio->session->player, &status);
+    if (err != ESP_OK) return err;
+    audio->last_status = (music_audio_status_t){
+        .state=(music_audio_state_t)status.state, .position_ms=status.position_ms,
+        .duration_ms=status.duration_ms, .error=status.last_error,
     };
     *out_status = audio->last_status;
-    if (status.state == AUDIO_PLAYER_FINISHED || status.state == AUDIO_PLAYER_ERROR) {
-        release_session(audio);
-    }
+    if (status.state == AUDIO_PLAYER_ERROR) release_session(audio);
     return ESP_OK;
 }
 

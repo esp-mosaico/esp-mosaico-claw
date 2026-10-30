@@ -288,7 +288,7 @@ def build_clock_face(objs, parent):
         parent, weather_x, card_y + 140, 205, 34, '--',
         size=24, color='#FCFCFF', name='home_weather_desc',
         bind='home_weather_desc',
-        font_charset='-ClearFairCloudyRainSnowFogSleetThunderWeather',
+        font_charset=shared_charset()['charset'],
     ))
     objs.append(label(
         parent, weather_x, card_y + 174, 205, 26, '--',
@@ -324,9 +324,9 @@ def build_clock_face(objs, parent):
         ))
 
 
-def stack_pop_btn(objs, parent, *, x=12, y=14, w=72, h=44, text='Back'):
+def stack_pop_btn(objs, parent, *, x=12, y=12, w=72, h=48, text='Back'):
     objs.append(button(
-        parent, x, y, w, h, text, radius=22, size=16,
+        parent, x, y, w, h, text, radius=24, size=16,
         events=[{'event': 'click', 'action': 'stack_pop',
                  'target_name': 'hub_stack'}],
     ))
@@ -483,7 +483,7 @@ def build_quick_content(objs, parent):
                       40, 13, 139, 139))
     objs.append(image(right_group, f'{ASSETS}/control_center/prev.png',
                       34, 152, 48, 48))
-    objs.append(image(right_group, f'{ASSETS}/control_center/pause.png',
+    objs.append(image(right_group, f'{ASSETS}/control_center/play.png',
                       86, 152, 48, 48, name='quick_play'))
     objs.append(image(right_group, f'{ASSETS}/control_center/next.png',
                       138, 152, 48, 48))
@@ -611,7 +611,7 @@ def build_notification_content(objs, parent):
     objs.append(container(parent, 0, 0, CONTENT_W, CONTENT_H,
                           bg='#000000', name='notif_bg'))
     objs.append(label(parent, 16, 16, 320, 40, 'Notification Center', size=24))
-    stack_pop_btn(objs, parent, x=360, y=12, w=100, h=40, text='Close')
+    stack_pop_btn(objs, parent, x=360, y=8, w=100, h=48, text='Close')
 
     # Newest-first list. selected=0 → open anchored on the latest item.
     objs.append({
@@ -779,9 +779,23 @@ def build_insert_content(objs, parent):
 def build_hub_objects():
     objs, content = shared_prefix(HUB_IMAGES, FONT_POLICIES, BOLD)
 
+    cached = len(objs)
+    objs.append(layer(content, 0, 0, CONTENT_W, CONTENT_H, hidden=True,
+                      name='hub_backdrop', bind='hub_backdrop_visible'))
+    backdrop = image(cached, '../../common/assets/black_placeholder.png',
+                     0, 0, CONTENT_W, CONTENT_H, name='hub_backdrop_canvas',
+                     bind='hub_backdrop_canvas')
+    # Canvas replaces the opaque RGB565 resource view at registration. Its
+    # placeholder can remain compressed instead of storing 460 KB of black.
+    backdrop.update({'canvas': 'draw', 'dynamic_image': True})
+    objs.append(backdrop)
+    live = len(objs)
+    objs.append(layer(content, 0, 0, CONTENT_W, CONTENT_H,
+                      name='hub_live', bind='hub_live_visible'))
+    objs.append(container(live, 0, 0, CONTENT_W, CONTENT_H, bg='#000000'))
     stack = len(objs)
     objs.append({
-        'type': 'stackview', 'parent': content,
+        'type': 'stackview', 'parent': live,
         'x': 0, 'y': 0, 'w': CONTENT_W, 'h': CONTENT_H,
         'name': 'hub_stack', 'page_count': STACK_PAGE_COUNT,
         'initial_page': 0,
@@ -890,6 +904,11 @@ def build_hub_objects():
 
 
 def write_scene(path: Path, screen: str, objects):
+    # Match the shared scene writer's immediate product Back behavior.
+    for obj in objects:
+        for event in obj.get('events', []):
+            if event.get('action') == 'stack_pop':
+                event['animated'] = False
     scene = {
         'screen': screen,
         'w': SCREEN_W,

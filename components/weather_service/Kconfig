@@ -1,0 +1,10 @@
+menu "Weather service"
+    config WEATHER_CITY_SEARCH_URL
+        string "City search API URL prefix"
+        default "https://geocoding-api.open-meteo.com/v1/search?count=6&language=en&format=json&name="
+        help
+            Explicit city searches append a percent-encoded query. The endpoint
+            must return the Open-Meteo geocoding JSON schema. Production products
+            can use a licensed endpoint or a compatible backend proxy. Location
+            data attribution: GeoNames / Open-Meteo.
+endmenu

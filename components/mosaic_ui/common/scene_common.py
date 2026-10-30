@@ -772,6 +772,11 @@ def scene_out_path(here: Path, filename: str) -> Path:
 
 def write_scene(path: Path, screen: str, objects, *, font: str,
                 default_font_size: int = 18, actions=None):
+    # Keep product Back operations immediate across StackViews.
+    for obj in objects:
+        for event in obj.get("events", []):
+            if event.get("action") == "stack_pop":
+                event["animated"] = False
     scene = {
         "screen": screen,
         "w": SCREEN_W,

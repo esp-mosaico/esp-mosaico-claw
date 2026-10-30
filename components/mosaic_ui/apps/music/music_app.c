@@ -39,7 +39,7 @@ static void show_page(esp_gsp_handle_t ui, uint16_t page, bool animated)
     const esp_err_t err = page == MUSIC_LIBRARY_PAGE
         ? esp_gsp_stack_view_push(
             ui, GSP_OBJ_KEY_MUSIC_STACK, MUSIC_LIBRARY_PAGE, animated)
-        : esp_gsp_stack_view_pop(ui, GSP_OBJ_KEY_MUSIC_STACK, animated);
+        : esp_gsp_stack_view_pop(ui, GSP_OBJ_KEY_MUSIC_STACK, false);
     if (err == ESP_OK) {
         s_page = page;
     }
@@ -126,6 +126,14 @@ static void music_stopping(esp_gsp_handle_t ui)
     s_controller = NULL;
 }
 
+static bool music_back(esp_gsp_handle_t ui, int64_t now_us)
+{
+    (void)now_us;
+    if (s_page != MUSIC_LIBRARY_PAGE) return false;
+    show_page(ui, MUSIC_PLAYER_PAGE, false);
+    return true;
+}
+
 static void handle_call(esp_gsp_handle_t ui, uint16_t action)
 {
     switch (action) {
@@ -203,6 +211,11 @@ static void music_event(
     }
 }
 
+static void music_background_tick(int64_t timestamp_us)
+{
+    if (s_controller != NULL) (void)music_controller_step(s_controller, timestamp_us);
+}
+
 const mosaic_app_descriptor_t mosaic_music_app = {
     .id = MUSIC_APP_ID,
     .launch_action = GSP_ACT_ID_APP_MUSIC,
@@ -215,10 +228,12 @@ const mosaic_app_descriptor_t mosaic_music_app = {
     .title = "Music",
     .directory = &gsp_obj_directory_music,
     .root_stack_key = GSP_OBJ_KEY_MUSIC_STACK,
+    .on_back = music_back,
     .disable_swipe = true,
     /* Music owns its top header; shared Shell contributes bottom exit. */
     .root_header_in_stack = true,
     .on_started = music_started,
     .on_stopping = music_stopping,
     .on_event = music_event,
+    .on_background_tick = music_background_tick,
 };

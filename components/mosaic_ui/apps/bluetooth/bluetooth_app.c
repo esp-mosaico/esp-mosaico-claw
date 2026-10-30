@@ -516,6 +516,14 @@ static void bluetooth_event(esp_gsp_handle_t ui,
 
 #endif
 
+static void bluetooth_background_tick(int64_t timestamp_us)
+{
+    (void)timestamp_us;
+#if defined(ESP_PLATFORM)
+    bluetooth_try_start();
+#endif
+}
+
 const mosaic_app_descriptor_t mosaic_bluetooth_app = {
     .id = BLUETOOTH_APP_ID,
     .launch_action = MOSAIC_APP_NO_LAUNCH_ACTION,
@@ -527,6 +535,7 @@ const mosaic_app_descriptor_t mosaic_bluetooth_app = {
     .back_exits_app = true,
     .name = "bluetooth",
     .title = "Bluetooth Audio",
+    .on_background_tick = bluetooth_background_tick,
     .directory = &gsp_obj_directory_bluetooth,
     .disable_swipe = true,
     /* The player owns the full canvas. Shared Shell keeps only the bottom

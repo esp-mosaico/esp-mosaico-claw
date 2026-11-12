@@ -1,15 +1,6 @@
 version: 1.0.0
 devices:
 
-  - name: usb_hs_console
-    chip: none
-    type: custom
-    version: default
-    init_skip: true
-    dependencies:
-      usb_hs_console:
-        path: "${BOARD_PATH}/components/usb_hs_console"
-
   # Paint the boot logo before buttons / audio / touch so the first
   # visible frame is not blocked by unrelated device init.
   - name: lcd_power_ctrl

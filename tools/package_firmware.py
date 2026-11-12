@@ -121,7 +121,7 @@ def load_sdkconfig(build_dir: Path) -> dict:
 
 
 def resolve_console_output(sdkconfig: dict) -> str:
-    if sdkconfig.get("USB_HS_CONSOLE_USB_CDC_AUTO_INIT") is True:
+    if sdkconfig.get("ESP_IRIS_TRANSPORT_USB") is True and sdkconfig.get("ESP_IRIS_REDIRECT_STDIO") is True:
         return "USB HS CDC"
     if sdkconfig.get("ESP_CONSOLE_UART") is True:
         return "UART"

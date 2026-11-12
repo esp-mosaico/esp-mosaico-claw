@@ -21,11 +21,16 @@ endif()
 
 include("${CMAKE_SOURCE_DIR}/tools/cmake/flash_partition_defaults.cmake")
 
+set(MOSAICO_UTILS_ROOT "${CMAKE_CURRENT_LIST_DIR}/third-party/esp-mosaico-utils")
+# Requirements are expanded before Kconfig; ESP-Iris only uses the HS USB transport.
+set(ESP_IRIS_BUILD_PROFILE "usb" CACHE STRING "ESP-Iris dependency profile" FORCE)
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/third-party/esp-claw/components/common/esp_video")
+# idf.py loads the Iris flash/monitor extension only from trusted component sources.
+list(APPEND EXTRA_COMPONENT_DIRS "${MOSAICO_UTILS_ROOT}/ESP-Iris/components/esp_iris")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-project(edge_agent VERSION 0.6.0)
+project(Mosaico-Claw VERSION 0.6.0)
 
 if(COMMAND esp_mosaico_build_profile_finalize)
     esp_mosaico_build_profile_finalize()

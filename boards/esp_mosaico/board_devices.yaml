@@ -152,7 +152,10 @@ devices:
     config:
       chip_size: 0x40000000
     dependencies:
-      espressif/spi_nand_flash: ^1.4.1
+      espressif/spi_nand_flash:
+        git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+        version: 841f624
+        path: components/espressif__spi_nand_flash
       joltwallet/littlefs: ^1.22.0
       mosaico_bsp_bmgr_bridge:
         path: ${BOARD_PATH}/components/mosaico_bsp_bmgr_bridge
@@ -164,7 +167,7 @@ devices:
     init_skip: true
     dependencies:
       espressif/bq27220:
-        version: ^0.1.0
+        version: ^0.2
     config:
       design_capacity: 65  # mAh
     peripherals:

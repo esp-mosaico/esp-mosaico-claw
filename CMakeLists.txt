@@ -34,8 +34,13 @@ endif()
 set(EDGE_AGENT_FATFS_IMAGE_ROOT "${CMAKE_SOURCE_DIR}/fatfs_image")
 set(EDGE_AGENT_FATFS_SYSTEM_SOURCE_ROOT "${EDGE_AGENT_FATFS_IMAGE_ROOT}/system")
 set(EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT "${CMAKE_BINARY_DIR}/system_fs_image")
+set(EDGE_AGENT_APP_STORE_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/third-party/esp-claw/application/edge_agent/fatfs_image/system/apps/app_store")
 set(EDGE_AGENT_RECOVERY_VERSION_SCRIPT "${CMAKE_SOURCE_DIR}/tools/cmake/generate_recovery_version.cmake")
 set(EDGE_AGENT_BOARD_GENERATED_CMAKELISTS "${CMAKE_SOURCE_DIR}/components/gen_bmgr_codes/CMakeLists.txt")
+
+if(NOT IS_DIRECTORY "${EDGE_AGENT_APP_STORE_SOURCE_ROOT}")
+    message(FATAL_ERROR "ESP-Claw App Store source does not exist: ${EDGE_AGENT_APP_STORE_SOURCE_ROOT}")
+endif()
 
 set(EDGE_AGENT_BOARD_FATFS_SYSTEM_COPY_COMMANDS "")
 
@@ -76,6 +81,10 @@ add_custom_target(edge_agent_prepare_system_fs_image ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${EDGE_AGENT_FATFS_SYSTEM_SOURCE_ROOT}"
             "${EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT}"
+    # Keep App Store owned by ESP-Claw and stage its latest files on every build.
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${EDGE_AGENT_APP_STORE_SOURCE_ROOT}"
+            "${EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT}/apps/app_store"
     ${EDGE_AGENT_BOARD_FATFS_SYSTEM_COPY_COMMANDS}
     COMMAND ${CMAKE_COMMAND}
             "-DOUTPUT_FILE=${EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT}/.recovery.version"

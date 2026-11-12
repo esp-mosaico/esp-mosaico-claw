@@ -21,7 +21,7 @@
 #define SYSTEM_WIFI_ENABLED_KEY "sys_wifi_en"
 #define SYSTEM_WEB_LOGS_KEY "sys_web_logs"
 
-#define SYSTEM_SCREEN_TIMEOUT_DEFAULT_MS 30000
+#define SYSTEM_SCREEN_TIMEOUT_DEFAULT_MS 0
 #define SYSTEM_SCREEN_TIMEOUT_MAX_MS     1800000
 
 static bool screen_timeout_valid(uint32_t timeout_ms)

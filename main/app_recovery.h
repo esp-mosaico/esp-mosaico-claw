@@ -3,5 +3,5 @@
 
 #include "esp_err.h"
 
-/* Call only after local startup succeeds. Does not start a transport or writer. */
+/* Call only after iris_ota_support_start() and a successful local startup. */
 esp_err_t app_recovery_mark_healthy(void);

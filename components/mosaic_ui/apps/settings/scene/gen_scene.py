@@ -237,7 +237,7 @@ def _screen_timeout_dropdown(objs, parent, y):
         "name": "settings_screen_timeout_dropdown",
         "callback": "settings_screen_timeout_select",
         "options": ["10 sec", "30 sec", "1 min", "2 min", "5 min", "Never"],
-        "selected": 1, "item_height": 36, "open_direction": "up",
+        "selected": 5, "item_height": 36, "open_direction": "up",
         "font_size": 20, "fg_color": FG,
         "bg_color": "#29292B", "panel_color": "#29292B",
         "border_color": "#464649", "border_width": 1,

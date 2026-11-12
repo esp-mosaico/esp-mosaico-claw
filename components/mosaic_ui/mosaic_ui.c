@@ -86,7 +86,7 @@ static void on_battery_notice(
     }
 }
 
-static atomic_uint s_screen_timeout_ms = 30000;
+static atomic_uint s_screen_timeout_ms = 0;
 static atomic_uint s_screen_cmd;
 static atomic_bool s_screen_asleep;
 static atomic_bool s_ignore_wake_pointer;

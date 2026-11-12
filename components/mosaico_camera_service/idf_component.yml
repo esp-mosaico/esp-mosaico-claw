@@ -3,11 +3,11 @@ description: Default Mosaico camera service for ESP-Mosaico Claw
 dependencies:
   mosaico_module_camera:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
-    version: 5f10831
+    version: 841f624
     path: components/mosaico_module_camera
     public: true
   mosaico_module_mgr:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
-    version: 5f10831
+    version: 841f624
     path: components/mosaico_module_mgr
     public: true

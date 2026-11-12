@@ -11,6 +11,8 @@
 #include "app_fs.h"
 #include "app_factory_reset.h"
 #include "app_recovery.h"
+#include "esp_iris.h"
+#include "iris_ota_support.h"
 #include "claw_version.h"
 #include "claw_paths.h"
 #include "edge_agent_version.h"
@@ -881,6 +883,8 @@ static esp_err_t main_install_touch_mux(void)
 
 void app_main(void)
 {
+    /* Count early startup crashes toward ESP-Iris crash-loop recovery. */
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_iris_boot_probe());
 #if defined(ESP_MOSAICO_REMOTE_DEBUG) && APP_ENABLE_CLAW_TASKS
     (void)esp_remote_mosaic_adapter_start();
 #endif
@@ -893,6 +897,8 @@ void app_main(void)
     ESP_LOGI(TAG, "Edge Agent version: %s", edge_agent_get_version());
     ESP_ERROR_CHECK(app_allocate_runtime_state());
     ESP_ERROR_CHECK(init_nvs());
+    /* Keep Iris OTA and Vibe Mode entry reachable even if later startup fails. */
+    iris_ota_support_start();
     ESP_ERROR_CHECK(app_config_init());
     bool factory_reset_pending = false;
     ESP_ERROR_CHECK(app_factory_reset_is_pending(&factory_reset_pending));

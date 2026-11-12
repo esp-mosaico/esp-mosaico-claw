@@ -21,11 +21,16 @@ endif()
 
 include("${CMAKE_SOURCE_DIR}/tools/cmake/flash_partition_defaults.cmake")
 
+set(MOSAICO_UTILS_ROOT "${CMAKE_CURRENT_LIST_DIR}/third-party/esp-mosaico-utils")
+# Requirements are expanded before Kconfig; ESP-Iris only uses the HS USB transport.
+set(ESP_IRIS_BUILD_PROFILE "usb" CACHE STRING "ESP-Iris dependency profile" FORCE)
 list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/third-party/esp-claw/components/common/esp_video")
+# idf.py loads the Iris flash/monitor extension only from trusted component sources.
+list(APPEND EXTRA_COMPONENT_DIRS "${MOSAICO_UTILS_ROOT}/ESP-Iris/components/esp_iris")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-project(edge_agent VERSION 0.6.0)
+project(Mosaico-Claw VERSION 0.7.0)
 
 if(COMMAND esp_mosaico_build_profile_finalize)
     esp_mosaico_build_profile_finalize()
@@ -34,8 +39,13 @@ endif()
 set(EDGE_AGENT_FATFS_IMAGE_ROOT "${CMAKE_SOURCE_DIR}/fatfs_image")
 set(EDGE_AGENT_FATFS_SYSTEM_SOURCE_ROOT "${EDGE_AGENT_FATFS_IMAGE_ROOT}/system")
 set(EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT "${CMAKE_BINARY_DIR}/system_fs_image")
+set(EDGE_AGENT_APP_STORE_SOURCE_ROOT "${CMAKE_SOURCE_DIR}/third-party/esp-claw/application/edge_agent/fatfs_image/system/apps/app_store")
 set(EDGE_AGENT_RECOVERY_VERSION_SCRIPT "${CMAKE_SOURCE_DIR}/tools/cmake/generate_recovery_version.cmake")
 set(EDGE_AGENT_BOARD_GENERATED_CMAKELISTS "${CMAKE_SOURCE_DIR}/components/gen_bmgr_codes/CMakeLists.txt")
+
+if(NOT IS_DIRECTORY "${EDGE_AGENT_APP_STORE_SOURCE_ROOT}")
+    message(FATAL_ERROR "ESP-Claw App Store source does not exist: ${EDGE_AGENT_APP_STORE_SOURCE_ROOT}")
+endif()
 
 set(EDGE_AGENT_BOARD_FATFS_SYSTEM_COPY_COMMANDS "")
 
@@ -76,6 +86,10 @@ add_custom_target(edge_agent_prepare_system_fs_image ALL
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${EDGE_AGENT_FATFS_SYSTEM_SOURCE_ROOT}"
             "${EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT}"
+    # Keep App Store owned by ESP-Claw and stage its latest files on every build.
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${EDGE_AGENT_APP_STORE_SOURCE_ROOT}"
+            "${EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT}/apps/app_store"
     ${EDGE_AGENT_BOARD_FATFS_SYSTEM_COPY_COMMANDS}
     COMMAND ${CMAKE_COMMAND}
             "-DOUTPUT_FILE=${EDGE_AGENT_FATFS_SYSTEM_BUILD_ROOT}/.recovery.version"
@@ -103,6 +117,3 @@ add_dependencies(skill_builder_sync_skills edge_agent_prepare_system_fs_image)
 add_dependencies(lua_module_builder_sync_builtin_scripts edge_agent_prepare_system_fs_image)
 add_dependencies(lua_module_builder_sync_docs edge_agent_prepare_system_fs_image)
 add_dependencies(littlefs_system_bin edge_agent_prepare_system_fs_image)
-
-# Register after components and resources have declared their flash images.
-include("${CMAKE_SOURCE_DIR}/tools/cmake/retained_recovery.cmake")

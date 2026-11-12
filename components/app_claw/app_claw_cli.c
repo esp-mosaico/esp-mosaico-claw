@@ -38,12 +38,6 @@
 #include "esp_board_manager_includes.h"
 #include "esp_console.h"
 #include "esp_idf_version.h"
-#include "esp_image_format.h"
-#include "esp_partition.h"
-#include "esp_system.h"
-#include "mosaico_recovery_contract.h"
-#include "nvs.h"
-#include "nvs_flash.h"
 #include "esp_lcd_touch_mux.h"
 #include "esp_log.h"
 #include "display_service.h"
@@ -704,59 +698,6 @@ static void register_cap_cli_commands(void)
 #endif
 }
 
-static esp_err_t request_vibe_mode(void)
-{
-    const esp_partition_t *partition = esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_TEST, MOSAICO_RECOVERY_PARTITION);
-    if (partition == NULL || partition->address != MOSAICO_RECOVERY_ADDRESS ||
-        partition->size != MOSAICO_RECOVERY_BYTES) {
-        return ESP_ERR_NOT_FOUND;
-    }
-    const esp_partition_pos_t position = {
-        .offset = partition->address, .size = partition->size,
-    };
-    esp_image_metadata_t metadata = {0};
-    esp_err_t err = esp_image_verify(ESP_IMAGE_VERIFY, &position, &metadata);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    /* Write the Recovery boot intent without erasing sysmeta or changing otadata. */
-    err = nvs_flash_init_partition(MOSAICO_SYSMETA_PARTITION);
-    if (err != ESP_OK) {
-        return err;
-    }
-    nvs_handle_t handle;
-    err = nvs_open_from_partition(MOSAICO_SYSMETA_PARTITION, MOSAICO_BOOT_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        err = nvs_set_u32(handle, MOSAICO_BOOT_INTENT_KEY, MOSAICO_BOOT_INTENT_RECOVERY);
-        if (err == ESP_OK) {
-            err = nvs_commit(handle);
-        }
-        nvs_close(handle);
-    }
-    return err;
-}
-
-static int cmd_vibe(int argc, char **argv)
-{
-    (void)argv;
-    if (argc != 1) {
-        puts("Usage: vibe");
-        return 1;
-    }
-    esp_err_t err = request_vibe_mode();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Vibe Mode request failed: %s", esp_err_to_name(err));
-        return 1;
-    }
-    puts("Vibe Mode boot intent committed; restarting");
-    fflush(stdout);
-    /* Let the existing USB task transmit the acknowledgement. */
-    vTaskDelay(pdMS_TO_TICKS(100));
-    esp_restart();
-    return 0;
-}
-
 esp_err_t app_claw_cli_start(claw_hw_registry_handle_t registry)
 {
     if (!registry) return ESP_ERR_INVALID_ARG;
@@ -789,12 +730,6 @@ esp_err_t app_claw_cli_start(claw_hw_registry_handle_t registry)
     linenoiseSetReadFunction(app_claw_cli_read_blocking);
 
     register_cap_cli_commands();
-    const esp_console_cmd_t vibe_cmd = {
-        .command = "vibe",
-        .help = "Restart into Vibe Mode",
-        .func = cmd_vibe,
-    };
-    ESP_ERROR_CHECK(esp_console_cmd_register(&vibe_cmd));
 
     esp_err_t touch_err = touch_load_mux();
     if (touch_err == ESP_OK) {

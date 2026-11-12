@@ -91,9 +91,16 @@ peripherals:
       pin: 61
       mode: "GPIO_MODE_INPUT"
 
-  - name: gpio_button_power
+  - name: gpio_button_ai
     type: gpio
     role: io
     config:
       pin: 7
+      mode: "GPIO_MODE_INPUT"
+
+  - name: gpio_button_power
+    type: gpio
+    role: io
+    config:
+      pin: 57
       mode: "GPIO_MODE_INPUT"

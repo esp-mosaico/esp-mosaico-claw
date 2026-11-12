@@ -1,15 +1,6 @@
 version: 1.0.0
 devices:
 
-  - name: usb_hs_console
-    chip: none
-    type: custom
-    version: default
-    init_skip: true
-    dependencies:
-      usb_hs_console:
-        path: "${BOARD_PATH}/components/usb_hs_console"
-
   # Paint the boot logo before buttons / audio / touch so the first
   # visible frame is not blocked by unrelated device init.
   - name: lcd_power_ctrl
@@ -63,6 +54,15 @@ devices:
       active_level: 0
     peripherals:
       - name: gpio_button_boot
+
+  - name: button_ai
+    type: button
+    sub_type: gpio
+    init_skip: true
+    config:
+      active_level: 0
+    peripherals:
+      - name: gpio_button_ai
 
   - name: button_power
     type: button
@@ -152,7 +152,10 @@ devices:
     config:
       chip_size: 0x40000000
     dependencies:
-      espressif/spi_nand_flash: ^1.4.1
+      espressif/spi_nand_flash:
+        git: https://github.com/esp-mosaico/esp-mosaico-bsp.git
+        version: 841f624
+        path: components/espressif__spi_nand_flash
       joltwallet/littlefs: ^1.22.0
       mosaico_bsp_bmgr_bridge:
         path: ${BOARD_PATH}/components/mosaico_bsp_bmgr_bridge
@@ -164,7 +167,7 @@ devices:
     init_skip: true
     dependencies:
       espressif/bq27220:
-        version: ^0.1.0
+        version: ^0.2
     config:
       design_capacity: 65  # mAh
     peripherals:

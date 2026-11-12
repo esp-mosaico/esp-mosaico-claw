@@ -1,4 +1,7 @@
 dependencies:
+  espressif/esp_lcd_touch_mux:
+    version: "^0.1"
+    public: true
   claw_hw_registry:
     path: ../../third-party/esp-claw/components/common/claw_hw_registry
 

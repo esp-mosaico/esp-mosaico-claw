@@ -11,6 +11,8 @@ idf_component_register(
         cmd_wifi
         esp_app_format
         esp_hw_support
+        esp_iris
+        esp_mosaico_app_recovery
         esp_lcd_touch_mux
         esp_wifi
         gen_bmgr_codes

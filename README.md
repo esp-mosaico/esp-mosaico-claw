@@ -27,6 +27,14 @@ Connect the device, then flash the firmware and open the serial monitor:
 idf.py -p PORT flash monitor
 ```
 
+To package the existing build as an ESP-Iris System Update bundle without changing the normal ESP-IDF flash flow:
+
+```bash
+python tools/package_irisfw.py
+```
+
+The bundle is written to `build/Mosaico-Claw-system-update.irisfw` by default.
+
 ## Repository Layout
 
 ```text

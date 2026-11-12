@@ -51,7 +51,6 @@ CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO=y
 CONFIG_NAND_FLASH_ENABLE_BDL=y
 
 # ESP-Iris owns HS USB: CDC0 carries console/control, CDC1 the data link.
-# Claw is a normal Mosaico application; retained Vibe Mode writes main_app.
 CONFIG_TINYUSB_CDC_ENABLED=y
 CONFIG_TINYUSB_CDC_COUNT=2
 CONFIG_TINYUSB_CDC_RX_BUFSIZE=1024

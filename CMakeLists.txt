@@ -117,6 +117,3 @@ add_dependencies(skill_builder_sync_skills edge_agent_prepare_system_fs_image)
 add_dependencies(lua_module_builder_sync_builtin_scripts edge_agent_prepare_system_fs_image)
 add_dependencies(lua_module_builder_sync_docs edge_agent_prepare_system_fs_image)
 add_dependencies(littlefs_system_bin edge_agent_prepare_system_fs_image)
-
-# Register after components and resources have declared their flash images.
-include("${CMAKE_SOURCE_DIR}/tools/cmake/retained_recovery.cmake")

@@ -21,8 +21,7 @@ There is no onboard camera or SD card. A camera module can be connected through 
 The product cell is rated 3.7 V nominal / 65 mAh. Application gauge startup
 preserves learned FCC when the stored design capacity matches. The BQ27220
 driver is resolved through the BSP and used without a build-local source
-replacement. Recovery uses the unchanged upstream esp-mosaico-utils revision;
-its battery initialization follows that revision's BSP behavior.
+replacement.
 
 Qualified charge termination synchronizes remaining capacity with FCC (CSYNC).
 `CONFIG_MOSAICO_BATTERY_OVERRIDE_CHARGE_TERMINATION` defaults off: nominal cell

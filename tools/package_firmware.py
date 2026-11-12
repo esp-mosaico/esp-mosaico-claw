@@ -207,7 +207,6 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        recovery_manifest = json.loads((build_dir / "recovery/manifest.json").read_text())
         flasher_data, flash_size = load_flasher_data(build_dir)
         sdkconfig = load_sdkconfig(build_dir)
         partition_table = extract_partition_table(build_dir, flasher_data)
@@ -235,10 +234,7 @@ def main() -> int:
             "installation": {
                 "mode": "initial",
                 "initial_boot": "main_app",
-                "initializes": ["otadata", "sysmeta"],
-                "recovery_version": recovery_manifest["version"],
-                "compatibility": recovery_manifest["compatibility"],
-                "recovery_sha256": recovery_manifest["images"]["recovery"]["sha256"],
+                "initializes": ["otadata"],
             },
             "min_psram_size": 8 if sdkconfig.get("SPIRAM_XIP_FROM_PSRAM") is True else 4 if sdkconfig.get("SPIRAM") is True else 0,
         }

@@ -55,6 +55,15 @@ devices:
     peripherals:
       - name: gpio_button_boot
 
+  - name: button_ai
+    type: button
+    sub_type: gpio
+    init_skip: true
+    config:
+      active_level: 0
+    peripherals:
+      - name: gpio_button_ai
+
   - name: button_power
     type: button
     sub_type: gpio

@@ -30,7 +30,7 @@ list(APPEND EXTRA_COMPONENT_DIRS "${MOSAICO_UTILS_ROOT}/ESP-Iris/components/esp_
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
-project(Mosaico-Claw VERSION 0.6.0)
+project(Mosaico-Claw VERSION 0.7.0)
 
 if(COMMAND esp_mosaico_build_profile_finalize)
     esp_mosaico_build_profile_finalize()

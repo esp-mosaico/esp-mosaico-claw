@@ -52,6 +52,7 @@
 #define SETTINGS_ABOUT_PAGE 2
 #define SETTINGS_SECURITY_PAGE 12
 #define SETTINGS_DEBUG_PAGE 13
+#define SETTINGS_LANGUAGE_PAGE 14
 #define SETTINGS_DETAIL_PAGE 7
 #define SETTINGS_FACTORY_PAGE 8
 #define SETTINGS_FACTORY_HOLD_US INT64_C(3000000)
@@ -994,7 +995,8 @@ typedef struct {
 
 static const settings_root_row_t s_root_rows[] = {
     SETTINGS_ROOT_ROW("AI Model", ai),
-    SETTINGS_ROOT_ROW("IM Channels", channels),
+    SETTINGS_ROOT_ROW("Account Binding", channels),
+    SETTINGS_ROOT_ROW("Language", language),
     SETTINGS_ROOT_ROW("Network", network),
     SETTINGS_ROOT_ROW("Display", display),
     SETTINGS_ROOT_ROW("Sound", sound),
@@ -1052,6 +1054,7 @@ typedef struct {
     bool battery_available;
     bool llm_bound;
     bool im_bound;
+    mosaic_ui_language_t ui_language;
 } settings_root_values_t;
 
 /* Cache the values accepted into the command queue, not individual row
@@ -1085,17 +1088,21 @@ static gsp_err_t settings_root_list_bind_item(
         value_text = mosaic_i18n_text(settings_any_im_is_bound() ? "Bound" : "Unbound");
         break;
     case 2:
-        value_text = settings_wlan_summary();
+        value_text = s_state.snapshot.ui_language == MOSAIC_UI_LANGUAGE_ZH_CN
+            ? "简体中文" : "English";
         break;
     case 3:
-        (void)snprintf(value, sizeof(value), "%" PRId32 "%%",
-                       s_state.brightness);
+        value_text = settings_wlan_summary();
         break;
     case 4:
         (void)snprintf(value, sizeof(value), "%" PRId32 "%%",
+                       s_state.brightness);
+        break;
+    case 5:
+        (void)snprintf(value, sizeof(value), "%" PRId32 "%%",
                        s_state.volume);
         break;
-    case 6:
+    case 7:
         if (s_state.snapshot.battery.available) {
             (void)snprintf(value, sizeof(value), "%u%%",
                            s_state.snapshot.battery.state_of_charge);
@@ -1139,6 +1146,7 @@ static void settings_root_list_refresh(esp_gsp_handle_t ui)
             ? s_state.snapshot.battery.state_of_charge : 0,
         .llm_bound = settings_llm_is_bound(),
         .im_bound = settings_any_im_is_bound(),
+        .ui_language = s_state.snapshot.ui_language,
     };
     strlcpy(values.network, settings_wlan_summary(), sizeof(values.network));
     if (s_root_requested_valid && failures == s_root_requested_failures &&
@@ -1148,6 +1156,7 @@ static void settings_root_list_refresh(esp_gsp_handle_t ui)
             values.charge == s_root_requested.charge &&
             values.llm_bound == s_root_requested.llm_bound &&
             values.im_bound == s_root_requested.im_bound &&
+            values.ui_language == s_root_requested.ui_language &&
             strcmp(values.network, s_root_requested.network) == 0) {
         return;
     }
@@ -2657,6 +2666,15 @@ static void settings_dispatch_call(
             return;
         }
         if (item == 2U) {
+            if (esp_gsp_stack_view_push(ui, GSP_OBJ_KEY_SETTINGS_STACK,
+                    SETTINGS_LANGUAGE_PAGE, true) != ESP_GSP_OK) {
+                return;
+            }
+            mosaic_app_shell_set_root_visible(ui, false);
+            settings_display_request_render();
+            return;
+        }
+        if (item == 3U) {
             if (s_state.wlan_page_active) {
                 return;
             }
@@ -2686,21 +2704,21 @@ static void settings_dispatch_call(
             settings_wlan_list_attach(ui);
             return;
         }
-        if (item == 6U) {
+        if (item == 7U) {
             settings_refresh_snapshot(ui);
             settings_open_detail(ui, SETTINGS_DETAIL_BATTERY);
             return;
         }
-        if (item == 8U) {
+        if (item == 9U) {
             settings_refresh_snapshot(ui);
             settings_open_detail(ui, SETTINGS_DETAIL_ABOUT);
             return;
         }
         static const uint16_t pages[] = {
-            [3] = SETTINGS_DISPLAY_PAGE,
-            [4] = SETTINGS_SOUND_PAGE,
-            [5] = SETTINGS_SECURITY_PAGE,
-            [7] = SETTINGS_DEBUG_PAGE,
+            [4] = SETTINGS_DISPLAY_PAGE,
+            [5] = SETTINGS_SOUND_PAGE,
+            [6] = SETTINGS_SECURITY_PAGE,
+            [8] = SETTINGS_DEBUG_PAGE,
         };
         const uint16_t page = pages[item];
         if (page == 0U || esp_gsp_stack_view_push(
@@ -2708,7 +2726,7 @@ static void settings_dispatch_call(
             return;
         }
         mosaic_app_shell_set_root_visible(ui, false);
-        if (item == 3U || item == 4U) {
+        if (item == 4U || item == 5U) {
             s_state.display_page_active = true;
             s_state.display_reset_pending = false;
             settings_display_request_render();

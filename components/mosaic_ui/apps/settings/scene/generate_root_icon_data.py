@@ -14,6 +14,7 @@ LANCZOS = getattr(Image, "Resampling", Image).LANCZOS
 ICONS = {
     "ai": HERE / "settings_root_ai.png",
     "channels": HERE / "settings_root_channels.png",
+    "language": HERE / "settings_root_language.png",
     "network": HERE / "settings_root_network.png",
     "display": HERE / "settings_root_display.png",
     "sound": HERE / "settings_root_sound.png",

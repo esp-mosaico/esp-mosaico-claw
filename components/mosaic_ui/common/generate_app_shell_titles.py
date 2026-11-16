@@ -17,7 +17,14 @@ ASSETS = (
     ("Battery Low", 20),
     ("Please charge your device", 18),
     ("Battery Critically Low", 20),
-    ("Shutting down", 18),
+    ("Shutting down in ", 18),
+    (" seconds", 18),
+    ("电量不足", 20),
+    ("请及时充电", 18),
+    ("电量过低", 20),
+    ("将在 ", 18),
+    (" 秒后关机", 18),
+    *((str(value), 18) for value in range(11)),
 )
 
 

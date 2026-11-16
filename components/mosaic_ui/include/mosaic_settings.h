@@ -109,6 +109,10 @@ typedef struct {
     esp_err_t last_error;
     /** True when the gauge reports charge inbound. */
     bool charging;
+    /** True while a low-battery hardware shutdown is counting down. */
+    bool shutdown_pending;
+    /** Absolute esp_timer deadline; valid only while shutdown_pending is true. */
+    int64_t shutdown_deadline_us;
     uint16_t state_of_charge;
     /** Stable gauge telemetry for the Battery details page. */
     uint16_t voltage_mv;

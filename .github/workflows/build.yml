@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     container:
-      image: espressif/idf:latest
+      image: espressif/idf:release-v6.2
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

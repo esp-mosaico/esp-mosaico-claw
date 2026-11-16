@@ -4,6 +4,8 @@
 #include "mosaic_app_shell_titles.h"
 #include "mosaic_i18n.h"
 
+#include "esp_timer.h"
+
 #define EXIT_SWIPE_MIN_PX 80
 #define EXIT_EDGE_Y_MIN 460
 #define EXIT_EDGE_X_MIN 160
@@ -11,6 +13,7 @@
 #define EXIT_MAX_DX_RATIO 2
 #define VIEWPORT_WIDTH 480
 #define CHROME_POLL_MS 16
+#define NOTICE_TICK_MS 250
 
 static mosaic_app_shell_exit_fn s_exit;
 static void *s_exit_ctx;
@@ -34,6 +37,9 @@ static mosaic_system_notice_t s_notice;
 static bool s_notice_visible;
 static void *s_notice_timer;
 static bool s_notice_only;
+static int64_t s_notice_deadline_us;
+static uint32_t s_notice_seconds;
+static const char *const s_countdown_text[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"};
 
 static void draw_app_shell(esp_gsp_handle_t ui,
                            esp_gsp_overlay_builder_t *builder, void *ctx);
@@ -45,18 +51,21 @@ static void refresh_overlay(esp_gsp_handle_t ui)
     (void)esp_gsp_set_overlay_contributor(ui, draw_app_shell, NULL);
 }
 
-static void system_notice_timer_cb(esp_gsp_handle_t ui, void *ctx)
+static uint32_t shutdown_seconds_remaining(void)
 {
-    (void)ctx;
-    if (ui != s_ui) {
-        return;
-    }
+    const int64_t remaining_us = s_notice_deadline_us - esp_timer_get_time();
+    return remaining_us > 0 ? (uint32_t)((remaining_us + 999999) / 1000000) : 0;
+}
+
+static void hide_system_notice(esp_gsp_handle_t ui)
+{
     void *timer = s_notice_timer;
     s_notice_timer = NULL;
     if (timer != NULL) {
         (void)esp_gsp_timer_delete(ui, timer);
     }
     s_notice_visible = false;
+    s_notice_deadline_us = 0;
     if (s_notice_only) {
         (void)esp_gsp_set_overlay_contributor(ui, NULL, NULL);
         s_notice_only = false;
@@ -64,6 +73,25 @@ static void system_notice_timer_cb(esp_gsp_handle_t ui, void *ctx)
     } else {
         refresh_overlay(ui);
     }
+}
+
+static void system_notice_timer_cb(esp_gsp_handle_t ui, void *ctx)
+{
+    (void)ctx;
+    if (ui != s_ui) {
+        return;
+    }
+    if (s_notice_deadline_us > 0) {
+        const uint32_t seconds = shutdown_seconds_remaining();
+        if (seconds > 0) {
+            if (seconds != s_notice_seconds) {
+                s_notice_seconds = seconds;
+                refresh_overlay(ui);
+            }
+            return;
+        }
+    }
+    hide_system_notice(ui);
 }
 
 static bool actual_root_visible(esp_gsp_handle_t ui)
@@ -155,14 +183,18 @@ static void draw_app_shell(esp_gsp_handle_t ui,
             UINT16_MAX, 2, 96);
     }
     if (s_notice_visible) {
-        const char *title = s_notice == MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL
-            ? "Battery Critically Low" : "Battery Low";
-        const char *message = s_notice == MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL
-            ? "Shutting down" : "Please charge your device";
+        const bool critical = s_notice == MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL;
+        const char *title = mosaic_i18n_text(critical ? "Battery Critically Low" : "Battery Low");
+        const char *message = mosaic_i18n_text(critical ? "Shutting down in " : "Please charge your device");
         const mosaic_app_shell_title_asset_t *title_asset =
             mosaic_app_shell_title_asset(title);
         const mosaic_app_shell_title_asset_t *message_asset =
             mosaic_app_shell_title_asset(message);
+        const mosaic_app_shell_title_asset_t *seconds_asset = critical
+            ? mosaic_app_shell_title_asset(mosaic_i18n_text(" seconds")) : NULL;
+        const uint32_t seconds = s_notice_seconds <= 10U ? s_notice_seconds : 10U;
+        const mosaic_app_shell_title_asset_t *countdown_asset = critical
+            ? mosaic_app_shell_title_asset(s_countdown_text[seconds]) : NULL;
 
         (void)esp_gsp_overlay_builder_round_rect(
             builder, 18, 15, 444, 78, UINT16_C(0x0000), 24, 150);
@@ -185,6 +217,16 @@ static void draw_app_shell(esp_gsp_handle_t ui,
                 builder, 68, 49, message_asset->width, message_asset->height,
                 UINT16_MAX, message_asset->a8, message_asset->size,
                 message_asset->stride);
+        }
+        int32_t message_x = 68 + (message_asset != NULL ? message_asset->width : 0);
+        if (countdown_asset != NULL) {
+            (void)esp_gsp_overlay_builder_glyph_a8(builder, message_x, 49, countdown_asset->width, countdown_asset->height, UINT16_MAX,
+                countdown_asset->a8, countdown_asset->size, countdown_asset->stride);
+            message_x += countdown_asset->width;
+        }
+        if (seconds_asset != NULL) {
+            (void)esp_gsp_overlay_builder_glyph_a8(builder, message_x, 49, seconds_asset->width, seconds_asset->height, UINT16_MAX,
+                seconds_asset->a8, seconds_asset->size, seconds_asset->stride);
         }
     }
 }
@@ -337,7 +379,7 @@ void mosaic_app_shell_set_bottom_enabled(esp_gsp_handle_t ui, bool enabled)
 }
 
 esp_gsp_err_t mosaic_app_shell_show_system_notice(
-    esp_gsp_handle_t ui, mosaic_system_notice_t notice, uint32_t duration_ms)
+    esp_gsp_handle_t ui, mosaic_system_notice_t notice, uint32_t duration_ms, int64_t deadline_us)
 {
     if (ui == NULL || notice > MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL) {
         return ESP_GSP_ERR_INVALID_ARG;
@@ -359,14 +401,26 @@ esp_gsp_err_t mosaic_app_shell_show_system_notice(
     }
     s_notice = notice;
     s_notice_visible = true;
+    s_notice_deadline_us = deadline_us;
+    s_notice_seconds = deadline_us > 0 ? shutdown_seconds_remaining() : 0;
     refresh_overlay(ui);
-    if (duration_ms != 0U) {
-        s_notice_timer = esp_gsp_timer_create(
-            ui, duration_ms, system_notice_timer_cb, NULL);
+    if (duration_ms != 0U || deadline_us > 0) {
+        const uint32_t period_ms = deadline_us > 0 ? NOTICE_TICK_MS : duration_ms;
+        s_notice_timer = esp_gsp_timer_create(ui, period_ms, system_notice_timer_cb, NULL);
         if (s_notice_timer == NULL) {
+            hide_system_notice(ui);
             return ESP_GSP_ERR_NO_MEM;
         }
     }
+    return ESP_GSP_OK;
+}
+
+esp_gsp_err_t mosaic_app_shell_hide_system_notice(esp_gsp_handle_t ui, mosaic_system_notice_t notice)
+{
+    if (ui == NULL || ui != s_ui || !s_notice_visible || notice != s_notice) {
+        return ESP_GSP_ERR_INVALID_ARG;
+    }
+    hide_system_notice(ui);
     return ESP_GSP_OK;
 }
 
@@ -406,6 +460,8 @@ void mosaic_app_shell_forget(esp_gsp_handle_t ui)
         s_exit_triggered = false;
         s_notice_visible = false;
         s_notice_only = false;
+        s_notice_deadline_us = 0;
+        s_notice_seconds = 0;
         s_exit = NULL;
         s_exit_ctx = NULL;
     }

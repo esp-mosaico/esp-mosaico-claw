@@ -8,6 +8,7 @@
 #include "bluetooth_objects.h"
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 #include "mosaic_settings.h"
 #include "mosaic_top_notice.h"
@@ -190,11 +191,11 @@ static void bluetooth_render(esp_gsp_handle_t ui)
             bluetooth_audio_runtime_get_snapshot(s_runtime, &s_snapshot) !=
                 ESP_OK) {
         (void)esp_gsp_set_text(ui, GSP_BIND_BT_STATUS,
-                               "Bluetooth unavailable");
+                               mosaic_i18n_text("Bluetooth unavailable"));
         (void)esp_gsp_set_text(ui, GSP_BIND_BT_DEVICE_NAME,
-                               "Audio mixer unavailable");
+                               mosaic_i18n_text("Audio mixer unavailable"));
         (void)esp_gsp_set_text(ui, GSP_BIND_BT_TITLE,
-                               "Waiting for audio service");
+                               mosaic_i18n_text("Waiting for audio service"));
         (void)esp_gsp_set_text(ui, GSP_BIND_BT_ARTIST, "");
         (void)esp_gsp_set_text(ui, GSP_BIND_BT_ELAPSED, "00:00");
         (void)esp_gsp_set_text(ui, GSP_BIND_BT_DURATION, "00:00");
@@ -217,14 +218,13 @@ static void bluetooth_render(esp_gsp_handle_t ui)
                               s_snapshot.connected);
 
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_STATUS,
-                           s_snapshot.error[0] ? s_snapshot.error :
-                                                state_text(s_snapshot.state));
+                           mosaic_i18n_text(s_snapshot.error[0] ? s_snapshot.error : state_text(s_snapshot.state)));
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_DEVICE_NAME,
                            s_snapshot.device_name);
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_TITLE,
                            s_snapshot.title[0] ? s_snapshot.title :
-                           (s_snapshot.connected ? "Waiting for playback" :
-                                                   "Waiting for phone"));
+                           mosaic_i18n_text(s_snapshot.connected ? "Waiting for playback" :
+                                                                  "Waiting for phone"));
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_ARTIST, s_snapshot.artist);
 
     char text[32];
@@ -336,6 +336,16 @@ static void bluetooth_dispatch_volume_pointer(esp_gsp_handle_t ui,
     }
 }
 
+static void bluetooth_localize(esp_gsp_handle_t ui)
+{
+    (void)esp_gsp_set_text(ui, GSP_BIND_BT_WAITING_LOCAL_TEXT, mosaic_i18n_text("Local"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_BT_WAITING_BLUETOOTH_TEXT, mosaic_i18n_text("Bluetooth"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_BT_WAITING_HINT_1_TEXT, mosaic_i18n_text("Open Bluetooth settings on your"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_BT_WAITING_HINT_2_TEXT, mosaic_i18n_text("phone and connect to MOSAICO."));
+    (void)esp_gsp_set_text(ui, GSP_BIND_BT_PLAYER_LOCAL_TEXT, mosaic_i18n_text("Local"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_BT_PLAYER_BLUETOOTH_TEXT, mosaic_i18n_text("Bluetooth"));
+}
+
 static void bluetooth_event(esp_gsp_handle_t ui,
                             const struct mosaic_event *raw_event)
 {
@@ -345,6 +355,7 @@ static void bluetooth_event(esp_gsp_handle_t ui,
     }
     switch (event->type) {
     case MOSAIC_EVENT_START:
+        bluetooth_localize(ui);
         s_cover_revision = UINT32_MAX;
         atomic_store(&s_cover_published, false);
         if (!audio_hub_is_started()) {
@@ -364,15 +375,18 @@ static void bluetooth_event(esp_gsp_handle_t ui,
         bluetooth_render(ui);
         break;
     case MOSAIC_EVENT_MODEL_CHANGED:
+        bluetooth_render(ui);
+        break;
     case MOSAIC_EVENT_SCENE_CHANGED:
+        bluetooth_localize(ui);
         bluetooth_render(ui);
         break;
     case MOSAIC_EVENT_STOP:
         /* This is the ownership boundary: leaving the App powers BT down. */
         if (s_snapshot.connected) {
             (void)mosaic_top_notice_show(
-                ui, &s_exit_notice, "Disconnecting Bluetooth",
-                "Returning to Home...", 0);
+                ui, &s_exit_notice, mosaic_i18n_text("Disconnecting Bluetooth"),
+                mosaic_i18n_text("Returning to Home..."), 0);
         }
         bluetooth_audio_runtime_delete(s_runtime);
         mosaic_top_notice_detach(ui);
@@ -410,13 +424,13 @@ static void bluetooth_host_render(esp_gsp_handle_t ui)
     (void)esp_gsp_set_visible(ui, GSP_BIND_BT_PLAYER_VISIBLE,
                               s_host_connected);
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_STATUS,
-                           s_host_connected ? "Connected" : "Discoverable");
+                           mosaic_i18n_text(s_host_connected ? "Connected" : "Discoverable"));
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_DEVICE_NAME,
                            s_host_connected ? "Mosaico Phone" :
                                               "ESP-Claw-Audio");
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_TITLE,
                            s_host_connected ? "Midnight Drive" :
-                                              "Waiting for phone");
+                                              mosaic_i18n_text("Waiting for phone"));
     (void)esp_gsp_set_text(ui, GSP_BIND_BT_ARTIST,
                            s_host_connected ? "Mosaico" : "");
     char elapsed[16];

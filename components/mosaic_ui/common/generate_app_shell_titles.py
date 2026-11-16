@@ -6,12 +6,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 HERE = Path(__file__).resolve().parent
 FONT = HERE.parent / "apps" / "settings" / "scene" / "settings_font.ttf"
+CJK_FONT = HERE.parent.parent.parent / "fatfs_image" / "system" / "fonts" / "NotoSansSC-Regular-sub.ttf"
 OUT_H = HERE / "mosaic_app_shell_titles.h"
 OUT_C = HERE / "mosaic_app_shell_titles.c"
 ASSETS = (
     *((title, 30) for title in
       ("Camera", "我的作品", "SETTINGS", "IMU", "Env", "TOF", "Works",
-       "Breakout")),
+       "Breakout", "相机", "设置", "环境", "作品", "打砖块", "相册", "音乐",
+       "天气", "互动", "AI 创作", "AI 设置", "蓝牙音频", "欢迎")),
     ("Battery Low", 20),
     ("Please charge your device", 18),
     ("Battery Critically Low", 20),
@@ -25,7 +27,7 @@ def symbol(index: int) -> str:
 
 assets = []
 for title, font_size in ASSETS:
-    font = ImageFont.truetype(str(FONT), font_size)
+    font = ImageFont.truetype(str(FONT if title.isascii() else CJK_FONT), font_size)
     left, top, right, bottom = font.getbbox(title)
     width = max(1, right - left)
     height = max(1, bottom - top)

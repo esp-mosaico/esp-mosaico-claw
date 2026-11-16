@@ -6,6 +6,7 @@
 
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 #include "works_actions.h"
 #include "works_binds.h"
@@ -284,7 +285,11 @@ static void works_render(esp_gsp_handle_t ui)
     }
 
     char text[24];
-    snprintf(text, sizeof(text), "%u ITEMS", (unsigned)item_count);
+    if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+        snprintf(text, sizeof(text), "%u 项", (unsigned)item_count);
+    } else {
+        snprintf(text, sizeof(text), "%u ITEMS", (unsigned)item_count);
+    }
     (void)esp_gsp_set_text(ui, GSP_BIND_WORKS_COUNT, text);
     (void)esp_gsp_set_visible(ui, GSP_BIND_WORKS_TAB_0_SELECTED,
                               s_selected_tab == WORKS_TAB_RECENT);
@@ -312,9 +317,9 @@ static void works_render(esp_gsp_handle_t ui)
         works_render_icon(ui, row, &item);
         bool active = works_state_is_active(item.state);
         esp_err_t err = esp_gsp_set_text(ui, s_row_name_binds[row], item.display_name);
-        err = works_first_error(err, esp_gsp_set_text(ui, s_row_meta_binds[row], item.builtin ? "Lua · System" : "Lua · Local"));
+        err = works_first_error(err, esp_gsp_set_text(ui, s_row_meta_binds[row], mosaic_i18n_text(item.builtin ? "Lua · System" : "Lua · Local")));
         if (active) {
-            err = works_first_error(err, esp_gsp_set_text(ui, s_row_active_text_binds[row], works_active_label(item.state)));
+            err = works_first_error(err, esp_gsp_set_text(ui, s_row_active_text_binds[row], mosaic_i18n_text(works_active_label(item.state))));
         }
         err = works_first_error(err, works_set_row_visibility(ui, row, true, active, item.state == WORKS_RUNTIME_STOPPED, item.state == WORKS_RUNTIME_FAILED));
         if (err != ESP_OK) {
@@ -369,6 +374,37 @@ static void works_dispatch_call(
     }
 }
 
+static void works_localize(esp_gsp_handle_t ui)
+{
+    static const uint16_t tab_binds[][2] = {
+        {GSP_BIND_WORKS_TAB_0_TEXT, GSP_BIND_WORKS_TAB_0_SELECTED_TEXT},
+        {GSP_BIND_WORKS_TAB_1_TEXT, GSP_BIND_WORKS_TAB_1_SELECTED_TEXT},
+    };
+    static const char *const tabs[] = {"Recent", "Installed"};
+    static const uint16_t state_binds[][3] = {
+        {GSP_BIND_WORKS_ROW_0_ACTIVE_TEXT, GSP_BIND_WORKS_ROW_0_STOPPED_TEXT, GSP_BIND_WORKS_ROW_0_FAILED_TEXT},
+        {GSP_BIND_WORKS_ROW_1_ACTIVE_TEXT, GSP_BIND_WORKS_ROW_1_STOPPED_TEXT, GSP_BIND_WORKS_ROW_1_FAILED_TEXT},
+        {GSP_BIND_WORKS_ROW_2_ACTIVE_TEXT, GSP_BIND_WORKS_ROW_2_STOPPED_TEXT, GSP_BIND_WORKS_ROW_2_FAILED_TEXT},
+        {GSP_BIND_WORKS_ROW_3_ACTIVE_TEXT, GSP_BIND_WORKS_ROW_3_STOPPED_TEXT, GSP_BIND_WORKS_ROW_3_FAILED_TEXT},
+    };
+    static const char *const states[] = {"Running", "Stopped", "Error"};
+    static const uint16_t placeholder_binds[] = {
+        GSP_BIND_WORKS_ROW_0_PLACEHOLDER_TEXT, GSP_BIND_WORKS_ROW_1_PLACEHOLDER_TEXT,
+        GSP_BIND_WORKS_ROW_2_PLACEHOLDER_TEXT, GSP_BIND_WORKS_ROW_3_PLACEHOLDER_TEXT,
+    };
+    for (size_t tab = 0; tab < sizeof(tabs) / sizeof(tabs[0]); ++tab) {
+        for (size_t variant = 0; variant < 2U; ++variant) {
+            (void)esp_gsp_set_text(ui, tab_binds[tab][variant], mosaic_i18n_text(tabs[tab]));
+        }
+    }
+    for (size_t row = 0; row < WORKS_ROW_COUNT; ++row) {
+        for (size_t state = 0; state < sizeof(states) / sizeof(states[0]); ++state) {
+            (void)esp_gsp_set_text(ui, state_binds[row][state], mosaic_i18n_text(states[state]));
+        }
+        (void)esp_gsp_set_text(ui, placeholder_binds[row], mosaic_i18n_text("APP"));
+    }
+}
+
 static void works_event(
     esp_gsp_handle_t ui, const struct mosaic_event *raw_event)
 {
@@ -378,6 +414,7 @@ static void works_event(
     }
     switch (event->type) {
     case MOSAIC_EVENT_START: {
+        works_localize(ui);
         for (size_t row = 0; row < WORKS_ROW_COUNT; ++row) {
             works_reset_icon(row);
         }
@@ -403,6 +440,7 @@ static void works_event(
         (void)works_runtime_flush();
         break;
     case MOSAIC_EVENT_SCENE_CHANGED:
+        works_localize(ui);
         for (size_t row = 0; row < WORKS_ROW_COUNT; ++row) {
             works_reset_icon(row);
         }
@@ -430,7 +468,7 @@ static void works_event(
 {
     const mosaic_event_t *event = raw_event;
     if (event && event->type == MOSAIC_EVENT_START) {
-        (void)esp_gsp_set_text(ui, GSP_BIND_WORKS_COUNT, "0 ITEMS");
+        (void)esp_gsp_set_text(ui, GSP_BIND_WORKS_COUNT, mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN ? "0 项" : "0 ITEMS");
         (void)esp_gsp_set_visible(ui, GSP_BIND_WORKS_TAB_0_SELECTED, false);
         (void)esp_gsp_set_visible(ui, GSP_BIND_WORKS_TAB_1_SELECTED, true);
         (void)esp_gsp_set_visible(ui, GSP_BIND_WORKS_PAGER_VISIBLE, false);

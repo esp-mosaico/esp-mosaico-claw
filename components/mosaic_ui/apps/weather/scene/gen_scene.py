@@ -118,12 +118,14 @@ def main():
     back = button(location, 12, 8, 56, 48, "‹", size=24, bg="#000000", fg="#FCFCFF")
     back["callback"] = "weather_location_back"
     objs.append(back)
-    objs.append(label(location, 96, 8, 288, 48, "Location", size=24, align="center"))
+    objs.append(label(location, 96, 8, 288, 48, "Location", size=24, align="center", name="weather_location_title", bind="weather_location_title_text"))
     for y, text, action in ((80, "Use network location", "weather_use_network"),
                              (144, "Search city", "weather_city_search")):
         control = button(location, 12, y, 456, 52, text, size=24,
                          bg="#181819", fg="#FCFCFF", radius=18)
         control["callback"] = action
+        control["name"] = action
+        control["bind"] = f"{action}_text"
         objs.append(control)
     objs.append(label(location, 16, 208, 448, 32, "Search for your city", size=18,
                       color="#91919B", bind="weather_city_search_status",
@@ -141,7 +143,7 @@ def main():
     name["overflow"] = "ellipsis"
     objs.append(name)
     objs.append(label(location, 16, 424, 448, 28, "City data: GeoNames / Open-Meteo",
-                      size=16, color="#91919B", align="center", font_charset=CHARSET))
+                      size=16, color="#91919B", align="center", font_charset=CHARSET, bind="weather_city_data_text"))
 
     search = len(objs)
     objs.append(layer(stack, CONTENT_W * 2, 0, CONTENT_W, CONTENT_H, name="weather_search_page"))
@@ -149,13 +151,15 @@ def main():
     back = button(search, 12, 8, 56, 48, "‹", size=24, bg="#000000", fg="#FCFCFF")
     back["callback"] = "weather_location_back"
     objs.append(back)
-    objs.append(label(search, 96, 8, 288, 48, "Search city", size=24, align="center"))
+    objs.append(label(search, 96, 8, 288, 48, "Search city", size=24, align="center", name="weather_search_title", bind="weather_search_title_text"))
     objs.append(container(search, 12, 80, 352, 64, bg="#181819", radius=16))
     objs.append(label(search, 24, 92, 328, 40, "", size=24,
                       bind="weather_city_query", name="weather_city_query", font_charset=CHARSET))
     find = button(search, 376, 80, 92, 64, "Find", size=24,
                   bg="#FF4C01", fg="#FCFCFF", radius=16)
     find["callback"] = "weather_city_find"
+    find["name"] = "weather_city_find_button"
+    find["bind"] = "weather_city_find_text"
     objs.append(find)
     objs.append(label(search, 16, 160, 448, 48, "City or city, country (e.g. Suzhou, CN)",
                       size=18, color="#91919B", bind="weather_city_query_hint",

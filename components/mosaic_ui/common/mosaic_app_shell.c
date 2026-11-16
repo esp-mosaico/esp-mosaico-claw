@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0 */
 #include "mosaic_app_shell.h"
 #include "mosaic_app_shell_titles.h"
+#include "mosaic_i18n.h"
 
 #define EXIT_SWIPE_MIN_PX 80
 #define EXIT_EDGE_Y_MIN 460
@@ -252,7 +253,7 @@ void mosaic_app_shell_attach(esp_gsp_handle_t ui, uint32_t root_stack_key,
                              const char *title, bool root_header_enabled)
 {
     const mosaic_app_shell_title_asset_t *asset =
-        mosaic_app_shell_title_asset(title);
+        mosaic_app_shell_title_asset(mosaic_i18n_text(title));
     /* Full-canvas Apps such as Bluetooth intentionally suppress the shared
      * header. They still need the bottom home indicator and its upward-exit
      * interceptor even when no title bitmap was generated for their title. */

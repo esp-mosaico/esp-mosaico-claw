@@ -9,6 +9,7 @@
 #include "camera_objects.h"
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 
 #include <errno.h>
@@ -70,7 +71,7 @@ static void camera_status_text(esp_gsp_handle_t ui, const char *text)
 {
     s_status_text = text;
     s_status_dirty = ui == NULL ||
-        esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_STATUS, text) != ESP_GSP_OK;
+        esp_gsp_set_text(ui, GSP_BIND_CAMERA_RECOGNITION_STATUS, mosaic_i18n_text(text)) != ESP_GSP_OK;
 }
 
 static void camera_notice(esp_gsp_handle_t ui, const char *text, bool persistent)
@@ -409,8 +410,14 @@ static void camera_capture_photo(esp_gsp_handle_t ui)
 static void camera_event(
     esp_gsp_handle_t ui, const mosaic_event_t *event)
 {
-    (void)ui;
     if (event == NULL) {
+        return;
+    }
+    if (event->type == MOSAIC_EVENT_START || event->type == MOSAIC_EVENT_SCENE_CHANGED) {
+        (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_MISSING_TEXT, mosaic_i18n_text("Camera board not detected"));
+        (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_QRCODE_TEXT, mosaic_i18n_text("QR Code"));
+        (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_COLOR_TEXT, mosaic_i18n_text("Color"));
+        (void)esp_gsp_set_text(ui, GSP_BIND_CAMERA_MOTION_TEXT, mosaic_i18n_text("Motion"));
         return;
     }
     if (event->type == MOSAIC_EVENT_TIMER) {

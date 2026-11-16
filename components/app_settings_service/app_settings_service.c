@@ -253,6 +253,25 @@ esp_err_t app_settings_service_set_screen_timeout(
     return err;
 }
 
+esp_err_t app_settings_service_set_ui_language(
+    app_settings_service_handle_t handle, app_ui_language_t language)
+{
+    ESP_RETURN_ON_FALSE(handle != NULL && language >= APP_UI_LANGUAGE_EN &&
+                        language <= APP_UI_LANGUAGE_ZH_CN,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid UI language");
+    ESP_RETURN_ON_FALSE(
+        xSemaphoreTake(handle->lock, pdMS_TO_TICKS(1000)) == pdTRUE,
+        ESP_ERR_TIMEOUT, TAG, "settings service busy");
+    app_system_config_t config;
+    esp_err_t err = app_system_config_load(&config);
+    if (err == ESP_OK) {
+        config.ui_language = language;
+        err = app_system_config_save(&config);
+    }
+    xSemaphoreGive(handle->lock);
+    return err;
+}
+
 esp_err_t app_settings_service_get_wifi_enabled(
     app_settings_service_handle_t handle, bool *ret_enabled)
 {
@@ -436,6 +455,7 @@ esp_err_t app_settings_service_get_snapshot(
     ret_snapshot->brightness = system_config.brightness;
     ret_snapshot->volume = system_config.volume;
     ret_snapshot->screen_timeout_ms = system_config.screen_timeout_ms;
+    ret_snapshot->ui_language = system_config.ui_language;
     ret_snapshot->vibration_enabled = system_config.vibration_enabled;
     ret_snapshot->web_logs_enabled = system_config.web_logs_enabled;
     ret_snapshot->boot_stage = system_config.boot_stage;

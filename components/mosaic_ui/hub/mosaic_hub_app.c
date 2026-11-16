@@ -12,6 +12,7 @@
 #include "mosaic_hub_objects.h"
 #include "mosaic_hub_templates.h"
 #include "gsp_analog_clock.h"
+#include "mosaic_i18n.h"
 #include "mosaic_ui.h"
 #include "mosaic_settings.h"
 #include "mosaic_module_notice.h"
@@ -1077,7 +1078,7 @@ static void mosaic_hub_weather_apply(
     (void)esp_gsp_set_text(
         ui, GSP_BIND_HOME_WEATHER_TEMP, temperature);
     (void)esp_gsp_set_text(
-        ui, GSP_BIND_HOME_WEATHER_DESC, description);
+        ui, GSP_BIND_HOME_WEATHER_DESC, mosaic_i18n_text(description));
     (void)esp_gsp_set_text(
         ui, GSP_BIND_HOME_WEATHER_CITY, city);
 }
@@ -1776,7 +1777,25 @@ static void mosaic_hub_notif_bind(esp_gsp_handle_t ui)
 
 static void mosaic_hub_started(esp_gsp_handle_t ui)
 {
+    static const struct {
+        uint16_t bind;
+        const char *text;
+    } launcher_texts[] = {
+        {GSP_BIND_CLOCK_SHORTCUT_CAMERA_TITLE, "Camera"},
+        {GSP_BIND_CLOCK_SHORTCUT_CLAW_TITLE, "CLAW"},
+        {GSP_BIND_CLOCK_SHORTCUT_SKILLS_TITLE, "Works"},
+        {GSP_BIND_APP_SETTINGS_TITLE, "Settings"},
+        {GSP_BIND_APP_IMU_TITLE, "IMU"},
+        {GSP_BIND_APP_ALBUM_TITLE, "Album"},
+        {GSP_BIND_APP_MUSIC_TITLE, "Music"},
+        {GSP_BIND_APP_BREAKOUT_TITLE, "Bricks"},
+        {GSP_BIND_APP_WEATHER_TITLE, "Weather"},
+        {GSP_BIND_APP_INTERACT_TITLE, "Interaction"},
+    };
     s_hub_ui = ui;
+    for (size_t i = 0; i < sizeof(launcher_texts) / sizeof(launcher_texts[0]); ++i) {
+        (void)esp_gsp_set_text(ui, launcher_texts[i].bind, mosaic_i18n_text(launcher_texts[i].text));
+    }
     s_module_notice_deferred = false;
     MOSAIC_HUB_INSERT_LOCK();
     s_module_notice_foreground = true;

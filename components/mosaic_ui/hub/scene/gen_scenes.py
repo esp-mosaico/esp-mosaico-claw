@@ -130,7 +130,8 @@ ICON_COLS = (12, 180, 348)
 ICON_ROW_TOP_Y = 35          # 应用界面 top row ≈ abs y=91
 ICON_ROW_BOT_Y = 237         # prototype H1 app row: abs y=293
 ICON_LABEL_GAP = 12
-ICON_LABEL_H = 22
+ICON_LABEL_H = 26
+LAUNCHER_RUNTIME_CHARSET = "ABCEILMSTUWabcdefghijklmnorstuv"
 
 HUB_IMAGES = [
     (f'{ASSETS}/home_bg.png', 480, 480),
@@ -319,8 +320,11 @@ def build_clock_face(objs, parent):
         ))
         objs.append(label(
             parent, x, ICON_ROW_BOT_Y + ICON_SIZE + ICON_LABEL_GAP,
-            ICON_SIZE, ICON_LABEL_H, text, size=16,
+            ICON_SIZE, ICON_LABEL_H, text, size=21,
             color='#D6D6DE', align='center', callback=cb,
+            name=f'clock_shortcut_{icon}_title',
+            bind=f'clock_shortcut_{icon}_title',
+            font_charset=LAUNCHER_RUNTIME_CHARSET,
         ))
 
 
@@ -355,7 +359,9 @@ def place_app_icon(objs, parent, *, name, text, x, y, icon=None,
         ))
     objs.append(label(
         cell, 0, ICON_SIZE + ICON_LABEL_GAP, ICON_SIZE, ICON_LABEL_H,
-        text, size=18, align='center', callback=cb, events=events,
+        text, size=21, align='center', callback=cb, events=events,
+        name=f'{name}_title', bind=f'{name}_title',
+        font_charset=LAUNCHER_RUNTIME_CHARSET,
     ))
 
 

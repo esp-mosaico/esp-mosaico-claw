@@ -31,6 +31,7 @@ from scene_common import (  # noqa: E402
     image,
     label,
     layer,
+    mark_i18n,
     settings_nav_header,
     shared_prefix,
     shared_charset,
@@ -172,6 +173,9 @@ SETTINGS_RUNTIME_CHARSET = (
     "".join(chr(codepoint) for codepoint in range(32, 127))
     + "°×·…‹›"
 )
+SETTINGS_TITLE_CHARSET = "".join(sorted(set(
+    "Display Sound Debug Network About Security AI Model IM Channels Safe Mode Battery"
+)))
 
 def _bound_label(objs, parent, x, y, w, h, text, bind, *, size=20,
                  color=FG, align="left"):
@@ -185,6 +189,9 @@ def _bound_label(objs, parent, x, y, w, h, text, bind, *, size=20,
 def _nav_header(objs, parent, title, *, name):
     settings_nav_header(
         objs, parent, title, name=name, back_image=BACK_ICON)
+    objs[-1]["name"] = f"{name}_title"
+    objs[-1]["bind"] = f"{name}_title"
+    objs[-1]["font_charset"] = SETTINGS_TITLE_CHARSET
 
 
 def _page(objs, stack, index):
@@ -237,7 +244,24 @@ def _screen_timeout_dropdown(objs, parent, y):
         "name": "settings_screen_timeout_dropdown",
         "callback": "settings_screen_timeout_select",
         "options": ["10 sec", "30 sec", "1 min", "2 min", "5 min", "Never"],
+        "dynamic_options": True, "option_text_max_bytes": 16,
         "selected": 5, "item_height": 36, "open_direction": "up",
+        "font_size": 20, "fg_color": FG,
+        "bg_color": "#29292B", "panel_color": "#29292B",
+        "border_color": "#464649", "border_width": 1,
+        "radius": 14,
+    })
+
+
+def _language_dropdown(objs, parent, y):
+    objs.append({
+        "type": "dropdown", "parent": parent,
+        "x": 284, "y": y, "w": 160, "h": 46,
+        "name": "settings_language_dropdown",
+        "callback": "settings_language_select",
+        "options": ["English", "Chinese"],
+        "dynamic_options": True, "option_text_max_bytes": 16,
+        "selected": 0, "item_height": 36, "open_direction": "up",
         "font_size": 20, "fg_color": FG,
         "bg_color": "#29292B", "panel_color": "#29292B",
         "border_color": "#464649", "border_width": 1,
@@ -312,8 +336,11 @@ def _display_back_events():
     ]
 
 
-def _striped_slider(objs, parent, y, title, bind_prefix, value):
-    objs.append(label(parent, 12, y, 300, 45, title, size=32))
+def _striped_slider(objs, parent, y, title, bind_prefix, value, *, title_bind=None):
+    if title_bind:
+        _bound_label(objs, parent, 12, y, 300, 45, title, title_bind, size=32)
+    else:
+        objs.append(label(parent, 12, y, 300, 45, title, size=32))
     _bound_label(objs, parent, 340, y + 6, 128, 34, f"{value}%",
                  f"{bind_prefix}_value", size=24, color=MUTED,
                  align="right")
@@ -352,11 +379,17 @@ def _build_display(objs, page):
     for item in objs[-3:]:
         item["events"] = display_back_events
     _striped_slider(objs, page, 80, "Brightness",
-                    "settings_brightness", 58)
-    objs.append(label(page, 12, 246, 280, 46, "Rotation", size=24))
-    objs.append(label(page, 12, 320, 280, 46, "Screen-off", size=24))
+                    "settings_brightness", 58,
+                    title_bind="settings_brightness_title")
+    _bound_label(objs, page, 12, 246, 260, 46, "Rotation",
+                 "settings_rotation_title", size=24)
+    _bound_label(objs, page, 12, 320, 260, 46, "Screen-off",
+                 "settings_screen_timeout_title", size=24)
+    _bound_label(objs, page, 12, 394, 260, 46, "Language",
+                 "settings_language_title", size=24)
     _rotation_dropdown(objs, page, 246)
     _screen_timeout_dropdown(objs, page, 316)
+    _language_dropdown(objs, page, 390)
 
 
 def _build_sound(objs, page):
@@ -777,7 +810,9 @@ def _web_nav(objs, page, title, name):
                       color=MUTED, align="center", name=f"{name}_title")
     if name == "nav_settings_detail":
         title_obj["bind"] = "settings_detail_title"
-        title_obj["font_charset"] = "AboutDiagnosticSafe ModeBattery"
+    else:
+        title_obj["bind"] = f"{name}_title"
+    title_obj["font_charset"] = SETTINGS_TITLE_CHARSET
     objs.append(title_obj)
 
 
@@ -931,9 +966,11 @@ def _copy_setup_integration_page(objs, page, builder, prefix):
     # phase the same centered Settings navbar title while leaving the original
     # back/skip controls and their callbacks untouched.
     nav_title = "AI Model" if prefix == "llm" else "IM Channels"
-    for phase in phase_layers:
+    for index, phase in enumerate(phase_layers):
         objs.append(label(phase, 0, 0, 480, 64, nav_title, size=24,
-                          color=MUTED, align="center"))
+                          color=MUTED, align="center",
+                          bind=f"nav_integrations_{prefix}_title_{index}",
+                          font_charset=SETTINGS_TITLE_CHARSET))
 
 
 def _build_integrations_model(objs, page):
@@ -950,7 +987,9 @@ def _build_integrations_channels(objs, page):
                       events=back_events))
     objs.append(label(page, 0, 0, 480, 64, "IM Channels", size=24,
                       color=MUTED, align="center",
-                      name="nav_integrations_channels_title"))
+                      name="nav_integrations_channels_title",
+                      bind="nav_integrations_channels_title",
+                      font_charset=SETTINGS_TITLE_CHARSET))
 
     objs.append(label(page, 23, 76, 434, 45, "Link account", size=32))
     objs.append(label(page, 23, 123, 434, 30,
@@ -1173,6 +1212,20 @@ def main():
     stripe_mask.save(HERE / SLIDER_STRIPE_MASK_IMAGE)
     objs, content = shared_prefix(IMAGES, FONT_POLICIES, BOLD)
     build_settings_ui(objs, content)
+    localized_binds = {
+        "nav_display_title", "nav_sound_title", "nav_debug_title",
+        "nav_wlan_title", "nav_about_title", "nav_security_title",
+        "nav_integrations_llm_title_0", "nav_integrations_llm_title_1",
+        "nav_integrations_llm_title_2", "nav_integrations_llm_title_3",
+        "nav_integrations_channels_title", "settings_brightness_title",
+        "settings_rotation_title", "settings_screen_timeout_title",
+        "settings_language_title",
+    }
+    for obj in objs:
+        if obj.get("bind") in localized_binds:
+            obj.setdefault("name", obj["bind"])
+            obj["_mosaic_i18n"] = True
+    mark_i18n(objs, "settings")
     # Every runtime-bound Settings label may receive values that are not
     # present in its design-time placeholder. Pin the full product charset so
     # gspc does not silently compile only the placeholder glyphs and render

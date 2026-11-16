@@ -354,9 +354,9 @@ def build_ai_create():
     hero = len(objs)
     objs.append(container(welcome, 24, 24, 432, 142,
                           bg="#E64501", radius=18))
-    objs.append(label(hero, 20, 58, 214, 28, "Hello,", size=20))
+    objs.append(label(hero, 20, 58, 214, 28, "Hello,", size=20, name="ai_hero_hello", bind="ai_hero_hello_text"))
     objs.append(label(hero, 20, 88, 240, 28,
-                      "How can I help?", size=20))
+                      "How can I help?", size=20, name="ai_hero_help", bind="ai_hero_help_text"))
     dot_spans = ((5, 8), (4, 8), (3, 8), (2, 8),
                  (1, 8), (0, 8), (0, 8), (1, 8))
     for row, (start, stop) in enumerate(dot_spans):
@@ -371,12 +371,12 @@ def build_ai_create():
     objs.append(button(
         welcome, 24, 176, 210, 48, "New Session",
         bg="#E64501", fg="#FCFCFF",
-        radius=20, size=15, callback="ai_new",
+        radius=20, size=15, callback="ai_new", name="ai_new_button", bind="ai_new_button_text",
     ))
     objs.append(button(
         welcome, 246, 176, 210, 48, "Continue",
         bg="#18181A", fg="#FCFCFF",
-        radius=20, size=15, callback="ai_resume_work",
+        radius=20, size=15, callback="ai_resume_work", name="ai_continue_button", bind="ai_continue_button_text",
     ))
 
     feature_groups = (
@@ -422,7 +422,7 @@ def build_ai_create():
                 objs.append(button(
                     feature_page, x, 2, 126, 48, title,
                     bg="#18181A", fg="#D6D6DE", radius=24, size=16,
-                    callback=action,
+                    callback=action, name=f"ai_feature_{variant}_{mode_name}_button", bind=f"ai_feature_{variant}_{mode_name}_text",
                 ))
                 # A static marker belongs to the same PageFlow transform as
                 # its button, so it follows the selected item during swipes.
@@ -536,7 +536,7 @@ def build_ai_create():
         session_picker, 0, 0, CONTENT_W, CONTENT_H, bg="#000000",
     ))
     objs.append(label(session_picker, 88, 20, 250, 30,
-                      "Select Session", size=22))
+                      "Select Session", size=22, name="ai_session_title", bind="ai_session_title_text"))
     objs.append(label(session_picker, 88, 51, 250, 22,
                       "0 sessions", size=15,
                       color="#91919B", bind="ai_session_count"))
@@ -583,10 +583,11 @@ def build_ai_create():
             bind=f"ai_session_{row_index}_title"))
         objs.append(label(
             resume, 64, 42, 276, 22, "Continue session", size=14,
-            color="#91919B"))
+            color="#91919B", name=f"ai_session_{row_index}_continue", bind=f"ai_session_{row_index}_continue_text"))
         objs.append(button(
             row, 364, 15, 52, 48, "Delete", bg="#3A1711",
             fg="#FF8A70", radius=18, size=14,
+            name=f"ai_session_{row_index}_delete", bind=f"ai_session_{row_index}_delete_text",
             events=[{
                 "event": "click", "action": "call",
                 "target_name": "ai_delete_session", "arg": row_index,
@@ -615,7 +616,7 @@ def build_ai_create():
         session_picker, 120,
         400, 240, 52, "New Blank Session",
         bg="#242426", fg="#D6D6DE", radius=26, size=16,
-        callback="ai_new", name="ai_session_new",
+        callback="ai_new", name="ai_session_new", bind="ai_session_new_text",
     ))
     delete_modal = len(objs)
     objs.append(layer(
@@ -634,7 +635,7 @@ def build_ai_create():
     ))
     objs.append(label(
         delete_card, 24, 22, 360, 32, "Delete Session?", size=22,
-        color="#FCFCFF", align="center",
+        color="#FCFCFF", align="center", name="ai_delete_title", bind="ai_delete_title_text",
     ))
     objs.append(label(
         delete_card, 24, 66, 360, 28, "", size=18,
@@ -643,7 +644,7 @@ def build_ai_create():
     ))
     objs.append(label(
         delete_card, 24, 100, 360, 24, "This cannot be undone.", size=15,
-        color="#91919B", align="center",
+        color="#91919B", align="center", name="ai_delete_warning", bind="ai_delete_warning_text",
     ))
     delete_controls = len(objs)
     objs.append(layer(
@@ -654,12 +655,12 @@ def build_ai_create():
     objs.append(button(
         delete_controls, 76, 150, 116, 46, "Cancel",
         bg="#2A2A2C", fg="#FCFCFF", radius=23, size=16,
-        callback="ai_cancel_delete_session",
+        callback="ai_cancel_delete_session", name="ai_delete_cancel", bind="ai_delete_cancel_text",
     ))
     objs.append(button(
         delete_controls, 216, 150, 116, 46, "Delete",
         bg="#FF4C01", fg="#FCFCFF", radius=23, size=16,
-        callback="ai_confirm_delete_session",
+        callback="ai_confirm_delete_session", name="ai_delete_confirm", bind="ai_delete_confirm_text",
     ))
     delete_progress = len(objs)
     objs.append(layer(
@@ -669,7 +670,7 @@ def build_ai_create():
     ))
     objs.append(label(
         delete_progress, 76, 156, 256, 34, "Deleting…", size=17,
-        color="#FF8A70", align="center",
+        color="#FF8A70", align="center", name="ai_delete_progress_text", bind="ai_delete_progress_label",
     ))
 
     # Conversation is another Controller-owned state of the retained page.
@@ -692,7 +693,7 @@ def build_ai_create():
         border="#3B3C3D", border_w=1,
     ))
     objs.append(label(chat, 76, 22, 220, 26,
-                      "AI CREATE", size=16, color="#91919B"))
+                      "AI CREATE", size=16, color="#91919B", name="ai_chat_title", bind="ai_chat_title_text"))
     # A bounded message window is populated only from the native Controller.
     rounds = len(objs)
     objs.append(layer(

@@ -180,6 +180,9 @@ function(mosaic_setup_bundle_generation_for_target
                     "${out_dir}/${gsp_stem}_templates.h")
             endif()
         endif()
+        if(module_slug STREQUAL "settings" OR module_slug STREQUAL "setup_center" OR module_slug STREQUAL "welcome")
+            list(APPEND header_outputs "${out_dir}/${module_slug}_i18n.h")
+        endif()
 
         set(scene_source_deps)
         foreach(scene_source IN LISTS MOSAIC_APP_SCENE_SOURCES)
@@ -224,6 +227,7 @@ function(mosaic_setup_bundle_generation_for_target
                     "${module_dir}/${MOSAIC_APP_GENERATOR}"
                     ${scene_source_deps}
                     "${root}/common/scene_common.py"
+                    "${root}/common/mosaic_i18n.c"
                     "${root}/common/font_paths.py"
                     "${root}/common/fonts/NotoSans-Regular.ttf"
                     "${root}/common/fonts/DejaVuSans.ttf"

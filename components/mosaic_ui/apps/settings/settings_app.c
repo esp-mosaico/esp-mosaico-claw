@@ -35,6 +35,7 @@
 #include "settings_objects.h"
 #include "settings_root_icon_data.h"
 #include "settings_templates.h"
+#include "settings_i18n.h"
 
 #define SETTINGS_TOGGLE_OFF_COLOR UINT32_C(0x39E7)
 #define SETTINGS_TOGGLE_ON_COLOR  UINT32_C(0xFA60)
@@ -155,6 +156,7 @@ typedef struct {
     bool brightness_dirty;
     bool volume_drag_active;
     bool volume_dirty;
+    bool language_restart_pending;
     settings_llm_phase_t llm_phase;
     uint16_t integration_page;
     int64_t integration_started_us;
@@ -325,6 +327,17 @@ esp_err_t mosaic_settings_set_screen_timeout(uint32_t timeout_ms)
         return ESP_ERR_NOT_SUPPORTED;
     }
     return s_state.ops.set_screen_timeout(s_state.ops.user_ctx, timeout_ms);
+}
+
+esp_err_t mosaic_settings_set_ui_language(mosaic_ui_language_t language)
+{
+    if (language < MOSAIC_UI_LANGUAGE_EN || language > MOSAIC_UI_LANGUAGE_ZH_CN) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_state.ops.set_ui_language == NULL) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+    return s_state.ops.set_ui_language(s_state.ops.user_ctx, language);
 }
 
 esp_err_t mosaic_settings_factory_reset(void)
@@ -715,6 +728,10 @@ static esp_err_t settings_display_render(esp_gsp_handle_t ui)
         err = gsp_settings_settings_screen_timeout_dropdown_set_selected(ui, timeout_index);
     }
     if (err == ESP_GSP_OK) {
+        err = gsp_settings_settings_language_dropdown_set_selected(
+            ui, s_state.snapshot.ui_language);
+    }
+    if (err == ESP_GSP_OK) {
         (void)snprintf(value, sizeof(value), "%" PRId32 "%%",
                        s_state.volume);
         err = gsp_settings_settings_volume_value_set_text(ui, value);
@@ -741,6 +758,34 @@ static esp_err_t settings_display_render(esp_gsp_handle_t ui)
     if (err == ESP_GSP_OK) {
         err = gsp_settings_settings_notification_sound_set_checked(
             ui, s_state.sound_effect_enabled);
+    }
+    return err == ESP_GSP_OK ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t settings_apply_language(esp_gsp_handle_t ui)
+{
+    const char *const timeout_en[] = {
+        "10 sec", "30 sec", "1 min", "2 min", "5 min", "Never",
+    };
+    const char *const timeout_zh[] = {
+        "10 秒", "30 秒", "1 分钟", "2 分钟", "5 分钟", "永不",
+    };
+    const char *const language_options[] = {"English", "简体中文"};
+    esp_err_t result = mosaic_i18n_apply_components(ui, settings_i18n_components,
+        sizeof(settings_i18n_components) / sizeof(settings_i18n_components[0]));
+    if (result != ESP_OK) {
+        return result;
+    }
+    esp_gsp_err_t err = ESP_GSP_OK;
+    const char *const *options = mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN
+        ? timeout_zh : timeout_en;
+    err = esp_gsp_dropdown_set_options_text(
+        ui, GSP_OBJ_KEY_SETTINGS_SCREEN_TIMEOUT_DROPDOWN, options,
+        sizeof(timeout_en) / sizeof(timeout_en[0]));
+    if (err == ESP_GSP_OK) {
+        err = esp_gsp_dropdown_set_options_text(
+            ui, GSP_OBJ_KEY_SETTINGS_LANGUAGE_DROPDOWN, language_options,
+            sizeof(language_options) / sizeof(language_options[0]));
     }
     return err == ESP_GSP_OK ? ESP_OK : ESP_FAIL;
 }
@@ -880,7 +925,7 @@ static gsp_err_t settings_detail_bind_item(
         }
     }
     esp_gsp_err_t err = gsp_settings_settings_detail_row_row_set_title_text(
-        ui, row, item->title);
+        ui, row, mosaic_i18n_text(item->title));
     if (err == ESP_GSP_OK) {
         err = gsp_settings_settings_detail_row_row_set_title_fg_color(
             ui, row, item->danger ? SETTINGS_TOGGLE_ON_COLOR
@@ -888,7 +933,7 @@ static gsp_err_t settings_detail_bind_item(
     }
     if (err == ESP_GSP_OK) {
         err = gsp_settings_settings_detail_row_row_set_value_text(
-            ui, row, value);
+            ui, row, mosaic_i18n_text(value));
     }
     if (err == ESP_GSP_OK) {
         err = gsp_settings_settings_detail_row_row_set_value_fg_color(
@@ -918,7 +963,7 @@ static void settings_open_detail(esp_gsp_handle_t ui,
     const bool battery = kind == SETTINGS_DETAIL_BATTERY;
     (void)esp_gsp_set_visible(ui, GSP_BIND_SETTINGS_DETAIL_LIST_VISIBLE, !battery);
     (void)esp_gsp_set_visible(ui, GSP_BIND_SETTINGS_BATTERY_DETAIL_VISIBLE, battery);
-    (void)gsp_settings_nav_settings_detail_title_set_text(ui, titles[kind]);
+    (void)gsp_settings_nav_settings_detail_title_set_text(ui, mosaic_i18n_text(titles[kind]));
     if (battery) {
         settings_refresh_battery_detail(ui);
     } else {
@@ -963,27 +1008,27 @@ static const char *settings_wlan_summary(void)
 {
     const settings_wlan_state_t *wlan = &s_state.wlan;
     if (!wlan->enabled || wlan->state == MOSAIC_SETTINGS_WIFI_DISABLED) {
-        return "Off";
+        return mosaic_i18n_text("Off");
     }
     if (wlan->state == MOSAIC_SETTINGS_WIFI_SCANNING) {
-        return "Scanning";
+        return mosaic_i18n_text("Scanning");
     }
     if (wlan->state == MOSAIC_SETTINGS_WIFI_CONNECTING) {
-        return "Connecting";
+        return mosaic_i18n_text("Connecting");
     }
     if (wlan->state == MOSAIC_SETTINGS_WIFI_AUTH_FAILED) {
-        return "Wrong password";
+        return mosaic_i18n_text("Wrong password");
     }
     if (wlan->state == MOSAIC_SETTINGS_WIFI_AP_NOT_FOUND) {
-        return "Not found";
+        return mosaic_i18n_text("Not found");
     }
     if (wlan->state == MOSAIC_SETTINGS_WIFI_RETRY_WAIT) {
-        return "Retrying";
+        return mosaic_i18n_text("Retrying");
     }
     if (wlan->connected && wlan->current_ssid[0] != '\0') {
         return wlan->current_ssid;
     }
-    return "Offline";
+    return mosaic_i18n_text("Offline");
 }
 
 static bool settings_llm_is_bound(void)
@@ -1034,10 +1079,10 @@ static gsp_err_t settings_root_list_bind_item(
     const char *value_text = value;
     switch (item_index) {
     case 0:
-        value_text = settings_llm_is_bound() ? "Bound" : "Unbound";
+        value_text = mosaic_i18n_text(settings_llm_is_bound() ? "Bound" : "Unbound");
         break;
     case 1:
-        value_text = settings_any_im_is_bound() ? "Bound" : "Unbound";
+        value_text = mosaic_i18n_text(settings_any_im_is_bound() ? "Bound" : "Unbound");
         break;
     case 2:
         value_text = settings_wlan_summary();
@@ -1067,7 +1112,7 @@ static gsp_err_t settings_root_list_bind_item(
             s_root_rows[item_index].icon_size);
     if (err == ESP_GSP_OK) {
         err = gsp_settings_settings_root_row_row_set_title_text(
-            ui, row, s_root_rows[item_index].title);
+            ui, row, mosaic_i18n_text(s_root_rows[item_index].title));
     }
     if (err == ESP_GSP_OK) {
         err = gsp_settings_settings_root_row_row_set_value_text(
@@ -2733,6 +2778,31 @@ static void settings_dispatch_call(
         settings_display_request_render();
         return;
     }
+    case GSP_ACT_ID_SETTINGS_LANGUAGE_SELECT: {
+        if (s_state.language_restart_pending) {
+            return;
+        }
+        const uint32_t index = event->data.call.list != ESP_GSP_LIST_NONE
+            ? event->data.call.item : event->data.call.arg;
+        if (index > MOSAIC_UI_LANGUAGE_ZH_CN || index == s_state.snapshot.ui_language) {
+            return;
+        }
+        esp_err_t err = mosaic_settings_set_ui_language((mosaic_ui_language_t)index);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "set UI language failed: %s", esp_err_to_name(err));
+            (void)mosaic_top_notice_show(
+                ui, &s_top_notice, mosaic_i18n_text("Language change failed"),
+                mosaic_i18n_text("Please try again"), SETTINGS_NOTICE_DURATION_MS);
+            settings_display_request_render();
+            return;
+        }
+        s_state.language_restart_pending = true;
+        s_state.snapshot.ui_language = (mosaic_ui_language_t)index;
+        (void)mosaic_top_notice_show(
+            ui, &s_top_notice, mosaic_i18n_text("Restarting"),
+            mosaic_i18n_text("Applying language setting"), SETTINGS_NOTICE_DURATION_MS);
+        return;
+    }
     case GSP_ACT_ID_SETTINGS_WLAN_LEAVE:
         if (!s_state.wlan_page_active || s_state.wlan_leave_pending ||
                 s_state.wlan_detail_active ||
@@ -3001,6 +3071,7 @@ static void settings_dispatch_pointer(
         s_state.brightness_dirty = false;
         s_state.volume_drag_active = false;
         s_state.volume_dirty = false;
+        s_state.language_restart_pending = false;
         s_state.display_pointer_pressed = false;
         s_state.display_pointer_scrolled = false;
         s_state.display_tap = SETTINGS_DISPLAY_TAP_NONE;
@@ -3169,6 +3240,9 @@ static void settings_event(
         s_state.rendered_channel_qr[0] = '\0';
         s_state.rendered_phone_qr[0] = '\0';
         settings_refresh_snapshot(ui);
+        if (settings_apply_language(ui) != ESP_OK) {
+            ESP_LOGW(TAG, "apply Settings language failed");
+        }
         s_state.wlan_scan_revision =
             s_state.snapshot.network.scan_revision;
         settings_root_list_attach(ui);

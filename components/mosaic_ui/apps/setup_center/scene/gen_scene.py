@@ -20,6 +20,7 @@ from scene_common import (  # noqa: E402
     image,
     label,
     layer,
+    mark_i18n,
     scene_out_path,
     shared_prefix,
     top_notice,
@@ -601,6 +602,7 @@ def main():
     build_region(objs, page(objs, stack, PAGE_REGION))
     top_notice(objs, content, name="setup_top_notice",
                title="Connection failed", message="Incorrect password")
+    mark_i18n(objs, "setup_center")
     # Canvas needs its own resource view even when placeholders are shared.
     for obj in objs:
         if obj.get("type") == "image" and obj.get("bind", "").endswith("_qr_canvas"):

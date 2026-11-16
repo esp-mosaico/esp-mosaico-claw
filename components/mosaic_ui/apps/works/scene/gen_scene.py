@@ -63,6 +63,7 @@ def tab_button(objs, parent, x, width, text, index):
     objs.append(button(
         parent, x, 65, width, 50, text,
         radius=25, size=22, name=f"works_tab_{index}",
+        bind=f"works_tab_{index}_text",
         bg="#000000", fg="#D6D6DE", border="#3B3C3D", border_w=1,
         events=events,
     ))
@@ -76,7 +77,8 @@ def tab_button(objs, parent, x, width, text, index):
     ))
     objs.append(button(
         selected, 0, 0, width, 50, text,
-        radius=25, size=22, bg="#FCFCFF", fg="#000000",
+        radius=25, size=22, bg="#FCFCFF", fg="#000000", name=f"works_tab_{index}_selected_button",
+        bind=f"works_tab_{index}_selected_text",
         events=events,
     ))
 
@@ -93,8 +95,8 @@ def status_layer(objs, parent, row_index, name, text, color):
     state_label = label(
         state, 320, 20, 140, 28, text, size=17, color=color,
         align="right",
-        bind=(f"works_row_{row_index}_active_text"
-              if name == "active" else None),
+        bind=f"works_row_{row_index}_{name}_text",
+        name=f"works_row_{row_index}_{name}_text",
         font_charset=STATE_CHARSET,
     )
     state_label["overflow"] = "ellipsis"
@@ -117,7 +119,7 @@ def works_row(objs, parent, row_index):
 
     # Keep the default tile underneath the asynchronous image layer.
     objs.append(container(row, 16, 8, 48, 48, bg="#242424", radius=10))
-    objs.append(label(row, 16, 23, 48, 20, "APP", size=14, color="#91919B", align="center"))
+    objs.append(label(row, 16, 23, 48, 20, "APP", size=14, color="#91919B", align="center", name=f"works_row_{row_index}_placeholder", bind=f"works_row_{row_index}_placeholder_text"))
     icon = len(objs)
     objs.append(layer(row, 16, 8, 48, 48, hidden=True,
                       name=f"works_row_{row_index}_icon_layer",

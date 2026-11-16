@@ -118,9 +118,9 @@ def build_ui(objs, content):
     objs.append(layer(root, 0, 0, CONTENT_W, CONTENT_H,
                       name="bt_waiting", bind="bt_waiting_visible"))
     objs.append(label(waiting, 24, 17, 82, 32, "Local", size=24,
-                      color="#91919B", callback="bt_local"))
+                      color="#91919B", callback="bt_local", name="bt_waiting_local_tab", bind="bt_waiting_local_text"))
     objs.append(label(waiting, 113, 17, 150, 32, "Bluetooth", size=24,
-                      color="#FCFCFF"))
+                      color="#FCFCFF", name="bt_waiting_bluetooth_tab", bind="bt_waiting_bluetooth_text"))
     objs.append(container(waiting, 161, 47, 13, 13,
                           bg="#FF4C01", radius=3))
     halftone = image(waiting, f"{BT_ASSETS}/bt_halftone.png",
@@ -132,10 +132,12 @@ def build_ui(objs, content):
                       color="#FCFCFF", font_charset=ASCII_PRINTABLE))
     objs.append(label(waiting, 24, 398, 432, 34,
                       "Open Bluetooth settings on your", size=24,
-                      color="#91919B", font_charset=ASCII_PRINTABLE))
+                      color="#91919B", font_charset=ASCII_PRINTABLE,
+                      name="bt_waiting_hint_1", bind="bt_waiting_hint_1_text"))
     objs.append(label(waiting, 24, 432, 432, 34,
                       "phone and connect to MOSAICO.", size=24,
-                      color="#91919B", font_charset=ASCII_PRINTABLE))
+                      color="#91919B", font_charset=ASCII_PRINTABLE,
+                      name="bt_waiting_hint_2", bind="bt_waiting_hint_2_text"))
     # Host/WASM uses this surface to emulate the phone completing a link.
     # Firmware receives the action too, but deliberately ignores it and keeps
     # using the real Bluetooth runtime state.
@@ -147,9 +149,9 @@ def build_ui(objs, content):
     objs.append(layer(root, 0, 0, CONTENT_W, CONTENT_H, hidden=True,
                       name="bt_player", bind="bt_player_visible"))
     objs.append(label(player, 24, 17, 82, 32, "Local", size=24,
-                      color="#91919B", callback="bt_local"))
+                      color="#91919B", callback="bt_local", name="bt_player_local_tab", bind="bt_player_local_text"))
     objs.append(label(player, 113, 17, 150, 32, "Bluetooth", size=24,
-                      color="#FCFCFF"))
+                      color="#FCFCFF", name="bt_player_bluetooth_tab", bind="bt_player_bluetooth_text"))
     objs.append(container(player, 161, 47, 13, 13,
                           bg="#FF4C01", radius=3))
     placeholder = len(objs)

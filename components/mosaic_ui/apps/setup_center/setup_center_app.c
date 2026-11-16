@@ -23,6 +23,7 @@
 #include "mosaic_app_catalog.h"
 #include "mosaic_app_shell.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 #include "mosaic_settings.h"
 #include "mosaic_top_notice.h"
@@ -30,6 +31,7 @@
 #include "setup_center_actions.h"
 #include "setup_center_binds.h"
 #include "setup_center_objects.h"
+#include "setup_center_i18n.h"
 #include "setup_center_wechat_queue.h"
 #if defined(ESP_PLATFORM)
 #include "mosaic_loader.h"
@@ -177,6 +179,11 @@ typedef struct {
 } setup_center_state_t;
 
 static const char *TAG = "setup_center";
+
+static esp_gsp_err_t setup_notice_show(esp_gsp_handle_t ui, const mosaic_top_notice_config_t *notice, const char *title, const char *message, uint32_t duration_ms)
+{
+    return mosaic_top_notice_show(ui, notice, mosaic_i18n_text(title), mosaic_i18n_text(message), duration_ms);
+}
 static mosaic_setup_app_request_cb_t s_app_request;
 static void *s_app_request_ctx;
 static setup_center_state_t s_setup = {
@@ -824,14 +831,14 @@ static void setup_overview_render(void)
         : (s_setup.llm_skipped ? "Skipped · Not configured"
                                : "Not configured");
     (void)gsp_setup_center_setup_network_summary_set_text(
-        s_setup.ui, network);
+        s_setup.ui, mosaic_i18n_text(network));
     (void)gsp_setup_center_setup_wechat_summary_set_text(
-        s_setup.ui, wechat);
-    (void)gsp_setup_center_setup_llm_summary_set_text(s_setup.ui, llm);
+        s_setup.ui, mosaic_i18n_text(wechat));
+    (void)gsp_setup_center_setup_llm_summary_set_text(s_setup.ui, mosaic_i18n_text(llm));
     (void)gsp_setup_center_setup_integrations_wechat_summary_set_text(
-        s_setup.ui, wechat);
+        s_setup.ui, mosaic_i18n_text(wechat));
     (void)gsp_setup_center_setup_integrations_llm_summary_set_text(
-        s_setup.ui, llm);
+        s_setup.ui, mosaic_i18n_text(llm));
 }
 
 static void setup_password_detach(void)
@@ -934,7 +941,7 @@ static esp_err_t setup_wechat_start_service(bool force)
     const esp_err_t err =
         wechat_binding_flow_start_backend(&ops, &status, force);
     if (err != ESP_OK && s_setup.ui != NULL) {
-        (void)mosaic_top_notice_show(
+        (void)setup_notice_show(
             s_setup.ui, &s_notice, "Unable to bind WeChat",
             esp_err_to_name(err), 2600);
     }
@@ -1055,7 +1062,7 @@ static void setup_wechat_apply_model(int64_t now_us)
             ? SETUP_WECHAT_PROGRESS : SETUP_WECHAT_BINDING);
     if (s_setup.wechat_flow.stage[0] != '\0') {
         (void)gsp_setup_center_setup_wechat_stage_text_set_text(
-            s_setup.ui, s_setup.wechat_flow.stage);
+            s_setup.ui, mosaic_i18n_text(s_setup.wechat_flow.stage));
     }
     setup_progress_render(
         s_wechat_progress, s_setup.wechat_flow.progress);
@@ -1077,11 +1084,11 @@ static void setup_wechat_apply_model(int64_t now_us)
         s_setup.wechat_intent = setup_wechat_success_intent();
     }
     (void)gsp_setup_center_setup_wechat_bind_status_set_text(
-        s_setup.ui, s_setup.wechat_flow.bind_status);
+        s_setup.ui, mosaic_i18n_text(s_setup.wechat_flow.bind_status));
     setup_wechat_render();
     if (status.state == MOSAIC_SETUP_WECHAT_EXPIRED ||
             status.state == MOSAIC_SETUP_WECHAT_ERROR) {
-        (void)mosaic_top_notice_show(
+        (void)setup_notice_show(
             s_setup.ui, &s_notice, "WeChat binding failed",
             s_setup.wechat_flow.bind_status, 2600);
     }
@@ -1115,18 +1122,21 @@ static esp_err_t setup_llm_refresh_model(bool push_qr)
         mosaic_settings_llm_is_configured(&snapshot);
     (void)gsp_setup_center_setup_llm_backend_set_text(
         s_setup.ui, snapshot.llm.backend[0]
-            ? snapshot.llm.backend : "Not configured");
+            ? snapshot.llm.backend : mosaic_i18n_text("Not configured"));
     (void)gsp_setup_center_setup_llm_model_set_text(
         s_setup.ui, snapshot.llm.model[0]
-            ? snapshot.llm.model : "Not configured");
+            ? snapshot.llm.model : mosaic_i18n_text("Not configured"));
     (void)gsp_setup_center_setup_llm_base_url_set_text(
         s_setup.ui, snapshot.llm.base_url[0]
-            ? snapshot.llm.base_url : "Not configured");
+            ? snapshot.llm.base_url : mosaic_i18n_text("Not configured"));
     char capabilities[48];
-    (void)snprintf(capabilities, sizeof(capabilities),
-        "Tools %s · Vision %s",
-        snapshot.llm.supports_tools ? "On" : "Off",
-        snapshot.llm.supports_vision ? "On" : "Off");
+    if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+        (void)snprintf(capabilities, sizeof(capabilities), "工具 %s · 视觉 %s",
+            snapshot.llm.supports_tools ? "开" : "关", snapshot.llm.supports_vision ? "开" : "关");
+    } else {
+        (void)snprintf(capabilities, sizeof(capabilities), "Tools %s · Vision %s",
+            snapshot.llm.supports_tools ? "On" : "Off", snapshot.llm.supports_vision ? "On" : "Off");
+    }
     (void)gsp_setup_center_setup_llm_capabilities_set_text(
         s_setup.ui, capabilities);
 
@@ -1136,7 +1146,7 @@ static esp_err_t setup_llm_refresh_model(bool push_qr)
                        snapshot.network.portal_url);
     }
     (void)gsp_setup_center_setup_llm_config_url_set_text(
-        s_setup.ui, config_url[0] ? config_url : "Unavailable");
+        s_setup.ui, config_url[0] ? config_url : mosaic_i18n_text("Unavailable"));
     strlcpy(s_setup.llm_config_url, config_url,
             sizeof(s_setup.llm_config_url));
     if (push_qr && config_url[0] != '\0') {
@@ -1222,7 +1232,7 @@ static void setup_wechat_begin_simulation(int64_t now_us)
     s_setup.wechat_phase = SETUP_WECHAT_BINDING;
     s_setup.rendered_progress = UINT8_MAX;
     (void)gsp_setup_center_setup_wechat_bind_status_set_text(
-        s_setup.ui, s_setup.wechat_flow.bind_status);
+        s_setup.ui, mosaic_i18n_text(s_setup.wechat_flow.bind_status));
     setup_wechat_render();
     setup_wechat_push_qr(s_setup.wechat_flow.qr_payload, now_us);
 }
@@ -1312,7 +1322,7 @@ static void setup_network_select(const mosaic_event_t *event)
     }
     (void)esp_gsp_set_text(s_setup.ui, GSP_BIND_SETUP_PASSWORD_VALUE, "");
     (void)esp_gsp_set_text(s_setup.ui, GSP_BIND_SETUP_PASSWORD_DISPLAY,
-                           "Password");
+                           mosaic_i18n_text("Password"));
     s_setup.rendered_password_length = UINT8_MAX;
     s_setup.network_phase = SETUP_NETWORK_PASSWORD;
     setup_network_render();
@@ -1335,7 +1345,7 @@ static bool setup_network_join(int64_t now_us)
     }
     const size_t length = strlen(password);
     if (length < SETUP_PASSWORD_MIN) {
-        (void)mosaic_top_notice_show(
+        (void)setup_notice_show(
             s_setup.ui, &s_notice, "Password too short",
             "Enter at least 8 characters", 2400);
         return false;
@@ -1351,7 +1361,7 @@ static bool setup_network_join(int64_t now_us)
             s_setup.selected_ssid, password);
         if (err != ESP_OK) {
             s_setup.network_connect_pending = false;
-            (void)mosaic_top_notice_show(
+            (void)setup_notice_show(
                 s_setup.ui, &s_notice, "Unable to join network",
                 esp_err_to_name(err), 2600);
             return false;
@@ -1391,7 +1401,7 @@ static void setup_network_phone_open(void)
     setup_network_render();
     const esp_err_t err = setup_network_phone_refresh();
     if (err != ESP_OK) {
-        (void)mosaic_top_notice_show(
+        (void)setup_notice_show(
             s_setup.ui, &s_notice, "Provisioning unavailable",
             "The device AP is not ready", 2600);
     }
@@ -1420,7 +1430,7 @@ static void setup_network_phone_submitted(void)
     const bool backend = mosaic_settings_wifi_backend_available();
     if (backend &&
             (mosaic_settings_get_wifi(&live) != ESP_OK || !live.connected)) {
-        (void)mosaic_top_notice_show(
+        (void)setup_notice_show(
             s_setup.ui, &s_notice, "Waiting for phone",
             "Submit Wi-Fi settings in the portal", 2800);
         return;
@@ -1522,7 +1532,7 @@ static void setup_network_apply_model(int64_t now_us)
             break;
         }
         if (title != NULL) {
-            (void)mosaic_top_notice_show(
+            (void)setup_notice_show(
                 s_setup.ui, &s_notice, title, message, 2800);
             return;
         }
@@ -1587,7 +1597,7 @@ static void setup_network_apply_model(int64_t now_us)
         (void)mosaic_settings_forget_wifi();
         s_setup.network_phase = SETUP_NETWORK_SCAN;
         setup_network_request_scan(now_us);
-        (void)mosaic_top_notice_show(
+        (void)setup_notice_show(
             s_setup.ui, &s_notice, title, message, 2600);
     }
     setup_network_render();
@@ -1617,8 +1627,11 @@ static void setup_region_render(int64_t now_us)
         return;
     }
     char text[SETUP_REGION_TEXT_LEN];
-    snprintf(text, sizeof(text), "Please wait (%u/%u)",
-             (unsigned)elapsed_s, (unsigned)SETUP_REGION_WAIT_SECONDS);
+    if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+        snprintf(text, sizeof(text), "请稍候（%u/%u）", (unsigned)elapsed_s, (unsigned)SETUP_REGION_WAIT_SECONDS);
+    } else {
+        snprintf(text, sizeof(text), "Please wait (%u/%u)", (unsigned)elapsed_s, (unsigned)SETUP_REGION_WAIT_SECONDS);
+    }
     (void)gsp_setup_center_setup_region_wait_text_set_text(s_setup.ui, text);
     s_setup.rendered_region_second = (uint8_t)elapsed_s;
 }
@@ -2016,7 +2029,7 @@ static void setup_step(int64_t now_us)
             if (length != s_setup.rendered_password_length) {
                 (void)esp_gsp_set_text(
                     s_setup.ui, GSP_BIND_SETUP_PASSWORD_DISPLAY,
-                    length > 0U ? password : "Password");
+                    length > 0U ? password : mosaic_i18n_text("Password"));
                 s_setup.rendered_password_length = (uint8_t)length;
             }
         }
@@ -2046,7 +2059,7 @@ static void setup_step(int64_t now_us)
                 s_setup.connected_ssid[0] = '\0';
                 s_setup.selected_ssid[0] = '\0';
                 s_setup.network_phase = SETUP_NETWORK_SCAN;
-                (void)mosaic_top_notice_show(
+                (void)setup_notice_show(
                     s_setup.ui, &s_notice, "Connection failed",
                     "Incorrect password", 2600);
             }
@@ -2074,7 +2087,7 @@ static void setup_step(int64_t now_us)
         setup_progress_render(
             s_wechat_progress, s_setup.wechat_flow.progress);
         (void)gsp_setup_center_setup_wechat_stage_text_set_text(
-            s_setup.ui, s_setup.wechat_flow.stage);
+            s_setup.ui, mosaic_i18n_text(s_setup.wechat_flow.stage));
         if (s_setup.wechat_flow.phase == WECHAT_BINDING_FLOW_SUCCESS) {
             s_setup.wechat_intent = setup_wechat_success_intent();
             s_setup.wechat_configured = true;
@@ -2096,7 +2109,7 @@ static void setup_step(int64_t now_us)
                 s_setup.llm_phase = SETUP_LLM_SUCCESS;
             } else {
                 s_setup.llm_phase = SETUP_LLM_CONFIGURING;
-                (void)mosaic_top_notice_show(
+                (void)setup_notice_show(
                     s_setup.ui, &s_notice, "Configuration not found",
                     "Save the LLM settings and try again", 3000);
             }
@@ -2117,6 +2130,9 @@ static void setup_start(esp_gsp_handle_t ui, int64_t now_us)
     s_setup.page = SETUP_PAGE_OVERVIEW;
     s_setup.overview_page = SETUP_PAGE_OVERVIEW;
     s_setup.ui = ui;
+    esp_err_t i18n_err = mosaic_i18n_apply_components(ui, setup_center_i18n_components,
+        sizeof(setup_center_i18n_components) / sizeof(setup_center_i18n_components[0]));
+    if (i18n_err != ESP_OK) ESP_LOGW(TAG, "apply Setup language failed: %s", esp_err_to_name(i18n_err));
     pending_entry = s_pending_entry;
     if (pending_entry) {
         pending_mode = s_pending_mode;

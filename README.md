@@ -5,7 +5,7 @@ ESP-MOSAICO-CLAW takes ESP-MOSAICO beyond connectivity and display, bringing AI 
 ## Features
 
 - Integrates the ESP-Claw Agent Runtime with conversations, memory, skills, Lua extensions, and MCP client/server support.
-- Provides a Mosaic UI optimized for the 480 × 480 round touchscreen, with settings, weather, camera, album, and Bluetooth audio applications.
+- Provides a Mosaic UI optimized for the 480 × 480 touchscreen, with settings, weather, camera, album, and Bluetooth audio applications.
 - Supports Wi-Fi provisioning, web-based configuration, instant messaging, speech recognition, and firmware update checks.
 - Integrates ESP-MOSAICO hardware including audio, camera, IMU, magnetometer, battery management, and external storage.
 

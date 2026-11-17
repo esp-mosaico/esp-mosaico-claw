@@ -995,7 +995,7 @@ typedef struct {
 
 static const settings_root_row_t s_root_rows[] = {
     SETTINGS_ROOT_ROW("AI Model", ai),
-    SETTINGS_ROOT_ROW("Account Binding", channels),
+    SETTINGS_ROOT_ROW("IM Channel", channels),
     SETTINGS_ROOT_ROW("Language", language),
     SETTINGS_ROOT_ROW("Network", network),
     SETTINGS_ROOT_ROW("Display", display),
@@ -2918,6 +2918,14 @@ static void settings_dispatch_call(
             settings_wlan_list_attach(ui);
         }
         (void)settings_wlan_render(ui);
+        return;
+    case GSP_ACT_ID_WLAN_REFRESH:
+        if (!s_state.wlan_page_active || !s_state.wlan.enabled || s_state.wlan_scan_waiting) {
+            return;
+        }
+        s_state.wlan_scan_next_us = event->timestamp_us;
+        settings_wlan_request_scan();
+        settings_wlan_scan(ui);
         return;
     case GSP_ACT_ID_WLAN_NETWORK_SELECT:
         settings_wlan_handle_network_select(ui, event);

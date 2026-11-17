@@ -175,7 +175,7 @@ SETTINGS_RUNTIME_CHARSET = (
     + "°×·…‹›"
 )
 SETTINGS_TITLE_CHARSET = "".join(sorted(set(
-    "Display Sound Debug Network About Security AI Model Account Binding Language Safe Mode Battery"
+    "Display Sound Debug Network About Security AI Model IM Channel Language Safe Mode Battery"
 )))
 
 def _bound_label(objs, parent, x, y, w, h, text, bind, *, size=20,
@@ -262,7 +262,7 @@ def _language_dropdown(objs, parent, y):
         "callback": "settings_language_select",
         "options": ["English", "Chinese"],
         "dynamic_options": True, "option_text_max_bytes": 16,
-        "selected": 0, "item_height": 36, "open_direction": "up",
+        "selected": 0, "item_height": 36, "open_direction": "down",
         "font_size": 20, "fg_color": FG,
         "bg_color": "#29292B", "panel_color": "#29292B",
         "border_color": "#464649", "border_width": 1,
@@ -571,6 +571,13 @@ def _wlan_scan_list(objs, parent, name, template, *, y, height, hidden=False):
         bind=f"{name}_visible", bind_target="visible"))
     objs.append(label(scan_layer, 12, 6, 180, 34, "Network",
                       size=24, color=MUTED))
+    objs.append(button(
+        scan_layer, 344, 2, 124, 38, "Refresh", size=18,
+        bg="#29292B", radius=12,
+        events=[{
+            "event": "click", "action": "call",
+            "target_name": "wlan_refresh",
+        }]))
     objs.append({
         "type": "list",
         "parent": scan_layer,
@@ -906,7 +913,7 @@ def _copy_setup_integration_page(objs, page, builder, prefix):
         if item.get("type") == "layer" and item.get("parent") == page:
             phase_layers.append(index)
 
-        # Align the AI configuration footer with Account Binding. Children inside
+        # Align the AI configuration footer with IM Channel. Children inside
         # the URL card move with their parent; only direct status children need
         # the vertical offset.
         if (prefix == "llm" and item.get("parent") == start and
@@ -972,7 +979,7 @@ def _copy_setup_integration_page(objs, page, builder, prefix):
     # Each copied phase remains an independent retained layer. Give every
     # phase the same centered Settings navbar title while leaving the original
     # back/skip controls and their callbacks untouched.
-    nav_title = "AI Model" if prefix == "llm" else "Account Binding"
+    nav_title = "AI Model" if prefix == "llm" else "IM Channel"
     for index, phase in enumerate(phase_layers):
         objs.append(label(phase, 0, 0, 480, 64, nav_title, size=24,
                           color=MUTED, align="center",
@@ -992,7 +999,7 @@ def _build_integrations_channels(objs, page):
                        events=back_events))
     objs.append(image(page, BACK_ICON, 12, 8, 48, 48,
                       events=back_events))
-    objs.append(label(page, 0, 0, 480, 64, "Account Binding", size=24,
+    objs.append(label(page, 0, 0, 480, 64, "IM Channel", size=24,
                       color=MUTED, align="center",
                       name="nav_integrations_channels_title",
                       bind="nav_integrations_channels_title",

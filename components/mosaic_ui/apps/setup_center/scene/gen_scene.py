@@ -240,7 +240,7 @@ def build_integrations(objs, parent):
                       color=MUTED))
     status_card(objs, parent, 172, "AI Model", "Not configured",
                 "setup_integrations_llm", "setup_overview_llm")
-    status_card(objs, parent, 272, "Account Binding", "Not linked",
+    status_card(objs, parent, 272, "IM Channel", "Not linked",
                 "setup_integrations_wechat", "setup_overview_wechat")
 
 

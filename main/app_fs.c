@@ -46,6 +46,7 @@ static const char *const s_nand_storage_base_path = "/nand";
 static const char *const s_ramfs_base_path = "/ramfs";
 static const char *const s_recovery_dir_name = ".recovery";
 static const char *const s_recovery_version_file_name = ".recovery.version";
+static const char *const s_factory_reset_preserved_dir_name = "ideas";
 
 static EXT_RAM_BSS_ATTR char s_storage_base_path[32];
 static EXT_RAM_BSS_ATTR void *s_nand_device_handle;
@@ -308,6 +309,9 @@ static esp_err_t remove_directory_contents(const char *dir_path)
             ESP_LOGE(TAG, "stat reset path failed: %s (%s)",
                      child, strerror(errno));
             result = ESP_FAIL;
+        } else if (S_ISDIR(st.st_mode) && strcmp(dir_path, s_storage_base_path) == 0 &&
+                   strcmp(entry->d_name, s_factory_reset_preserved_dir_name) == 0) {
+            ESP_LOGI(TAG, "preserving factory reset directory: %s", child);
         } else if (S_ISDIR(st.st_mode)) {
             result = remove_directory_contents(child);
             if (result == ESP_OK && rmdir(child) != 0) {

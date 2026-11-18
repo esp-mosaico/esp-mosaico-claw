@@ -45,7 +45,7 @@ esp_err_t app_fs_get_storage_space(void *ctx,
                                    uint64_t *free_bytes);
 
 /**
- * @brief Remove all writable NAND data and restore firmware recovery seeds.
+ * @brief Remove writable NAND data except /ideas and restore firmware recovery seeds.
  *
  *         Call during boot, after app_fs_init() and before any service starts
  *         using the DATA filesystem. The NAND mount point itself is retained.

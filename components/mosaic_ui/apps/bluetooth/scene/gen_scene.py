@@ -118,9 +118,10 @@ def build_ui(objs, content):
     objs.append(layer(root, 0, 0, CONTENT_W, CONTENT_H,
                       name="bt_waiting", bind="bt_waiting_visible"))
     objs.append(label(waiting, 24, 17, 82, 32, "Local", size=24,
-                      color="#91919B", callback="bt_local", name="bt_waiting_local_tab", bind="bt_waiting_local_text"))
+                      color="#91919B", name="bt_waiting_local_tab", bind="bt_waiting_local_text"))
     objs.append(label(waiting, 113, 17, 150, 32, "Bluetooth", size=24,
                       color="#FCFCFF", name="bt_waiting_bluetooth_tab", bind="bt_waiting_bluetooth_text"))
+    objs.append(container(waiting, 8, 0, 96, 64, opacity=0, callback="bt_local"))
     objs.append(container(waiting, 161, 47, 13, 13,
                           bg="#FF4C01", radius=3))
     halftone = image(waiting, f"{BT_ASSETS}/bt_halftone.png",
@@ -149,9 +150,10 @@ def build_ui(objs, content):
     objs.append(layer(root, 0, 0, CONTENT_W, CONTENT_H, hidden=True,
                       name="bt_player", bind="bt_player_visible"))
     objs.append(label(player, 24, 17, 82, 32, "Local", size=24,
-                      color="#91919B", callback="bt_local", name="bt_player_local_tab", bind="bt_player_local_text"))
+                      color="#91919B", name="bt_player_local_tab", bind="bt_player_local_text"))
     objs.append(label(player, 113, 17, 150, 32, "Bluetooth", size=24,
                       color="#FCFCFF", name="bt_player_bluetooth_tab", bind="bt_player_bluetooth_text"))
+    objs.append(container(player, 8, 0, 96, 64, opacity=0, callback="bt_local"))
     objs.append(container(player, 161, 47, 13, 13,
                           bg="#FF4C01", radius=3))
     placeholder = len(objs)

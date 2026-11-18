@@ -183,7 +183,9 @@ def build_player(objs, parent):
     objs.append(label(parent, 24, 17, 82, 32, "Local", size=24,
                       color="#FCFCFF", name="music_local_tab", bind="music_local_tab_text"))
     objs.append(label(parent, 113, 17, 150, 32, "Bluetooth", size=24,
-                      color="#91919B", callback="music_bluetooth", name="music_bluetooth_tab", bind="music_bluetooth_tab_text"))
+                      color="#91919B", name="music_bluetooth_tab", bind="music_bluetooth_tab_text"))
+    # Keep the localized label independent from the stable tap target.
+    objs.append(container(parent, 104, 0, 176, 64, opacity=0, callback="music_bluetooth"))
     objs.append(container(parent, 50, 47, 13, 13, bg="#FF4C01", radius=3))
     disc_static = len(objs)
     objs.append(layer(parent, 110, 48, 260, 260,

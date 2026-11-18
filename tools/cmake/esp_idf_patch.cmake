@@ -5,6 +5,62 @@ if(NOT DEFINED ENV{IDF_PATH} OR "$ENV{IDF_PATH}" STREQUAL "")
     message(FATAL_ERROR "${EDGE_AGENT_PROJECT_LOG_PREFIX} IDF_PATH environment variable is not set")
 endif()
 
+function(edge_agent_apply_idf_patch PATCH_PATH PATCH_NAME)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PATCH_PATH}")
+    if(NOT EXISTS "${PATCH_PATH}")
+        message(WARNING "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF patch '${PATCH_NAME}' skipped: file not found: ${PATCH_PATH}")
+        return()
+    endif()
+
+    find_program(EDGE_AGENT_GIT_EXECUTABLE NAMES git)
+    if(NOT EDGE_AGENT_GIT_EXECUTABLE)
+        message(WARNING "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF patch '${PATCH_NAME}' skipped: git not found")
+        return()
+    endif()
+
+    execute_process(
+        COMMAND "${EDGE_AGENT_GIT_EXECUTABLE}" -C "$ENV{IDF_PATH}" apply --check --whitespace=nowarn "${PATCH_PATH}"
+        RESULT_VARIABLE PATCH_CHECK_RESULT
+        OUTPUT_QUIET
+        ERROR_VARIABLE PATCH_CHECK_ERROR
+    )
+    if(PATCH_CHECK_RESULT EQUAL 0)
+        execute_process(
+            COMMAND "${EDGE_AGENT_GIT_EXECUTABLE}" -C "$ENV{IDF_PATH}" apply --whitespace=nowarn "${PATCH_PATH}"
+            RESULT_VARIABLE PATCH_APPLY_RESULT
+            OUTPUT_QUIET
+            ERROR_VARIABLE PATCH_APPLY_ERROR
+        )
+        if(PATCH_APPLY_RESULT EQUAL 0)
+            message(STATUS "${EDGE_AGENT_PROJECT_LOG_PREFIX} Applied ESP-IDF patch '${PATCH_NAME}'")
+        else()
+            string(STRIP "${PATCH_APPLY_ERROR}" PATCH_APPLY_ERROR)
+            if(PATCH_APPLY_ERROR STREQUAL "")
+                set(PATCH_APPLY_ERROR "git apply exited with ${PATCH_APPLY_RESULT}")
+            endif()
+            message(WARNING "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF patch '${PATCH_NAME}' failed to apply: ${PATCH_APPLY_ERROR}")
+        endif()
+        return()
+    endif()
+
+    execute_process(
+        COMMAND "${EDGE_AGENT_GIT_EXECUTABLE}" -C "$ENV{IDF_PATH}" apply --reverse --check --whitespace=nowarn "${PATCH_PATH}"
+        RESULT_VARIABLE PATCH_REVERSE_RESULT
+        OUTPUT_QUIET
+        ERROR_QUIET
+    )
+    if(PATCH_REVERSE_RESULT EQUAL 0)
+        message(STATUS "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF patch '${PATCH_NAME}' already applied")
+        return()
+    endif()
+
+    string(STRIP "${PATCH_CHECK_ERROR}" PATCH_CHECK_ERROR)
+    if(PATCH_CHECK_ERROR STREQUAL "")
+        set(PATCH_CHECK_ERROR "git apply --check exited with ${PATCH_CHECK_RESULT}")
+    endif()
+    message(WARNING "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF patch '${PATCH_NAME}' skipped: ${PATCH_CHECK_ERROR}")
+endfunction()
+
 function(edge_agent_patch_file_replace FILE_PATH OLD_TEXT NEW_TEXT PATCH_NAME)
     if(NOT EXISTS "${FILE_PATH}")
         message(WARNING "${EDGE_AGENT_PROJECT_LOG_PREFIX} ESP-IDF patch '${PATCH_NAME}' skipped: file not found: ${FILE_PATH}")
@@ -43,6 +99,11 @@ function(edge_agent_patch_file_replace FILE_PATH OLD_TEXT NEW_TEXT PATCH_NAME)
     file(WRITE "${FILE_PATH}" "${FILE_CONTENT}")
     message(STATUS "${EDGE_AGENT_PROJECT_LOG_PREFIX} Applied ESP-IDF patch '${PATCH_NAME}'")
 endfunction()
+
+edge_agent_apply_idf_patch(
+    "${CMAKE_SOURCE_DIR}/tools/esp-idf-release-v6.2-spi2-sct-fix.patch"
+    "spi2_sct_fix"
+)
 
 # Upstream moved this repair from sample_edge NEG to shift_edge NEG later.
 # Treat both as fixed states so v5.5.4, release/v5.5 snapshots, and the

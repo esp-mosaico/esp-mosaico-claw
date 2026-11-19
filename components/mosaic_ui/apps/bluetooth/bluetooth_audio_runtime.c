@@ -381,7 +381,7 @@ cleanup:
     xSemaphoreTake(runtime->lock, portMAX_DELAY);
     runtime->stream_task = NULL;
     xSemaphoreGive(runtime->lock);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 static esp_err_t stream_task_start(bluetooth_audio_runtime_handle_t runtime,
@@ -394,10 +394,9 @@ static esp_err_t stream_task_start(bluetooth_audio_runtime_handle_t runtime,
     }
     runtime->stream = stream;
     runtime->stream_task_stop = false;
-    BaseType_t ok = xTaskCreate(bluetooth_stream_task, "mosaic_bt_pcm",
-                                BT_AUDIO_TASK_STACK, runtime,
-                                BT_AUDIO_TASK_PRIORITY,
-                                &runtime->stream_task);
+    BaseType_t ok = xTaskCreateWithCaps(bluetooth_stream_task,
+        "mosaic_bt_pcm", BT_AUDIO_TASK_STACK, runtime, BT_AUDIO_TASK_PRIORITY,
+        &runtime->stream_task, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     xSemaphoreGive(runtime->lock);
     return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
@@ -420,7 +419,7 @@ static void stream_task_stop(bluetooth_audio_runtime_handle_t runtime)
     xSemaphoreGive(runtime->lock);
     if (lingering_task) {
         ESP_LOGE(TAG, "force stopping stalled Bluetooth stream task");
-        vTaskDelete(lingering_task);
+        vTaskDeleteWithCaps(lingering_task);
     }
     (void)audio_mixer_track_stop(runtime->track);
 }

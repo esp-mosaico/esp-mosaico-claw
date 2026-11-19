@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -397,9 +398,9 @@ esp_err_t mosaic_loader_init(const mosaic_loader_config_t* config)
         cleanup_partial_init();
         return err;
     }
-    BaseType_t task_ok
-        = xTaskCreate(loader_task, "mosaic_runtime", MOSAIC_LOADER_TASK_STACK,
-            NULL, MOSAIC_LOADER_TASK_PRIORITY, &s_loader_task);
+    BaseType_t task_ok = xTaskCreateWithCaps(loader_task, "mosaic_runtime",
+        MOSAIC_LOADER_TASK_STACK, NULL, MOSAIC_LOADER_TASK_PRIORITY,
+        &s_loader_task, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (task_ok != pdPASS) {
         cleanup_partial_init();
         return ESP_ERR_NO_MEM;

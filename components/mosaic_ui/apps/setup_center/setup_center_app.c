@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "esp_gsp.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "qrcodegen.h"
 #if defined(ESP_PLATFORM)
@@ -186,9 +187,7 @@ static esp_gsp_err_t setup_notice_show(esp_gsp_handle_t ui, const mosaic_top_not
 }
 static mosaic_setup_app_request_cb_t s_app_request;
 static void *s_app_request_ctx;
-static setup_center_state_t s_setup = {
-    .network_list = ESP_GSP_LIST_NONE,
-};
+static EXT_RAM_BSS_ATTR setup_center_state_t s_setup;
 static bool s_pending_entry;
 static mosaic_setup_mode_t s_pending_mode;
 static mosaic_setup_route_t s_pending_route;

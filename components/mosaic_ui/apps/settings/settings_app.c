@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "esp_gsp.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "mosaic_app_catalog.h"
@@ -201,7 +202,7 @@ typedef struct {
     settings_wlan_state_t wlan;
 } settings_ui_state_t;
 
-static mosaic_settings_wifi_ap_t
+static EXT_RAM_BSS_ATTR mosaic_settings_wifi_ap_t
     s_wlan_networks[MOSAIC_SETTINGS_WIFI_SCAN_MAX];
 static size_t s_wlan_network_count;
 
@@ -229,16 +230,8 @@ static void settings_wlan_phone_refresh(esp_gsp_handle_t ui);
 static void settings_wlan_complete_phone_setup(esp_gsp_handle_t ui);
 static void settings_wlan_apply_phone_status(
     esp_gsp_handle_t ui, const mosaic_settings_network_t *network);
-static settings_ui_state_t s_state = {
-    .brightness = SETTINGS_DEFAULT_BRIGHTNESS,
-    .volume = SETTINGS_DEFAULT_VOLUME,
-    .brightness_hw_available = true,
-    .sound_effect_enabled = true,
-    .wlan = {
-        .enabled = true,
-        .auto_join = true,
-    },
-};
+static EXT_RAM_BSS_ATTR settings_ui_state_t s_state;
+static bool s_state_initialized;
 
 typedef struct {
     mosaic_battery_event_cb_t callback;
@@ -272,6 +265,20 @@ static bool s_wifi_cache_valid;
 static mosaic_wifi_subscriber_t
     s_wifi_subscribers[MOSAIC_SETTINGS_WIFI_SUBSCRIBER_MAX];
 
+static void settings_state_init_once(void)
+{
+    if (s_state_initialized) {
+        return;
+    }
+    s_state.brightness = SETTINGS_DEFAULT_BRIGHTNESS;
+    s_state.volume = SETTINGS_DEFAULT_VOLUME;
+    s_state.brightness_hw_available = true;
+    s_state.sound_effect_enabled = true;
+    s_state.wlan.enabled = true;
+    s_state.wlan.auto_join = true;
+    s_state_initialized = true;
+}
+
 static void keep_first_error(esp_err_t *result, esp_err_t candidate)
 {
     if (*result == ESP_OK && candidate != ESP_OK) {
@@ -287,6 +294,7 @@ esp_err_t mosaic_settings_configure(const mosaic_settings_ops_t *ops)
             ops->request_network_reconfigure == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
+    settings_state_init_once();
     s_state.ops = *ops;
     return ESP_OK;
 }
@@ -3210,6 +3218,7 @@ static void settings_event(
     }
     switch (event->type) {
     case MOSAIC_EVENT_START:
+        settings_state_init_once();
         s_state.ui = ui;
         atomic_store_explicit(
             &s_state.display_render_pending, false, memory_order_release);

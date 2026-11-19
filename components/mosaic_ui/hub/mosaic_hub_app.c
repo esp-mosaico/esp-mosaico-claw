@@ -16,6 +16,7 @@
 #include "mosaic_ui.h"
 #include "mosaic_settings.h"
 #include "mosaic_module_notice.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
@@ -90,7 +91,7 @@ static struct {
     int year, day, hour, minute;
 } s_clock_text;
 #if defined(ESP_PLATFORM)
-static weather_service_snapshot_t s_weather_info;
+static EXT_RAM_BSS_ATTR weather_service_snapshot_t s_weather_info;
 static bool s_weather_pending;
 static bool s_weather_seen;
 static bool s_weather_subscribed;

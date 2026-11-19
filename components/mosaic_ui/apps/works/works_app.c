@@ -57,6 +57,7 @@ static void works_clear_rows(esp_gsp_handle_t ui)
 #if defined(ESP_PLATFORM)
 
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "mosaic_loader.h"
 #include "works_runtime.h"
 
@@ -121,7 +122,7 @@ typedef struct {
     unsigned token;
 } works_icon_request_t;
 
-static works_icon_t s_icons[WORKS_ROW_COUNT];
+static EXT_RAM_BSS_ATTR works_icon_t s_icons[WORKS_ROW_COUNT];
 
 static void works_reset_icon(size_t row)
 {

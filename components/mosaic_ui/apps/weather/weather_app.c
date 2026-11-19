@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h"
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
 #include "mosaic_i18n.h"
@@ -32,15 +33,15 @@ typedef struct {
     size_t icon_size;
 } weather_forecast_row_t;
 
-static weather_forecast_row_t s_forecast_rows[WEATHER_FORECAST_DAYS];
+static EXT_RAM_BSS_ATTR weather_forecast_row_t s_forecast_rows[WEATHER_FORECAST_DAYS];
 static esp_gsp_list_t s_forecast_list = ESP_GSP_LIST_NONE;
 static esp_gsp_list_t s_city_list = ESP_GSP_LIST_NONE;
 static bool s_location_page, s_keyboard_active;
-static char s_city_labels[6][128];
+static EXT_RAM_BSS_ATTR char s_city_labels[6][128];
 #if defined(ESP_PLATFORM)
 static uint32_t s_rendered_sequence;
 static bool s_rendered_stale;
-static weather_city_search_t s_city_search;
+static EXT_RAM_BSS_ATTR weather_city_search_t s_city_search;
 #endif
 
 static void weather_forecast_set_icon(weather_forecast_row_t *row,
@@ -129,7 +130,7 @@ static void weather_forecast_attach(esp_gsp_handle_t ui)
 #include "freertos/FreeRTOS.h"
 #include "weather_service.h"
 
-static weather_service_snapshot_t s_pending;
+static EXT_RAM_BSS_ATTR weather_service_snapshot_t s_pending;
 static bool s_pending_valid, s_pending_seen;
 static bool s_subscribed;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;

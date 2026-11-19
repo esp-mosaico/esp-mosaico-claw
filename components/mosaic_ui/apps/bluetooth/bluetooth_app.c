@@ -372,6 +372,14 @@ static void bluetooth_event(esp_gsp_handle_t ui,
         break;
     case MOSAIC_EVENT_TIMER:
         bluetooth_try_start();
+        if (s_runtime) {
+            esp_err_t err = bluetooth_audio_runtime_refresh_play_status(
+                s_runtime);
+            if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+                ESP_LOGW(TAG, "refresh Bluetooth play status failed: %s",
+                         esp_err_to_name(err));
+            }
+        }
         bluetooth_render(ui);
         break;
     case MOSAIC_EVENT_MODEL_CHANGED:

@@ -16,5 +16,6 @@ set(MOSAIC_APP_TICK_MS 1000)
 if(ESP_PLATFORM)
     set(MOSAIC_APP_EXTRA_SOURCES
         bluetooth_audio_runtime.c
-        bluetooth_a2dp_lifecycle.c)
+        bluetooth_a2dp_lifecycle.c
+        bluetooth_avrcp_compat.c)
 endif()

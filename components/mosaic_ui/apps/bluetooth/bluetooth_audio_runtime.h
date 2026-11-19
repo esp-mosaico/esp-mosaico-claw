@@ -62,6 +62,8 @@ esp_err_t bluetooth_audio_runtime_stop(bluetooth_audio_runtime_handle_t runtime)
 esp_err_t bluetooth_audio_runtime_get_snapshot(
     bluetooth_audio_runtime_handle_t runtime,
     bluetooth_audio_snapshot_t *out_snapshot);
+esp_err_t bluetooth_audio_runtime_refresh_play_status(
+    bluetooth_audio_runtime_handle_t runtime);
 
 /**
  * Transfers the newest encoded cover image to the caller. The returned

@@ -8,8 +8,10 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h"
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_i18n.h"
 #include "weather_binds.h"
 #include "weather_actions.h"
 #include "mosaic_runtime.h"
@@ -31,15 +33,15 @@ typedef struct {
     size_t icon_size;
 } weather_forecast_row_t;
 
-static weather_forecast_row_t s_forecast_rows[WEATHER_FORECAST_DAYS];
+static EXT_RAM_BSS_ATTR weather_forecast_row_t s_forecast_rows[WEATHER_FORECAST_DAYS];
 static esp_gsp_list_t s_forecast_list = ESP_GSP_LIST_NONE;
 static esp_gsp_list_t s_city_list = ESP_GSP_LIST_NONE;
 static bool s_location_page, s_keyboard_active;
-static char s_city_labels[6][128];
+static EXT_RAM_BSS_ATTR char s_city_labels[6][128];
 #if defined(ESP_PLATFORM)
 static uint32_t s_rendered_sequence;
 static bool s_rendered_stale;
-static weather_city_search_t s_city_search;
+static EXT_RAM_BSS_ATTR weather_city_search_t s_city_search;
 #endif
 
 static void weather_forecast_set_icon(weather_forecast_row_t *row,
@@ -128,7 +130,7 @@ static void weather_forecast_attach(esp_gsp_handle_t ui)
 #include "freertos/FreeRTOS.h"
 #include "weather_service.h"
 
-static weather_service_snapshot_t s_pending;
+static EXT_RAM_BSS_ATTR weather_service_snapshot_t s_pending;
 static bool s_pending_valid, s_pending_seen;
 static bool s_subscribed;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -178,8 +180,8 @@ static void weather_render(esp_gsp_handle_t ui,
         city = snapshot->city;
     }
     (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_TEMPERATURE, temperature);
-    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_CONDITION, condition);
-    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_CITY, city);
+    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_CONDITION, mosaic_i18n_text(condition));
+    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_CITY, mosaic_i18n_text(city));
     for (size_t i = 0; i < WEATHER_SERVICE_FORECAST_DAYS; ++i) {
         const weather_service_day_t *day = &snapshot->forecast[i];
         weather_forecast_row_t *row = &s_forecast_rows[i];
@@ -200,12 +202,12 @@ static void weather_render(esp_gsp_handle_t ui,
     if (s_forecast_list != ESP_GSP_LIST_NONE) {
         (void)gsp_weather_weather_forecast_list_refresh(ui, s_forecast_list);
     }
-    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_STATUS,
-                          !snapshot->online ? "OFFLINE" :
-                          snapshot->location_stale ? "LOCATION?" :
-                          snapshot->stale ? "CACHED" :
-                          !snapshot->weather_valid ? (snapshot->last_error == ESP_OK ? "UPDATING" : "RETRY") :
-                          snapshot->location_source == WEATHER_LOCATION_MANUAL ? "SELECTED" : "IP ESTIMATE");
+    const char *status = !snapshot->online ? "OFFLINE" :
+                         snapshot->location_stale ? "LOCATION?" :
+                         snapshot->stale ? "CACHED" :
+                         !snapshot->weather_valid ? (snapshot->last_error == ESP_OK ? "UPDATING" : "RETRY") :
+                         snapshot->location_source == WEATHER_LOCATION_MANUAL ? "SELECTED" : "IP ESTIMATE";
+    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_STATUS, mosaic_i18n_text(status));
     s_rendered_sequence = snapshot->sequence;
     s_rendered_stale = snapshot->stale;
 
@@ -255,7 +257,7 @@ static void weather_location_refresh(esp_gsp_handle_t ui)
         search.state==WEATHER_SEARCH_FAILED ? "Search unavailable. Try again." :
         search.state==WEATHER_SEARCH_IDLE ? "Search for your city" :
         search.count==0 ? "No cities found. Add a country." : "Select a city";
-    (void)esp_gsp_set_text(ui,GSP_BIND_WEATHER_CITY_SEARCH_STATUS,text);
+    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_CITY_SEARCH_STATUS, mosaic_i18n_text(text));
     const uint32_t count=search.state==WEATHER_SEARCH_COMPLETE ? search.count : 0;
     for (uint32_t i=0;i<count;++i) {
         const weather_city_t *c=&search.cities[i];
@@ -293,7 +295,7 @@ static void weather_find_city(esp_gsp_handle_t ui)
     char query[WEATHER_SERVICE_QUERY_LEN];
     if (esp_gsp_keyboard_text(ui,query,sizeof(query))!=ESP_GSP_OK ||
             weather_service_search_city(query)!=ESP_OK) {
-        (void)esp_gsp_set_text(ui,GSP_BIND_WEATHER_CITY_QUERY_HINT,"Enter at least 2 letters");
+        (void)esp_gsp_set_text(ui,GSP_BIND_WEATHER_CITY_QUERY_HINT,mosaic_i18n_text("Enter at least 2 letters"));
         return;
     }
     weather_keyboard_detach(ui);
@@ -305,9 +307,30 @@ static void weather_find_city(esp_gsp_handle_t ui)
 #endif
 }
 
+static void weather_localize(esp_gsp_handle_t ui)
+{
+    static const struct { uint16_t bind; const char *text; } fields[] = {
+        {GSP_BIND_WEATHER_LOCATION_TITLE_TEXT, "Location"},
+        {GSP_BIND_WEATHER_USE_NETWORK_TEXT, "Use network location"},
+        {GSP_BIND_WEATHER_CITY_SEARCH_TEXT, "Search city"},
+        {GSP_BIND_WEATHER_SEARCH_TITLE_TEXT, "Search city"},
+        {GSP_BIND_WEATHER_CITY_FIND_TEXT, "Find"},
+        {GSP_BIND_WEATHER_CITY_DATA_TEXT, "City data: GeoNames / Open-Meteo"},
+        {GSP_BIND_WEATHER_CITY_QUERY_HINT, "City or city, country (e.g. Suzhou, CN)"},
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+        (void)esp_gsp_set_text(ui, fields[i].bind, mosaic_i18n_text(fields[i].text));
+    }
+    (void)esp_gsp_set_text(ui, GSP_BIND_WEATHER_CITY_SEARCH_STATUS, mosaic_i18n_text("Search for your city"));
+}
+
 static void weather_event(esp_gsp_handle_t ui, const struct mosaic_event *raw)
 {
     const mosaic_event_t *event=raw;
+    if (event != NULL && event->type == MOSAIC_EVENT_SCENE_CHANGED) {
+        weather_localize(ui);
+        return;
+    }
     if (event==NULL || event->type!=MOSAIC_EVENT_UI_CALL) return;
     switch (event->data.call.action_id) {
     case GSP_ACT_ID_WEATHER_OPEN_LOCATION:
@@ -341,7 +364,7 @@ static void weather_event(esp_gsp_handle_t ui, const struct mosaic_event *raw)
     case GSP_ACT_ID_WEATHER_USE_NETWORK:
 #if defined(ESP_PLATFORM)
         if (weather_service_use_network_location()==ESP_OK) (void)weather_back(ui,event->timestamp_us);
-        else (void)esp_gsp_set_text(ui,GSP_BIND_WEATHER_CITY_SEARCH_STATUS,"Could not save location. Retry.");
+        else (void)esp_gsp_set_text(ui,GSP_BIND_WEATHER_CITY_SEARCH_STATUS,mosaic_i18n_text("Could not save location. Retry."));
 #endif
         break;
     case GSP_ACT_ID_WEATHER_SELECT_CITY:
@@ -349,7 +372,7 @@ static void weather_event(esp_gsp_handle_t ui, const struct mosaic_event *raw)
         if (s_city_search.state==WEATHER_SEARCH_COMPLETE && event->data.call.item<s_city_search.count) {
             if (weather_service_set_city(&s_city_search.cities[event->data.call.item])==ESP_OK) {
                 (void)weather_back(ui,event->timestamp_us);
-            } else (void)esp_gsp_set_text(ui,GSP_BIND_WEATHER_CITY_SEARCH_STATUS,"Could not save city. Retry.");
+            } else (void)esp_gsp_set_text(ui,GSP_BIND_WEATHER_CITY_SEARCH_STATUS,mosaic_i18n_text("Could not save city. Retry."));
         }
 #endif
         break;
@@ -375,6 +398,7 @@ static void weather_tick(esp_gsp_handle_t ui, void *user_ctx)
 static void weather_started(esp_gsp_handle_t ui)
 {
     s_location_page=s_keyboard_active=false;
+    weather_localize(ui);
     weather_render_dates(ui);
     weather_forecast_attach(ui);
     s_city_list=gsp_weather_weather_city_results_bind(ui,weather_city_bind_item,NULL);

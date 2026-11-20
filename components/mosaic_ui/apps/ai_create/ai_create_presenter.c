@@ -11,6 +11,7 @@
 
 #include "ai_create_binds.h"
 #include "ai_create_objects.h"
+#include "mosaic_i18n.h"
 
 struct ai_create_presenter_t {
     uint32_t rendered_revision;
@@ -428,10 +429,12 @@ static esp_err_t render_sessions(esp_gsp_handle_t ui,
     const size_t session_count = sessions ? sessions->session_count : 0U;
     const size_t page_count = (session_count + AI_CREATE_SESSION_PAGE_SIZE - 1U) /
                               AI_CREATE_SESSION_PAGE_SIZE;
-    if (page_count > 1U) {
-        snprintf(count, sizeof(count), "%u sessions · Swipe left/right · %u/%u",
-                 (unsigned)session_count, (unsigned)(session_page + 1U),
-                 (unsigned)page_count);
+    if (page_count > 1U && mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+        snprintf(count, sizeof(count), "%u 个会话 · 左右滑动 · %u/%u", (unsigned)session_count, (unsigned)(session_page + 1U), (unsigned)page_count);
+    } else if (page_count > 1U) {
+        snprintf(count, sizeof(count), "%u sessions · Swipe left/right · %u/%u", (unsigned)session_count, (unsigned)(session_page + 1U), (unsigned)page_count);
+    } else if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+        snprintf(count, sizeof(count), "%u 个会话", (unsigned)session_count);
     } else {
         snprintf(count, sizeof(count), "%u sessions", (unsigned)session_count);
     }
@@ -481,8 +484,7 @@ static esp_err_t render_sessions(esp_gsp_handle_t ui,
         if (present &&
             strcmp(sessions->sessions[session_index],
                    sessions->current_alias) == 0) {
-            snprintf(title, sizeof(title), "%s · Current",
-                     sessions->sessions[session_index]);
+            snprintf(title, sizeof(title), mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN ? "%s · 当前" : "%s · Current", sessions->sessions[session_index]);
         } else if (present) {
             strlcpy(title, sessions->sessions[session_index], sizeof(title));
         }
@@ -524,11 +526,11 @@ static bool message_at(const ai_create_presenter_handle_t presenter,
     }
     const ai_create_message_t *message =
         &presenter->transcript.messages[index];
-    const char *text = message->text;
+    const char *text = message->pending || message->error ? mosaic_i18n_text(message->text) : message->text;
     if (!text[0] && message->pending) {
         text = "…";
     } else if (!text[0] && message->error) {
-        text = "Request failed";
+        text = mosaic_i18n_text("Request failed");
     }
     uint64_t id = ((uint64_t)message->request_id << 1U) |
                   (uint64_t)message->role;
@@ -814,15 +816,15 @@ esp_err_t ai_create_presenter_render(
         const mode_copy_t *copy = model->mode < CAP_IM_AI_CREATE_MODE_COUNT
                                       ? &s_modes[model->mode]
                                       : &s_modes[CAP_IM_AI_CREATE_MODE_QUICK];
-        (void)esp_gsp_set_text(ui, GSP_BIND_AI_MODE_TITLE, copy->title);
+        (void)esp_gsp_set_text(ui, GSP_BIND_AI_MODE_TITLE, mosaic_i18n_text(copy->title));
     }
     if (voice_availability_changed) {
         const char *prompt = voice_unavailable_copy(
             model->voice_status.readiness);
         (void)esp_gsp_set_text(
-            ui, GSP_BIND_AI_WELCOME_DEFAULT_PROMPT, prompt);
+            ui, GSP_BIND_AI_WELCOME_DEFAULT_PROMPT, mosaic_i18n_text(prompt));
         (void)esp_gsp_set_text(
-            ui, GSP_BIND_AI_CHAT_DEFAULT_PROMPT, prompt);
+            ui, GSP_BIND_AI_CHAT_DEFAULT_PROMPT, mosaic_i18n_text(prompt));
     }
     if (mode_changed || voice_availability_changed) {
         const mode_copy_t *copy = model->mode < CAP_IM_AI_CREATE_MODE_COUNT
@@ -831,13 +833,13 @@ esp_err_t ai_create_presenter_render(
         (void)esp_gsp_set_text(
             ui, GSP_BIND_AI_MODE_PROMPT,
             model->voice_status.readiness == AI_CREATE_VOICE_READINESS_READY
-                ? copy->prompt
-                : voice_unavailable_copy(model->voice_status.readiness));
+                ? mosaic_i18n_text(copy->prompt)
+                : mosaic_i18n_text(voice_unavailable_copy(model->voice_status.readiness)));
     }
     if (model_changed && voice) {
         (void)esp_gsp_set_text(ui, GSP_BIND_AI_VOICE_TEXT,
-                               model->input[0] ? model->input : "Listening…");
-        (void)esp_gsp_set_text(ui, GSP_BIND_AI_VOICE_HINT, voice_hint(model));
+                               model->input[0] ? model->input : mosaic_i18n_text("Listening…"));
+        (void)esp_gsp_set_text(ui, GSP_BIND_AI_VOICE_HINT, mosaic_i18n_text(voice_hint(model)));
     }
     const char *notice = model->notice_visible
         ? (model->notice[0] ? model->notice
@@ -848,7 +850,7 @@ esp_err_t ai_create_presenter_render(
         strcmp(presenter->rendered_notice, notice) != 0) {
         (void)esp_gsp_set_visible(ui, GSP_BIND_AI_NOTICE_VISIBLE,
                                   model->notice_visible);
-        (void)esp_gsp_set_text(ui, GSP_BIND_AI_NOTICE_TEXT, notice);
+        (void)esp_gsp_set_text(ui, GSP_BIND_AI_NOTICE_TEXT, mosaic_i18n_text(notice));
         presenter->rendered_notice_visible = model->notice_visible;
         strlcpy(presenter->rendered_notice, notice,
                 sizeof(presenter->rendered_notice));

@@ -10,9 +10,18 @@ from scene_common import ASCII_PRINTABLE, container, image, label, layer, button
 from rotate_scene import rotate_scene
 
 
+def localized_label(parent, x, y, w, h, text, bind, *, charset=None, **kwargs):
+    obj = label(parent, x, y, w, h, text, bind=bind, name=bind, **kwargs)
+    obj["runtime_text"] = True
+    obj["font_charset"] = charset or "".join(sorted(set(text)))
+    return obj
+
+
 def main():
     objs = [container(-1, 0, 0, 480, 480, name="root")]
     objs.append(image(0, "../assets/interact_board.png", 0, 0, 480, 480))
+    objs.append(container(0, 44, 12, 310, 40, bg="#000000"))
+    objs.append(localized_label(0, 46, 14, 300, 36, "Interaction Module", "interaction_title_text", size=28, color="#E7E7EB"))
 
     # LED cards retain the hardware colors while following the dashboard layout.
     cards = [(12, "#FF4040"), (127, "#40FF70"), (242, "#4080FF"), (357, "#C060FF")]
@@ -41,7 +50,7 @@ def main():
         objs.append(container(group, 0, 0, 226, 233, bg="#00000000", border="#4CFF85", border_w=3, radius=8))
         objs.append(container(group, 13, 13, 34, 34, bg="#4CFF85", border="#D9FFE6", border_w=2, radius=17))
         objs.append(container(group, 47, 190, 132, 28, bg="#4CFF85", radius=7))
-        objs.append(label(group, 47, 192, 132, 24, "PRESSED", size=18, color="#071A0D", align="center"))
+        objs.append(localized_label(group, 47, 192, 132, 24, "PRESSED", f"key_{led}_pressed_text", size=18, color="#071A0D", align="center"))
         objs.append(button(0, x, 131, 226, 233, "", radius=8, opacity=0, callback=f"led_{led}"))
 
     objs.append(label(0, 222, 413, 36, 22, "--", size=17, align="center", color="#101010"))
@@ -50,17 +59,18 @@ def main():
     active.update(bind="pir", bind_target="visible", hidden=True)
     objs.append(active)
     objs.append(container(group, 25, 30, 176, 56, bg="#FF8A20", opacity=105, radius=28, border="#FFC080", border_w=2))
-    objs.append(label(group, 25, 45, 176, 27, "MOTION", size=20, color="#201000", align="center"))
+    objs.append(localized_label(group, 25, 45, 176, 27, "MOTION", "pir_motion_text", size=20, color="#201000", align="center"))
 
     objs.append(button(0, 12, 368, 111, 98, "", radius=8, opacity=0, callback="ir_send"))
-    objs.append(label(0, 40, 410, 56, 28, "OFF", size=17, align="center", bind="ir_status", color="#0A0A0A"))
+    objs.append(localized_label(0, 40, 410, 56, 28, "OFF", "ir_status", charset="AEFINDOST", size=17, align="center", color="#0A0A0A"))
 
     # Let the LDR indicator track the measured percentage as well as the text.
     ldr_glow = container(0, 385, 397, 56, 56, bg="#303030", radius=28, opacity=255, bind="ldr_glow")
     ldr_glow["bind_target"] = "color"
     objs.append(ldr_glow)
     objs.append(label(0, 374, 411, 58, 26, "--%", size=17, align="center", bind="light", color="#0A0A0A"))
-    objs.append(label(0, 23, 48, 255, 13, "", size=10, bind="status", color="#91919B"))
+    status_charset = "".join(sorted(set("Connecting... Init failed Open failed Left connected Right connected Board in use Connect interaction board Board disconnected Sensor read failed LED write failed Out of memory Preview - no hardware")))
+    objs.append(localized_label(0, 23, 48, 255, 16, "", "status", charset=status_charset, size=10, color="#91919B"))
 
     # Keep input selection compact beside the hardware title.
     objs.append({
@@ -69,6 +79,7 @@ def main():
         "name": "input_mode_dropdown",
         "callback": "input_mode_select",
         "options": ["BUTTON", "TOUCH"],
+        "dynamic_options": True, "option_text_max_bytes": 12,
         "selected": 1, "item_height": 38,
         "font_size": 15, "fg_color": "#E7E7EB",
         "bg_color": "#222224", "panel_color": "#29292C",
@@ -80,10 +91,10 @@ def main():
     objs.append(unavailable)
     objs.append(container(len(objs) - 1, 0, 0, 420, 116, bg="#161616", radius=18, border="#68686C", border_w=2, opacity=245))
     objs.append(container(len(objs) - 2, 18, 18, 8, 80, bg="#FF4C01", radius=4))
-    objs.append(label(len(objs) - 3, 42, 22, 354, 34, "MODULE NOT CONNECTED", size=20, color="#F0F0F4", align="center"))
-    objs.append(label(len(objs) - 4, 42, 62, 354, 28, "CONTROLS UNAVAILABLE", size=14, color="#9C9CA4", align="center"))
+    objs.append(localized_label(len(objs) - 3, 42, 22, 354, 34, "MODULE NOT CONNECTED", "module_unavailable_title_text", size=20, color="#F0F0F4", align="center"))
+    objs.append(localized_label(len(objs) - 4, 42, 62, 354, 28, "CONTROLS UNAVAILABLE", "module_unavailable_hint_text", size=14, color="#9C9CA4", align="center"))
     for obj in objs:
-        if obj["type"] in ("label", "button"):
+        if obj["type"] in ("label", "button") and "font_charset" not in obj:
             obj["font_charset"] = ASCII_PRINTABLE
     write_scene(scene_out_path(HERE, "interact_480.json"), "interact", rotate_scene(objs, HERE, DEJAVU_SANS, rotate=False), font=DEJAVU_SANS)
 

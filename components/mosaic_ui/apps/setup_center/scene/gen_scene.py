@@ -20,6 +20,7 @@ from scene_common import (  # noqa: E402
     image,
     label,
     layer,
+    mark_i18n,
     scene_out_path,
     shared_prefix,
     top_notice,
@@ -235,11 +236,11 @@ def build_integrations(objs, parent):
     topbar(objs, parent, back="setup_center_close", title="AI & INTEGRATIONS")
     objs.append(label(parent, 24, 68, 432, 58, "AI & Integrations", size=44))
     objs.append(label(parent, 24, 126, 432, 30,
-                      "Model and message channel setup", size=20,
+                      "Model and account setup", size=20,
                       color=MUTED))
     status_card(objs, parent, 172, "AI Model", "Not configured",
                 "setup_integrations_llm", "setup_overview_llm")
-    status_card(objs, parent, 272, "IM Channels", "Not linked",
+    status_card(objs, parent, 272, "IM Channel", "Not linked",
                 "setup_integrations_wechat", "setup_overview_wechat")
 
 
@@ -601,6 +602,7 @@ def main():
     build_region(objs, page(objs, stack, PAGE_REGION))
     top_notice(objs, content, name="setup_top_notice",
                title="Connection failed", message="Incorrect password")
+    mark_i18n(objs, "setup_center")
     # Canvas needs its own resource view even when placeholders are shared.
     for obj in objs:
         if obj.get("type") == "image" and obj.get("bind", "").endswith("_qr_canvas"):

@@ -13,6 +13,7 @@
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
 #include "mosaic_imu.h"
+#include "mosaic_i18n.h"
 
 #include "mosaic_demo.h"
 
@@ -82,6 +83,9 @@ static void imu_tick(esp_gsp_handle_t ui, void *user_ctx)
 
 static void imu_started(esp_gsp_handle_t ui)
 {
+    (void)esp_gsp_set_text(ui, GSP_BIND_IMU_PITCH_TITLE, mosaic_i18n_text("Pitch"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_IMU_ROLL_TITLE, mosaic_i18n_text("Roll"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_IMU_YAW_TITLE, mosaic_i18n_text("Yaw"));
     imu_tick(ui, NULL);
     (void)esp_gsp_timer_create(ui, s_imu_ops.read != NULL ? 50 : 800,
                                imu_tick, NULL);

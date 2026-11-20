@@ -4,6 +4,7 @@
  */
 
 #include "bluetooth_audio_runtime.h"
+#include "bluetooth_avrcp_compat.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -23,7 +24,6 @@
 #include "esp_bt_audio_host.h"
 #include "esp_bt_audio_playback.h"
 #include "esp_bt_audio_stream.h"
-#include "esp_bt_audio_vol.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -70,6 +70,7 @@ struct bluetooth_audio_runtime {
     uint8_t peer_addr[6];
     uint8_t *cover_data;
     size_t cover_size;
+    uint32_t play_status_revision;
 };
 
 static const char *TAG = "mosaic_bt_audio";
@@ -381,7 +382,7 @@ cleanup:
     xSemaphoreTake(runtime->lock, portMAX_DELAY);
     runtime->stream_task = NULL;
     xSemaphoreGive(runtime->lock);
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 static esp_err_t stream_task_start(bluetooth_audio_runtime_handle_t runtime,
@@ -394,10 +395,9 @@ static esp_err_t stream_task_start(bluetooth_audio_runtime_handle_t runtime,
     }
     runtime->stream = stream;
     runtime->stream_task_stop = false;
-    BaseType_t ok = xTaskCreate(bluetooth_stream_task, "mosaic_bt_pcm",
-                                BT_AUDIO_TASK_STACK, runtime,
-                                BT_AUDIO_TASK_PRIORITY,
-                                &runtime->stream_task);
+    BaseType_t ok = xTaskCreateWithCaps(bluetooth_stream_task,
+        "mosaic_bt_pcm", BT_AUDIO_TASK_STACK, runtime, BT_AUDIO_TASK_PRIORITY,
+        &runtime->stream_task, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     xSemaphoreGive(runtime->lock);
     return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }
@@ -420,7 +420,7 @@ static void stream_task_stop(bluetooth_audio_runtime_handle_t runtime)
     xSemaphoreGive(runtime->lock);
     if (lingering_task) {
         ESP_LOGE(TAG, "force stopping stalled Bluetooth stream task");
-        vTaskDelete(lingering_task);
+        vTaskDeleteWithCaps(lingering_task);
     }
     (void)audio_mixer_track_stop(runtime->track);
 }
@@ -583,6 +583,7 @@ static void bluetooth_event(esp_bt_audio_event_t event, void *event_data,
     }
     case ESP_BT_AUDIO_EVENT_PLAYBACK_STATUS_CHG: {
         const esp_bt_audio_event_playback_st_t *status = event_data;
+        bool request_duration = false;
         xSemaphoreTake(runtime->lock, portMAX_DELAY);
         if (status->event ==
                 ESP_BT_AUDIO_PLAYBACK_EVENT_PLAY_STATUS_CHANGE) {
@@ -592,6 +593,8 @@ static void bluetooth_event(esp_bt_audio_event_t event, void *event_data,
             runtime->model.state = runtime->model.playing ?
                 BLUETOOTH_AUDIO_STATE_PLAYING :
                 BLUETOOTH_AUDIO_STATE_PAUSED;
+            request_duration = runtime->model.playing &&
+                runtime->model.duration_ms == 0;
         } else if (status->event ==
                    ESP_BT_AUDIO_PLAYBACK_EVENT_PLAY_POS_CHANGED) {
             runtime->model.position_ms = status->evt_param.position;
@@ -612,6 +615,13 @@ static void bluetooth_event(esp_bt_audio_event_t event, void *event_data,
                 ESP_BT_AUDIO_PLAYBACK_METADATA_ARTIST |
                 ESP_BT_AUDIO_PLAYBACK_METADATA_PLAYING_TIME |
                 ESP_BT_AUDIO_PLAYBACK_METADATA_COVER_ART);
+        } else if (request_duration) {
+            esp_err_t err = esp_bt_audio_playback_request_metadata(
+                ESP_BT_AUDIO_PLAYBACK_METADATA_PLAYING_TIME);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "request playback duration failed: %s",
+                         esp_err_to_name(err));
+            }
         }
         runtime_notify(runtime);
         break;
@@ -619,21 +629,9 @@ static void bluetooth_event(esp_bt_audio_event_t event, void *event_data,
     case ESP_BT_AUDIO_EVENT_PLAYBACK_METADATA:
         playback_metadata_event(runtime, event_data);
         break;
-    case ESP_BT_AUDIO_EVENT_VOL_ABSOLUTE: {
-        const esp_bt_audio_event_vol_absolute_t *volume = event_data;
-        int percent = volume->mute ? 0 : (volume->vol * 100 + 63) / 127;
-        (void)audio_mixer_set_output_volume(runtime->mixer, percent);
-        xSemaphoreTake(runtime->lock, portMAX_DELAY);
-        runtime->model.volume_percent = percent;
-        xSemaphoreGive(runtime->lock);
-        runtime_notify(runtime);
-        break;
-    }
+    /* Keep the device mixer independent from the phone volume. */
+    case ESP_BT_AUDIO_EVENT_VOL_ABSOLUTE:
     case ESP_BT_AUDIO_EVENT_VOL_RELATIVE:
-        (void)bluetooth_audio_runtime_adjust_volume(
-            runtime,
-            ((const esp_bt_audio_event_vol_relative_t *)event_data)->up_down ?
-                5 : -5);
         break;
     default:
         break;
@@ -692,6 +690,8 @@ esp_err_t bluetooth_audio_runtime_start(bluetooth_audio_runtime_handle_t runtime
     runtime->model.error[0] = '\0';
     xSemaphoreGive(runtime->lock);
     runtime_notify(runtime);
+    bluetooth_avrcp_compat_reset();
+    runtime->play_status_revision = 0;
 
     esp_err_t err = audio_mixer_open_track(runtime->mixer,
         AUDIO_MIXER_TRACK_APP, "mosaic/bluetooth", &runtime->track);
@@ -802,7 +802,9 @@ esp_err_t bluetooth_audio_runtime_stop(bluetooth_audio_runtime_handle_t runtime)
     runtime->started = false;
     runtime->stopping = false;
     runtime->stream = NULL;
+    bluetooth_avrcp_compat_reset();
     xSemaphoreTake(runtime->lock, portMAX_DELAY);
+    runtime->play_status_revision = 0;
     runtime->model.state = BLUETOOTH_AUDIO_STATE_OFF;
     runtime->model.connected = false;
     runtime->model.playing = false;
@@ -823,6 +825,43 @@ esp_err_t bluetooth_audio_runtime_get_snapshot(
     *out_snapshot = runtime->model;
     xSemaphoreGive(runtime->lock);
     return ESP_OK;
+}
+
+esp_err_t bluetooth_audio_runtime_refresh_play_status(
+    bluetooth_audio_runtime_handle_t runtime)
+{
+    if (!runtime) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    xSemaphoreTake(runtime->lock, portMAX_DELAY);
+    bool connected = runtime->model.connected;
+    xSemaphoreGive(runtime->lock);
+    if (!connected) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    bluetooth_avrcp_play_status_t status = {0};
+    uint32_t revision = 0;
+    bool changed = bluetooth_avrcp_compat_get_play_status(
+        &status, &revision) && revision != runtime->play_status_revision;
+    if (changed) {
+        xSemaphoreTake(runtime->lock, portMAX_DELAY);
+        if (status.duration_ms != UINT32_MAX) {
+            runtime->model.duration_ms = status.duration_ms;
+        }
+        if (status.position_ms != UINT32_MAX) {
+            runtime->model.position_ms = status.position_ms;
+        }
+        runtime->model.playing = status.playing;
+        runtime->model.state = runtime->model.playing ?
+            BLUETOOTH_AUDIO_STATE_PLAYING : BLUETOOTH_AUDIO_STATE_PAUSED;
+        runtime->play_status_revision = revision;
+        xSemaphoreGive(runtime->lock);
+        runtime_notify(runtime);
+    }
+
+    esp_err_t err = bluetooth_avrcp_compat_request_play_status();
+    return err == ESP_ERR_INVALID_STATE ? ESP_OK : err;
 }
 
 esp_err_t bluetooth_audio_runtime_take_cover(
@@ -902,12 +941,8 @@ esp_err_t bluetooth_audio_runtime_set_volume(
     ESP_RETURN_ON_ERROR(audio_mixer_set_output_volume(runtime->mixer, volume),
                         TAG, "set output volume");
     xSemaphoreTake(runtime->lock, portMAX_DELAY);
-    const bool connected = runtime->model.connected;
     runtime->model.volume_percent = volume;
     xSemaphoreGive(runtime->lock);
-    if (connected) {
-        (void)esp_bt_audio_vol_set_absolute((volume * 127 + 50) / 100);
-    }
     runtime_notify(runtime);
     return ESP_OK;
 }
@@ -957,6 +992,13 @@ esp_err_t bluetooth_audio_runtime_get_snapshot(
 {
     (void)runtime;
     (void)out_snapshot;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t bluetooth_audio_runtime_refresh_play_status(
+    bluetooth_audio_runtime_handle_t runtime)
+{
+    (void)runtime;
     return ESP_ERR_NOT_SUPPORTED;
 }
 

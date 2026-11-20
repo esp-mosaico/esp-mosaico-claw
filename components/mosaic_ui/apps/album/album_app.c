@@ -11,6 +11,7 @@
 #include "album_templates.h"
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 
 #include <ctype.h>
@@ -420,7 +421,11 @@ static void album_refresh_toolbar(esp_gsp_handle_t ui)
     char text[48];
     size_t selected_count = album_selected_count();
     bool has_selection = selected_count > 0;
-    snprintf(text, sizeof(text), "%u selected", (unsigned)selected_count);
+    if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+        snprintf(text, sizeof(text), "%u 项已选择", (unsigned)selected_count);
+    } else {
+        snprintf(text, sizeof(text), "%u selected", (unsigned)selected_count);
+    }
     (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_SELECT_COUNT, text);
     (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_SELECT_DELETE_ENABLED_VISIBLE, has_selection);
 }
@@ -462,10 +467,14 @@ static void album_show_delete_confirm(esp_gsp_handle_t ui)
     }
     char text[80];
     s_album.modal = ALBUM_MODAL_CONFIRM_DELETE;
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_MODAL_TITLE, "Confirm Delete");
-    snprintf(text, sizeof(text), "Remove %u item%s?", (unsigned)count, count == 1 ? "" : "s");
+    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_MODAL_TITLE, mosaic_i18n_text("Confirm Delete"));
+    if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+        snprintf(text, sizeof(text), "删除 %u 项？", (unsigned)count);
+    } else {
+        snprintf(text, sizeof(text), "Remove %u item%s?", (unsigned)count, count == 1 ? "" : "s");
+    }
     (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_NAME, text);
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, "This cannot be undone.");
+    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, mosaic_i18n_text("This cannot be undone."));
     (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_MODAL_VISIBLE, true);
     album_refresh_grid(ui);
 }
@@ -479,7 +488,7 @@ static void album_confirm_delete(esp_gsp_handle_t ui)
     const char **paths = calloc(count, sizeof(*paths));
     if (!paths) {
         ESP_LOGE(TAG, "Cannot allocate delete request");
-        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, "Unable to delete. Please retry.");
+        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, mosaic_i18n_text("Unable to delete. Please retry."));
         return;
     }
     size_t at = 0;
@@ -493,13 +502,13 @@ static void album_confirm_delete(esp_gsp_handle_t ui)
     free(paths);
     if (!accepted) {
         ESP_LOGE(TAG, "Cannot queue delete request");
-        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, "Unable to delete. Please retry.");
+        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, mosaic_i18n_text("Unable to delete. Please retry."));
         return;
     }
     s_album.delete_busy = true;
     (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_DELETE_ACTIONS_VISIBLE, false);
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_MODAL_TITLE, "Deleting...");
-    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, "Please wait.");
+    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_MODAL_TITLE, mosaic_i18n_text("Deleting..."));
+    (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, mosaic_i18n_text("Please wait."));
 }
 
 static void album_finish_delete(esp_gsp_handle_t ui)
@@ -538,11 +547,15 @@ static void album_finish_delete(esp_gsp_handle_t ui)
     (void)esp_gsp_set_visible(ui, GSP_BIND_ALBUM_MODAL_VISIBLE, failures != 0);
     if (failures) {
         char text[64];
-        snprintf(text, sizeof(text), "%u file(s) could not be removed.", (unsigned)failures);
+        if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+            snprintf(text, sizeof(text), "%u 个文件未能删除。", (unsigned)failures);
+        } else {
+            snprintf(text, sizeof(text), "%u file(s) could not be removed.", (unsigned)failures);
+        }
         ESP_LOGW(TAG, "Delete incomplete: %u failures", (unsigned)failures);
-        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_MODAL_TITLE, "Delete Incomplete");
+        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_MODAL_TITLE, mosaic_i18n_text("Delete Incomplete"));
         (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_NAME, text);
-        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, "Retry or cancel.");
+        (void)esp_gsp_set_text(ui, GSP_BIND_ALBUM_DETAIL_SIZE, mosaic_i18n_text("Retry or cancel."));
     }
     album_refresh_cells(ui, true);
 }
@@ -861,8 +874,28 @@ static void album_tick(esp_gsp_handle_t ui, void *user_ctx)
     album_callback_leave();
 }
 
+static void album_localize(esp_gsp_handle_t ui)
+{
+    static const struct { uint16_t bind; const char *text; } fields[] = {
+        {GSP_BIND_ALBUM_TITLE_TEXT, "Album"},
+        {GSP_BIND_ALBUM_SELECT_TEXT, "Select"},
+        {GSP_BIND_ALBUM_CANCEL_SELECT_TEXT, "Cancel"},
+        {GSP_BIND_ALBUM_SELECT_DELETE_TEXT, "Delete"},
+        {GSP_BIND_ALBUM_EMPTY_TEXT_VALUE, "No JPEG Photos"},
+        {GSP_BIND_ALBUM_MODAL_TITLE, "Details"},
+        {GSP_BIND_ALBUM_DETAIL_NAME, "file:"},
+        {GSP_BIND_ALBUM_DETAIL_SIZE, "size:"},
+        {GSP_BIND_ALBUM_CANCEL_MODAL_TEXT, "Cancel"},
+        {GSP_BIND_ALBUM_CONFIRM_DELETE_TEXT, "Delete"},
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+        (void)esp_gsp_set_text(ui, fields[i].bind, mosaic_i18n_text(fields[i].text));
+    }
+}
+
 static void album_started(esp_gsp_handle_t ui)
 {
+    album_localize(ui);
     memset(&s_album, 0, sizeof(s_album));
     atomic_init(&s_album.call_read, 0);
     atomic_init(&s_album.call_write, 0);
@@ -925,7 +958,10 @@ static void album_event(esp_gsp_handle_t ui, const struct mosaic_event *raw_even
     if (event == NULL) {
         return;
     }
-    (void)ui;
+    if (event->type == MOSAIC_EVENT_SCENE_CHANGED) {
+        album_localize(ui);
+        return;
+    }
     if (event->type == MOSAIC_EVENT_UI_CALL && !atomic_load(&s_stopping)) {
         unsigned write = atomic_load(&s_album.call_write);
         if (write - atomic_load(&s_album.call_read) == ALBUM_CALL_CAPACITY) {

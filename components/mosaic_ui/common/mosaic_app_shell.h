@@ -25,7 +25,9 @@ void mosaic_app_shell_set_root_visible(esp_gsp_handle_t ui, bool visible);
 void mosaic_app_shell_set_bottom_enabled(esp_gsp_handle_t ui, bool enabled);
 /** Show a system notice above the active App. Zero duration keeps it visible. */
 esp_gsp_err_t mosaic_app_shell_show_system_notice(
-    esp_gsp_handle_t ui, mosaic_system_notice_t notice, uint32_t duration_ms);
+    esp_gsp_handle_t ui, mosaic_system_notice_t notice, uint32_t duration_ms, int64_t deadline_us);
+esp_gsp_err_t mosaic_app_shell_hide_system_notice(
+    esp_gsp_handle_t ui, mosaic_system_notice_t notice);
 void mosaic_app_shell_detach(esp_gsp_handle_t ui);
 /** Clear native shell bookkeeping after the SDK has destroyed this UI.
  * Makes no calls through the retired handle. */

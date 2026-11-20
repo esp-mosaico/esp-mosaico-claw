@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -34,6 +35,7 @@ typedef enum {
     MOSAIC_LOADER_COMMAND_INVALIDATE_APP,
     MOSAIC_LOADER_COMMAND_BACK,
     MOSAIC_LOADER_COMMAND_SYSTEM_NOTICE,
+    MOSAIC_LOADER_COMMAND_HIDE_SYSTEM_NOTICE,
 } mosaic_loader_command_type_t;
 
 typedef struct {
@@ -57,6 +59,7 @@ typedef struct {
         struct {
             mosaic_system_notice_t notice;
             uint32_t duration_ms;
+            int64_t deadline_us;
         } system_notice;
     } data;
 } mosaic_loader_command_t;
@@ -78,6 +81,8 @@ static bool s_runtime_started;
 static bool s_hub_foreground;
 static bool s_quiesced;
 static uint16_t s_hub_scene;
+static int64_t s_shutdown_notice_deadline_us;
+static const mosaic_app_descriptor_t* s_shutdown_notice_app;
 
 static bool post_ui_event(
     void* user_ctx, uint32_t generation, const esp_gsp_event_t* event)
@@ -231,9 +236,26 @@ static void process_command(const mosaic_loader_command_t* command)
     }
     if (command->type == MOSAIC_LOADER_COMMAND_SYSTEM_NOTICE) {
         esp_gsp_handle_t ui = mosaic_esp_platform_ui(s_platform);
-        (void)mosaic_app_shell_show_system_notice(
+        if (command->data.system_notice.notice == MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL) {
+            s_shutdown_notice_deadline_us = command->data.system_notice.deadline_us;
+            s_shutdown_notice_app = NULL;
+        }
+        const esp_gsp_err_t result = mosaic_app_shell_show_system_notice(
             ui, command->data.system_notice.notice,
-            command->data.system_notice.duration_ms);
+            command->data.system_notice.duration_ms,
+            command->data.system_notice.deadline_us);
+        if (result == ESP_GSP_OK && command->data.system_notice.notice == MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL) {
+            s_shutdown_notice_app = mosaic_runtime_active_app(s_runtime);
+        }
+        return;
+    }
+    if (command->type == MOSAIC_LOADER_COMMAND_HIDE_SYSTEM_NOTICE) {
+        esp_gsp_handle_t ui = mosaic_esp_platform_ui(s_platform);
+        if (command->data.system_notice.notice == MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL) {
+            s_shutdown_notice_deadline_us = 0;
+            s_shutdown_notice_app = NULL;
+        }
+        (void)mosaic_app_shell_hide_system_notice(ui, command->data.system_notice.notice);
     }
 }
 
@@ -291,6 +313,17 @@ static void loader_task(void* arg)
             if (hub_foreground != s_hub_foreground) {
                 s_hub_foreground = hub_foreground;
                 mosaic_ui_note_screen_activity();
+            }
+            const mosaic_app_descriptor_t* active_app = mosaic_runtime_active_app(s_runtime);
+            const int64_t now_us = esp_timer_get_time();
+            if (s_shutdown_notice_deadline_us > now_us && active_app != s_shutdown_notice_app) {
+                if (mosaic_app_shell_show_system_notice(mosaic_esp_platform_ui(s_platform), MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL,
+                        0, s_shutdown_notice_deadline_us) == ESP_GSP_OK) {
+                    s_shutdown_notice_app = active_app;
+                }
+            } else if (s_shutdown_notice_deadline_us > 0 && s_shutdown_notice_deadline_us <= now_us) {
+                s_shutdown_notice_deadline_us = 0;
+                s_shutdown_notice_app = NULL;
             }
         }
         xSemaphoreGive(s_runtime_lock);
@@ -365,9 +398,9 @@ esp_err_t mosaic_loader_init(const mosaic_loader_config_t* config)
         cleanup_partial_init();
         return err;
     }
-    BaseType_t task_ok
-        = xTaskCreate(loader_task, "mosaic_runtime", MOSAIC_LOADER_TASK_STACK,
-            NULL, MOSAIC_LOADER_TASK_PRIORITY, &s_loader_task);
+    BaseType_t task_ok = xTaskCreateWithCaps(loader_task, "mosaic_runtime",
+        MOSAIC_LOADER_TASK_STACK, NULL, MOSAIC_LOADER_TASK_PRIORITY,
+        &s_loader_task, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (task_ok != pdPASS) {
         cleanup_partial_init();
         return ESP_ERR_NO_MEM;
@@ -441,7 +474,7 @@ esp_err_t mosaic_loader_invalidate_app(uint16_t app_id, uint32_t revision)
 }
 
 esp_err_t mosaic_loader_show_system_notice(
-    mosaic_system_notice_t notice, uint32_t duration_ms)
+    mosaic_system_notice_t notice, uint32_t duration_ms, int64_t deadline_us)
 {
     if (s_command_queue == NULL ||
             notice > MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL) {
@@ -452,10 +485,23 @@ esp_err_t mosaic_loader_show_system_notice(
         .data.system_notice = {
             .notice = notice,
             .duration_ms = duration_ms,
+            .deadline_us = deadline_us,
         },
     };
     return xQueueSend(s_command_queue, &command, 0) == pdTRUE
         ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t mosaic_loader_hide_system_notice(mosaic_system_notice_t notice)
+{
+    if (s_command_queue == NULL || notice > MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const mosaic_loader_command_t command = {
+        .type = MOSAIC_LOADER_COMMAND_HIDE_SYSTEM_NOTICE,
+        .data.system_notice.notice = notice,
+    };
+    return xQueueSend(s_command_queue, &command, 0) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
 esp_err_t mosaic_loader_defer(

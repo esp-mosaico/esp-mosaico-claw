@@ -9,6 +9,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent.parent / "common"))
 
 from font_paths import NOTO_SANS  # noqa: E402
+from scene_common import mark_i18n  # noqa: E402
 
 WELCOME_CONTENT_WIDTH = 480
 WELCOME_FONT = NOTO_SANS
@@ -175,10 +176,12 @@ def generate(scene_name, output, width):
         raise SystemExit(f"unknown Welcome scene: {scene_name}")
     here = pathlib.Path(__file__).resolve().parent
     font = str((here / WELCOME_FONT).resolve())
+    objects = SCENES[scene_name]()
+    mark_i18n(objects, scene_name)
     scene = {
         "screen": scene_name, "w": width, "h": 480,
         "screen_bg": "#060606", "font": font,
-        "default_font_size": 18, "objects": SCENES[scene_name](),
+        "default_font_size": 18, "objects": objects,
     }
     offset = (width - WELCOME_CONTENT_WIDTH) // 2
     objects = scene["objects"]

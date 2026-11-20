@@ -4,10 +4,13 @@
 #include <stdint.h>
 
 #include "esp_gsp.h"
+#include "esp_log.h"
 #include "mosaic_app_catalog.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 #include "welcome_intro_actions.h"
 #include "welcome_intro_objects.h"
+#undef GSP_OBJ_WELCOME_RUNTIME_TEXT
 #include "welcome_keys_objects.h"
 #undef GSP_OBJ_WELCOME_RUNTIME_TEXT
 #include "welcome_g1_objects.h"
@@ -15,9 +18,12 @@
 #undef GSP_OBJ_GESTURE_HAND_VALUE
 #undef GSP_OBJ_WELCOME_RUNTIME_TEXT
 #include "welcome_g4_objects.h"
+#include "welcome_i18n.h"
 
 #define WELCOME_PAGE_COUNT 5U
 #define WELCOME_PAGE_DURATION_US 3000000LL
+
+static const char *TAG = "welcome";
 
 static esp_gsp_handle_t s_ui;
 static uint16_t s_page;
@@ -40,6 +46,20 @@ static const gsp_component_directory_t *const s_directories[] = {
     &gsp_obj_directory_welcome_g2,
     &gsp_obj_directory_welcome_g4,
 };
+
+static void welcome_apply_language(esp_gsp_handle_t ui, uint16_t page)
+{
+    esp_err_t err = ESP_OK;
+    switch (page) {
+    case 0: err = mosaic_i18n_apply_components(ui, welcome_i18n_page_0, sizeof(welcome_i18n_page_0) / sizeof(welcome_i18n_page_0[0])); break;
+    case 1: err = mosaic_i18n_apply_components(ui, welcome_i18n_page_1, sizeof(welcome_i18n_page_1) / sizeof(welcome_i18n_page_1[0])); break;
+    case 2: err = mosaic_i18n_apply_components(ui, welcome_i18n_page_2, sizeof(welcome_i18n_page_2) / sizeof(welcome_i18n_page_2[0])); break;
+    case 3: err = mosaic_i18n_apply_components(ui, welcome_i18n_page_3, sizeof(welcome_i18n_page_3) / sizeof(welcome_i18n_page_3[0])); break;
+    case 4: err = mosaic_i18n_apply_components(ui, welcome_i18n_page_4, sizeof(welcome_i18n_page_4) / sizeof(welcome_i18n_page_4[0])); break;
+    default: return;
+    }
+    if (err != ESP_OK) ESP_LOGW(TAG, "apply page language failed: %s", esp_err_to_name(err));
+}
 
 static void welcome_hand_start(int64_t now_us)
 {
@@ -213,6 +233,7 @@ static void welcome_event(
         s_hand_next_us = 0;
         s_hand_origin_valid = false;
         s_arrow_origin_valid = false;
+        welcome_apply_language(ui, 0);
         break;
     case MOSAIC_EVENT_UI_CALL:
         if (event->data.call.action_id == GSP_ACT_ID_WELCOME_NEXT &&
@@ -226,6 +247,7 @@ static void welcome_event(
             s_next_us = event->timestamp_us + WELCOME_PAGE_DURATION_US;
             s_hand_origin_valid = false;
             s_arrow_origin_valid = false;
+            welcome_apply_language(ui, s_page);
             welcome_hand_start(event->timestamp_us);
         }
         break;

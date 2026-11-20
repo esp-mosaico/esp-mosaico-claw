@@ -17,7 +17,7 @@ peripherals:
     role: master
     config:
       spi_bus_config:
-        spi_port: SPI2_HOST
+        spi_port: SPI3_HOST
         sclk_io_num: 44
         data0_io_num: 36
         data1_io_num: 51

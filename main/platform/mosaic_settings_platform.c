@@ -40,6 +40,13 @@ static void delayed_factory_restart(void *arg)
     vTaskDelay(pdMS_TO_TICKS(3000));
     esp_restart();
 }
+
+static void delayed_language_restart(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
 static portMUX_TYPE s_scan_lock = portMUX_INITIALIZER_UNLOCKED;
 static mosaic_settings_wifi_ap_t s_scan_cache[MOSAIC_SETTINGS_WIFI_SCAN_MAX];
 static size_t s_scan_count;
@@ -170,6 +177,8 @@ static esp_err_t get_snapshot(
         ret_snapshot->brightness = snapshot->brightness;
         ret_snapshot->volume = snapshot->volume;
         ret_snapshot->screen_timeout_ms = snapshot->screen_timeout_ms;
+        ret_snapshot->ui_language = snapshot->ui_language == APP_UI_LANGUAGE_ZH_CN
+            ? MOSAIC_UI_LANGUAGE_ZH_CN : MOSAIC_UI_LANGUAGE_EN;
         ret_snapshot->vibration_enabled = snapshot->vibration_enabled;
         ret_snapshot->web_logs_enabled = snapshot->web_logs_enabled;
         ret_snapshot->display_available = snapshot->display_available;
@@ -309,6 +318,24 @@ static esp_err_t set_screen_timeout(void *user_ctx, uint32_t timeout_ms)
                             user_ctx, timeout_ms),
                         TAG, "save screen timeout");
     mosaic_ui_set_screen_timeout(timeout_ms);
+    return ESP_OK;
+}
+
+static esp_err_t set_ui_language(void *user_ctx, mosaic_ui_language_t language)
+{
+    ESP_RETURN_ON_FALSE(language >= MOSAIC_UI_LANGUAGE_EN &&
+                        language <= MOSAIC_UI_LANGUAGE_ZH_CN,
+                        ESP_ERR_INVALID_ARG, TAG, "invalid UI language");
+    const app_ui_language_t app_language = language == MOSAIC_UI_LANGUAGE_ZH_CN
+        ? APP_UI_LANGUAGE_ZH_CN : APP_UI_LANGUAGE_EN;
+    ESP_RETURN_ON_ERROR(app_settings_service_set_ui_language(user_ctx, app_language),
+                        TAG, "save UI language");
+    ESP_LOGI(TAG, "UI language saved; restarting");
+    if (xTaskCreate(delayed_language_restart, "language_restart", 2048,
+                    NULL, 5, NULL) != pdPASS) {
+        ESP_LOGW(TAG, "language restart task unavailable; restarting now");
+        esp_restart();
+    }
     return ESP_OK;
 }
 
@@ -662,6 +689,8 @@ esp_err_t mosaic_settings_platform_init(
     if (app_settings_service_get_snapshot(config->settings,
                                           &settings_snapshot) == ESP_OK) {
         mosaic_ui_set_screen_timeout(settings_snapshot.screen_timeout_ms);
+        mosaic_i18n_set_language(settings_snapshot.ui_language == APP_UI_LANGUAGE_ZH_CN
+            ? MOSAIC_UI_LANGUAGE_ZH_CN : MOSAIC_UI_LANGUAGE_EN);
     }
     /* esp_board_device_get_handle() logs every successful lookup at INFO.
      * Settings owns long-lived device handles and does not need that chatter;
@@ -687,6 +716,7 @@ esp_err_t mosaic_settings_platform_init(
         .set_vibration = set_vibration,
         .set_web_logs_enabled = set_web_logs_enabled,
         .set_screen_timeout = set_screen_timeout,
+        .set_ui_language = set_ui_language,
         .factory_reset = factory_reset,
         .set_wifi_enabled = set_wifi_enabled,
         .get_battery = get_battery,

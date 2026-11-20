@@ -46,9 +46,7 @@ static bool s_critical_battery_notice_issued;
 static mosaico_module_subscription_t s_module_subscription;
 
 #define MOSAIC_BATTERY_LOW_NOTICE_SOC 10U
-#define MOSAIC_BATTERY_CRITICAL_NOTICE_SOC 2U
 #define MOSAIC_BATTERY_LOW_NOTICE_MS 2500U
-#define MOSAIC_BATTERY_CRITICAL_NOTICE_MS 1500U
 
 static void on_battery_notice(
     const mosaic_settings_battery_t *battery, void *user_ctx)
@@ -60,28 +58,25 @@ static void on_battery_notice(
     if (battery->state_of_charge >= MOSAIC_BATTERY_LOW_NOTICE_SOC) {
         s_low_battery_notice_issued = false;
     }
-    if (battery->charging ||
-            battery->state_of_charge >= MOSAIC_BATTERY_CRITICAL_NOTICE_SOC) {
+    if (!battery->shutdown_pending && s_critical_battery_notice_issued) {
+        (void)mosaic_loader_hide_system_notice(MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL);
         s_critical_battery_notice_issued = false;
     }
-    if (battery->charging) {
-        return;
-    }
-    if (battery->state_of_charge < MOSAIC_BATTERY_CRITICAL_NOTICE_SOC) {
+    if (battery->shutdown_pending) {
         if (!s_critical_battery_notice_issued &&
                 mosaic_loader_show_system_notice(
                     MOSAIC_SYSTEM_NOTICE_BATTERY_CRITICAL,
-                    MOSAIC_BATTERY_CRITICAL_NOTICE_MS) == ESP_OK) {
+                    0, battery->shutdown_deadline_us) == ESP_OK) {
             s_critical_battery_notice_issued = true;
             s_low_battery_notice_issued = true;
         }
         return;
     }
-    if (battery->state_of_charge < MOSAIC_BATTERY_LOW_NOTICE_SOC &&
+    if (!battery->charging && battery->state_of_charge < MOSAIC_BATTERY_LOW_NOTICE_SOC &&
             !s_low_battery_notice_issued &&
             mosaic_loader_show_system_notice(
                 MOSAIC_SYSTEM_NOTICE_BATTERY_LOW,
-                MOSAIC_BATTERY_LOW_NOTICE_MS) == ESP_OK) {
+                MOSAIC_BATTERY_LOW_NOTICE_MS, 0) == ESP_OK) {
         s_low_battery_notice_issued = true;
     }
 }

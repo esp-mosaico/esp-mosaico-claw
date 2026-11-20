@@ -20,12 +20,18 @@ typedef enum {
     APP_SYSTEM_BOOT_HOME,
 } app_system_boot_stage_t;
 
+typedef enum {
+    APP_UI_LANGUAGE_EN = 0,
+    APP_UI_LANGUAGE_ZH_CN,
+} app_ui_language_t;
+
 typedef struct {
     app_system_boot_stage_t boot_stage;
     uint16_t rotation;
     uint8_t brightness;
     uint8_t volume;
     uint32_t screen_timeout_ms;
+    app_ui_language_t ui_language;
     bool vibration_enabled;
     bool wifi_enabled;
     bool web_logs_enabled;

@@ -28,6 +28,7 @@ idf_component_register(
          "common/mosaic_settings_model.c"
          "common/works_runtime.c"
          "common/mosaic_top_notice.c"
+         "common/mosaic_i18n.c"
          "common/wechat_binding_flow.c"
          "common/ai_create_controller.c"
          "common/ai_create_voice_port.c"
@@ -59,7 +60,7 @@ idf_component_register(
 
 if(CONFIG_MOSAIC_UI_BLUETOOTH_AUDIO)
     idf_build_set_property(LINK_OPTIONS
-        "-Wl,--wrap=esp_a2d_sink_init;-Wl,--wrap=esp_a2d_register_callback;-Wl,--wrap=esp_a2d_sink_deinit;-Wl,-u,__wrap_esp_a2d_sink_init"
+        "-Wl,--wrap=esp_a2d_sink_init;-Wl,--wrap=esp_a2d_register_callback;-Wl,--wrap=esp_a2d_sink_deinit;-Wl,--wrap=esp_avrc_ct_register_callback;-Wl,--wrap=esp_avrc_ct_send_register_notification_cmd;-Wl,-u,__wrap_esp_a2d_sink_init;-Wl,-u,__wrap_esp_avrc_ct_send_register_notification_cmd"
         APPEND)
 endif()
 

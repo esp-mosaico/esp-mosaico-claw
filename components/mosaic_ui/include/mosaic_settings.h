@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "mosaic_i18n.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -108,6 +109,10 @@ typedef struct {
     esp_err_t last_error;
     /** True when the gauge reports charge inbound. */
     bool charging;
+    /** True while a low-battery hardware shutdown is counting down. */
+    bool shutdown_pending;
+    /** Absolute esp_timer deadline; valid only while shutdown_pending is true. */
+    int64_t shutdown_deadline_us;
     uint16_t state_of_charge;
     /** Stable gauge telemetry for the Battery details page. */
     uint16_t voltage_mv;
@@ -135,6 +140,7 @@ typedef struct {
     int brightness;
     int volume;
     uint32_t screen_timeout_ms;
+    mosaic_ui_language_t ui_language;
     bool vibration_enabled;
     bool web_logs_enabled;
     bool display_available;
@@ -167,6 +173,7 @@ typedef struct {
     esp_err_t (*set_vibration)(void *user_ctx, bool enabled);
     esp_err_t (*set_web_logs_enabled)(void *user_ctx, bool enabled);
     esp_err_t (*set_screen_timeout)(void *user_ctx, uint32_t timeout_ms);
+    esp_err_t (*set_ui_language)(void *user_ctx, mosaic_ui_language_t language);
     esp_err_t (*factory_reset)(void *user_ctx);
     esp_err_t (*set_wifi_enabled)(void *user_ctx, bool enabled);
     /** Optional cached/live battery read. When NULL, get_battery falls back
@@ -200,6 +207,7 @@ esp_err_t mosaic_settings_set_brightness(int brightness, bool persist);
 esp_err_t mosaic_settings_set_volume(int volume, bool persist);
 esp_err_t mosaic_settings_set_vibration(bool enabled);
 esp_err_t mosaic_settings_set_screen_timeout(uint32_t timeout_ms);
+esp_err_t mosaic_settings_set_ui_language(mosaic_ui_language_t language);
 esp_err_t mosaic_settings_factory_reset(void);
 esp_err_t mosaic_settings_set_wifi_enabled(bool enabled);
 

@@ -4,13 +4,14 @@
 
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_gsp_debug.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 
 static portMUX_TYPE s_probe_lock = portMUX_INITIALIZER_UNLOCKED;
-static mosaic_ui_probe_snapshot_t s_probe;
+static EXT_RAM_BSS_ATTR mosaic_ui_probe_snapshot_t s_probe;
 static esp_gsp_handle_t s_ui;
 static void *s_timer;
 static int64_t s_last_us;

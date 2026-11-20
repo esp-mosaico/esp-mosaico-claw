@@ -17,6 +17,7 @@
 #define SYSTEM_BRIGHTNESS_KEY "sys_brightness"
 #define SYSTEM_VOLUME_KEY     "sys_volume"
 #define SYSTEM_SCREEN_TIMEOUT_KEY "sys_screen_to"
+#define SYSTEM_UI_LANGUAGE_KEY "sys_language"
 #define SYSTEM_VIBRATION_KEY  "sys_vibration"
 #define SYSTEM_WIFI_ENABLED_KEY "sys_wifi_en"
 #define SYSTEM_WEB_LOGS_KEY "sys_web_logs"
@@ -90,6 +91,7 @@ void app_system_config_defaults(app_system_config_t *config)
         .brightness = 100,
         .volume = 80,
         .screen_timeout_ms = SYSTEM_SCREEN_TIMEOUT_DEFAULT_MS,
+        .ui_language = APP_UI_LANGUAGE_EN,
         .vibration_enabled = true,
         .wifi_enabled = true,
         .web_logs_enabled = false,
@@ -106,6 +108,7 @@ esp_err_t app_system_config_load(app_system_config_t *config)
     int brightness = config->brightness;
     int volume = config->volume;
     int screen_timeout = config->screen_timeout_ms;
+    int ui_language = config->ui_language;
     int vibration = config->vibration_enabled;
     int wifi_enabled = config->wifi_enabled;
     int web_logs_enabled = config->web_logs_enabled;
@@ -118,6 +121,8 @@ esp_err_t app_system_config_load(app_system_config_t *config)
         {SYSTEM_VOLUME_KEY, "audio_volume", 0, 100, 80, &volume},
         {SYSTEM_SCREEN_TIMEOUT_KEY, NULL, 0, SYSTEM_SCREEN_TIMEOUT_MAX_MS,
          SYSTEM_SCREEN_TIMEOUT_DEFAULT_MS, &screen_timeout},
+        {SYSTEM_UI_LANGUAGE_KEY, NULL, APP_UI_LANGUAGE_EN,
+         APP_UI_LANGUAGE_ZH_CN, APP_UI_LANGUAGE_EN, &ui_language},
         {SYSTEM_VIBRATION_KEY, NULL, 0, 1, 1, &vibration},
         {SYSTEM_WIFI_ENABLED_KEY, NULL, 0, 1, 1, &wifi_enabled},
         {SYSTEM_WEB_LOGS_KEY, NULL, 0, 1, 0, &web_logs_enabled},
@@ -137,6 +142,7 @@ esp_err_t app_system_config_load(app_system_config_t *config)
     config->brightness = (uint8_t)brightness;
     config->volume = (uint8_t)volume;
     config->screen_timeout_ms = (uint32_t)screen_timeout;
+    config->ui_language = (app_ui_language_t)ui_language;
     config->vibration_enabled = vibration != 0;
     config->wifi_enabled = wifi_enabled != 0;
     config->web_logs_enabled = web_logs_enabled != 0;
@@ -150,6 +156,8 @@ esp_err_t app_system_config_save(const app_system_config_t *config)
                             (config->rotation == 0 || config->rotation == 90 ||
                              config->rotation == 180 || config->rotation == 270) &&
                             config->brightness <= 100 && config->volume <= 100 &&
+                            config->ui_language >= APP_UI_LANGUAGE_EN &&
+                            config->ui_language <= APP_UI_LANGUAGE_ZH_CN &&
                             screen_timeout_valid(config->screen_timeout_ms),
                         ESP_ERR_INVALID_ARG, TAG, "invalid system config");
     ESP_RETURN_ON_ERROR(write_int(SYSTEM_BOOT_STAGE_KEY, config->boot_stage),
@@ -163,6 +171,8 @@ esp_err_t app_system_config_save(const app_system_config_t *config)
     ESP_RETURN_ON_ERROR(write_int(SYSTEM_SCREEN_TIMEOUT_KEY,
                                   (int)config->screen_timeout_ms),
                         TAG, "save screen timeout");
+    ESP_RETURN_ON_ERROR(write_int(SYSTEM_UI_LANGUAGE_KEY, config->ui_language),
+                        TAG, "save UI language");
     ESP_RETURN_ON_ERROR(write_int(SYSTEM_VIBRATION_KEY,
                                   config->vibration_enabled ? 1 : 0),
                         TAG, "save vibration");
@@ -183,6 +193,7 @@ esp_err_t app_system_config_reset(void)
         SYSTEM_BRIGHTNESS_KEY,
         SYSTEM_VOLUME_KEY,
         SYSTEM_SCREEN_TIMEOUT_KEY,
+        SYSTEM_UI_LANGUAGE_KEY,
         SYSTEM_VIBRATION_KEY,
         SYSTEM_WIFI_ENABLED_KEY,
         SYSTEM_WEB_LOGS_KEY,

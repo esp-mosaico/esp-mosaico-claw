@@ -21,8 +21,8 @@
 #define MOSAIC_BATTERY_SAMPLE_MS 5000U
 #define MOSAIC_BATTERY_CHARGE_ON_MA 8
 #define MOSAIC_BATTERY_CHARGE_CONFIRM_SAMPLES 3U
-#define MOSAIC_BATTERY_LOW_SHUTDOWN_SOC 2U
-#define MOSAIC_BATTERY_LOW_SHUTDOWN_CONFIRM_SAMPLES 3U
+#define MOSAIC_BATTERY_LOW_SHUTDOWN_SOC 8U
+#define MOSAIC_BATTERY_SHUTDOWN_DELAY_MS 10000U
 #define MOSAIC_BATTERY_TELEMETRY_SAMPLES 8U
 #define MOSAIC_BATTERY_MIN_VALID_MV 2500U
 #define MOSAIC_BATTERY_MAX_VALID_MV 5000U
@@ -36,15 +36,15 @@ static bool s_charging_latched;
 static bool s_charge_candidate;
 static uint8_t s_charge_candidate_samples;
 static uint8_t s_telemetry_div;
-static uint8_t s_low_shutdown_samples;
-static bool s_low_shutdown_requested;
+static esp_timer_handle_t s_shutdown_timer;
+static bool s_low_shutdown_pending;
+static int64_t s_low_shutdown_deadline_us;
 static void *s_battery;
 
 static void battery_low_shutdown_task(void *arg)
 {
     (void)arg;
-    ESP_LOGW(TAG, "battery SoC below %u%%; requesting hardware power-off",
-             (unsigned)MOSAIC_BATTERY_LOW_SHUTDOWN_SOC);
+    ESP_LOGW(TAG, "low-battery countdown elapsed; requesting hardware power-off");
     esp_err_t err = mosaic_power_platform_request_shutdown();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "board power-off request failed: %s", esp_err_to_name(err));
@@ -54,44 +54,53 @@ static void battery_low_shutdown_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void battery_low_shutdown_check(
-    const mosaic_settings_battery_t *battery)
+static void battery_low_shutdown_timer_cb(void *arg)
 {
-    if (battery == NULL || !battery->available || battery->charging ||
-            battery->stale ||
-            battery->state_of_charge >= MOSAIC_BATTERY_LOW_SHUTDOWN_SOC) {
-        s_low_shutdown_samples = 0;
-        return;
-    }
-
-    if (s_low_shutdown_requested) {
-        return;
-    }
-    if (s_low_shutdown_samples <
-            MOSAIC_BATTERY_LOW_SHUTDOWN_CONFIRM_SAMPLES) {
-        ++s_low_shutdown_samples;
-    }
-    if (s_low_shutdown_samples <
-            MOSAIC_BATTERY_LOW_SHUTDOWN_CONFIRM_SAMPLES) {
-        return;
-    }
-
-    s_low_shutdown_requested = true;
-    BaseType_t task_ok = xTaskCreate(
-        battery_low_shutdown_task, "batt_shutdown", 2048, NULL,
-        tskIDLE_PRIORITY + 1, NULL);
+    (void)arg;
+    BaseType_t task_ok = xTaskCreate(battery_low_shutdown_task, "batt_shutdown", 2048, NULL, tskIDLE_PRIORITY + 1, NULL);
     if (task_ok != pdPASS) {
-        s_low_shutdown_requested = false;
+        s_low_shutdown_pending = false;
+        s_low_shutdown_deadline_us = 0;
         ESP_LOGE(TAG, "failed to schedule low-battery shutdown");
     }
 }
 
-static bool read_battery(mosaic_settings_battery_t *out_battery)
+static void battery_low_shutdown_update(const mosaic_settings_battery_t *battery, bool power_in)
 {
-    if (out_battery == NULL) {
+    if (battery == NULL || !battery->available || battery->stale) {
+        return;
+    }
+    if (power_in || battery->state_of_charge >= MOSAIC_BATTERY_LOW_SHUTDOWN_SOC) {
+        if (s_low_shutdown_pending) {
+            (void)esp_timer_stop(s_shutdown_timer);
+            s_low_shutdown_pending = false;
+            s_low_shutdown_deadline_us = 0;
+            ESP_LOGI(TAG, "low-battery shutdown canceled (SoC=%u%% power=%d)", (unsigned)battery->state_of_charge, (int)power_in);
+        }
+        return;
+    }
+    if (s_low_shutdown_pending || s_shutdown_timer == NULL) {
+        return;
+    }
+
+    const int64_t deadline_us = esp_timer_get_time() + (int64_t)MOSAIC_BATTERY_SHUTDOWN_DELAY_MS * 1000;
+    esp_err_t err = esp_timer_start_once(s_shutdown_timer, (uint64_t)MOSAIC_BATTERY_SHUTDOWN_DELAY_MS * 1000ULL);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "failed to start low-battery countdown: %s", esp_err_to_name(err));
+        return;
+    }
+    s_low_shutdown_pending = true;
+    s_low_shutdown_deadline_us = deadline_us;
+    ESP_LOGW(TAG, "battery SoC %u%%; shutdown in %u seconds", (unsigned)battery->state_of_charge, (unsigned)(MOSAIC_BATTERY_SHUTDOWN_DELAY_MS / 1000U));
+}
+
+static bool read_battery(mosaic_settings_battery_t *out_battery, bool *out_power_in)
+{
+    if (out_battery == NULL || out_power_in == NULL) {
         return false;
     }
     memset(out_battery, 0, sizeof(*out_battery));
+    *out_power_in = false;
     if (!esp_board_manager_check_name("battery_monitor")) {
         return false;
     }
@@ -132,6 +141,7 @@ static bool read_battery(mosaic_settings_battery_t *out_battery)
     const bool charge_in = !status.DSG || positive_current;
     const bool charge_out = status.DSG && !positive_current;
     const bool was_charging = s_charging_latched;
+    *out_power_in = charge_in;
     if (charge_in != charge_out) {
         const bool candidate = charge_in;
         if (candidate != s_charge_candidate) {
@@ -194,6 +204,8 @@ static bool battery_changed(const mosaic_settings_battery_t *a,
     return a->available != b->available ||
            a->stale != b->stale || a->last_error != b->last_error ||
            a->charging != b->charging ||
+           a->shutdown_pending != b->shutdown_pending ||
+           a->shutdown_deadline_us != b->shutdown_deadline_us ||
            a->state_of_charge != b->state_of_charge ||
            a->voltage_mv != b->voltage_mv ||
            a->current_ma != b->current_ma ||
@@ -206,8 +218,8 @@ static bool battery_changed(const mosaic_settings_battery_t *a,
 static void sample_and_publish(bool force)
 {
     mosaic_settings_battery_t sample = {0};
-    if (!read_battery(&sample)) {
-        s_low_shutdown_samples = 0;
+    bool power_in = false;
+    if (!read_battery(&sample, &power_in)) {
         portENTER_CRITICAL(&s_sample_lock);
         const bool publish = force || (s_sample_valid && !s_sample.stale) ||
             s_sample.last_error != ESP_FAIL;
@@ -220,6 +232,10 @@ static void sample_and_publish(bool force)
         }
         return;
     }
+
+    battery_low_shutdown_update(&sample, power_in);
+    sample.shutdown_pending = s_low_shutdown_pending;
+    sample.shutdown_deadline_us = s_low_shutdown_deadline_us;
 
     bool publish = force;
     portENTER_CRITICAL(&s_sample_lock);
@@ -234,7 +250,6 @@ static void sample_and_publish(bool force)
     if (publish) {
         mosaic_settings_notify_battery(&published);
     }
-    battery_low_shutdown_check(&sample);
 }
 
 static void battery_timer_cb(void *arg)
@@ -252,13 +267,32 @@ esp_err_t mosaic_battery_platform_start(void)
         .callback = battery_timer_cb,
         .name = "mosaic_batt",
     };
+    const esp_timer_create_args_t shutdown_args = {
+        .callback = battery_low_shutdown_timer_cb,
+        .name = "mosaic_batt_off",
+    };
     ESP_RETURN_ON_ERROR(esp_timer_create(&args, &s_timer), TAG,
                         "create sampler");
+    esp_err_t err = esp_timer_create(&shutdown_args, &s_shutdown_timer);
+    if (err != ESP_OK) {
+        (void)esp_timer_delete(s_timer);
+        s_timer = NULL;
+        ESP_LOGE(TAG, "create shutdown timer failed: %s", esp_err_to_name(err));
+        return err;
+    }
     sample_and_publish(true);
-    ESP_RETURN_ON_ERROR(
-        esp_timer_start_periodic(
-            s_timer, (uint64_t)MOSAIC_BATTERY_SAMPLE_MS * 1000ULL),
-        TAG, "start sampler");
+    err = esp_timer_start_periodic(s_timer, (uint64_t)MOSAIC_BATTERY_SAMPLE_MS * 1000ULL);
+    if (err != ESP_OK) {
+        (void)esp_timer_stop(s_shutdown_timer);
+        (void)esp_timer_delete(s_shutdown_timer);
+        (void)esp_timer_delete(s_timer);
+        s_shutdown_timer = NULL;
+        s_timer = NULL;
+        s_low_shutdown_pending = false;
+        s_low_shutdown_deadline_us = 0;
+        ESP_LOGE(TAG, "start sampler failed: %s", esp_err_to_name(err));
+        return err;
+    }
     ESP_LOGI(TAG, "sampler started at %u ms",
              (unsigned)MOSAIC_BATTERY_SAMPLE_MS);
     return ESP_OK;
@@ -297,6 +331,8 @@ esp_err_t mosaic_battery_platform_get_info(const char *section,
     cJSON_AddNumberToObject(root, "last_error", battery.last_error);
     if (battery.available) {
         cJSON_AddBoolToObject(root, "charging", battery.charging);
+        cJSON_AddBoolToObject(root, "shutdown_pending", battery.shutdown_pending);
+        cJSON_AddNumberToObject(root, "shutdown_deadline_us", battery.shutdown_deadline_us);
         cJSON_AddNumberToObject(root, "state_of_charge", battery.state_of_charge);
         cJSON_AddNumberToObject(root, "voltage_mv", battery.voltage_mv);
         cJSON_AddNumberToObject(root, "current_ma", battery.current_ma);

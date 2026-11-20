@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 SCREEN_W = 480
@@ -13,6 +14,33 @@ CONTENT_W = 480
 CONTENT_H = 480
 OX = (SCREEN_W - CONTENT_W) // 2
 ASCII_PRINTABLE = "".join(chr(codepoint) for codepoint in range(32, 127))
+
+
+def mark_i18n(objects, prefix):
+    """Name static text that has a runtime translation."""
+    source = Path(__file__).with_name("mosaic_i18n.c").read_text(encoding="utf-8")
+    translated = set(re.findall(r'^\s*\{"([^"\\]*(?:\\.[^"\\]*)*)",\s*"', source, re.MULTILINE))
+    templates = {index for index, obj in enumerate(objects) if obj.get("template")}
+
+    def in_template(obj):
+        parent = obj.get("parent")
+        while isinstance(parent, int) and parent >= 0:
+            if parent in templates:
+                return True
+            parent = objects[parent].get("parent")
+        return False
+
+    index = 0
+    for obj in objects:
+        text = obj.get("text")
+        if obj.get("type") not in ("label", "button") or not isinstance(text, str) or text not in translated or obj.get("bind") or in_template(obj):
+            continue
+        if not obj.get("name"):
+            obj["name"] = f"{prefix}_i18n_{index}"
+        obj["bind"] = obj["name"]
+        obj["_mosaic_i18n"] = True
+        obj["font_charset"] = "".join(sorted(set(text)))
+        index += 1
 
 
 def shared_charset(charset=ASCII_PRINTABLE):
@@ -77,7 +105,7 @@ def image(parent, src, x, y, w, h, *, name=None, callback=None, events=None,
 
 def button(parent, x, y, w, h, text, *, bg="#181819", fg="#FCFCFF",
            radius=0, size=16, name=None, events=None, callback=None,
-           border=None, border_w=0, align=None, opacity=None):
+           border=None, border_w=0, align=None, opacity=None, bind=None):
     obj = {
         "type": "button", "parent": parent,
         "x": x, "y": y, "w": w, "h": h,
@@ -86,6 +114,8 @@ def button(parent, x, y, w, h, text, *, bg="#181819", fg="#FCFCFF",
     }
     if name:
         obj["name"] = name
+    if bind:
+        obj["bind"] = bind
     if events:
         obj["events"] = events
     if callback:
@@ -426,7 +456,7 @@ def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
     ))
     objs.append(label(
         missing, 0, 16, 432, 48, "Camera board not detected", size=24,
-        color="#FCFCFF", align="center", name="camera_missing_label",
+        color="#FCFCFF", align="center", name="camera_missing_label", bind="camera_missing_text",
     ))
     # Keep one invisible-on-black glyph so the single-scene bundle still
     # materializes its required font resource after removing the title text.
@@ -546,9 +576,9 @@ def build_camera_page(objs, parent, assets_prefix, camera_assets_prefix):
     objs.append(label(menu, 42, 22, 60, 48, "QR", size=26, color="#FCFCFF", align="center", callback="camera_qrcode_mode"))
     objs.append(label(menu, 170, 20, 60, 48, "●", size=32, color="#4FD66D", align="center", callback="camera_color_mode"))
     objs.append(label(menu, 298, 22, 60, 48, "M", size=26, color="#FCFCFF", align="center", callback="camera_motion_mode"))
-    objs.append(label(menu, 24, 76, 96, 24, "QR Code", size=16, color="#D6D6DE", align="center", callback="camera_qrcode_mode"))
-    objs.append(label(menu, 152, 76, 96, 24, "Color", size=16, color="#D6D6DE", align="center", callback="camera_color_mode"))
-    objs.append(label(menu, 280, 76, 96, 24, "Motion", size=16, color="#D6D6DE", align="center", callback="camera_motion_mode"))
+    objs.append(label(menu, 24, 76, 96, 24, "QR Code", size=16, color="#D6D6DE", align="center", callback="camera_qrcode_mode", name="camera_qrcode_label", bind="camera_qrcode_text"))
+    objs.append(label(menu, 152, 76, 96, 24, "Color", size=16, color="#D6D6DE", align="center", callback="camera_color_mode", name="camera_color_label", bind="camera_color_text"))
+    objs.append(label(menu, 280, 76, 96, 24, "Motion", size=16, color="#D6D6DE", align="center", callback="camera_motion_mode", name="camera_motion_label", bind="camera_motion_text"))
 
 
 def build_imu_page(objs, parent):
@@ -569,16 +599,17 @@ def build_imu_page(objs, parent):
                       align="center", bind="imu_angle", name="imu_angle",
                       font_charset="-+.0123456789°"))
     cards = [
-        (12, "Pitch", "76", "imu_pitch"),
-        (170, "Roll", "0", "imu_roll"),
-        (327, "Yaw", "120", "imu_yaw"),
+        (12, "Pitch", "76", "imu_pitch", "imu_pitch_title"),
+        (170, "Roll", "0", "imu_roll", "imu_roll_title"),
+        (327, "Yaw", "120", "imu_yaw", "imu_yaw_title"),
     ]
-    for x, name, val, bind in cards:
+    for x, name, val, bind, title_bind in cards:
         card = len(objs)
         objs.append(container(parent, x, 351, 141, 106, bg="#181819",
                               radius=20, border="#3B3C3D", border_w=1))
         objs.append(label(card, 0, 16, 141, 22, name, size=16, color="#91919B",
-                          align="center"))
+                          align="center", bind=title_bind, name=title_bind,
+                          font_charset="".join(sorted(set(name)))))
         objs.append(label(card, 0, 42, 141, 50, val, size=48, color="#FCFCFF",
                           align="center", bind=bind, name=bind,
                           font_charset="-+.0123456789°"))

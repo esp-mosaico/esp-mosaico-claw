@@ -68,6 +68,10 @@ def rotate_scene(objects, here, font_path, rotate=True):
                 output = bitmap.transpose(Image.Transpose.ROTATE_90) if rotate else bitmap
                 output.save(path)
             obj["image"] = str(path)
+        if source.get("runtime_text") and not rotate:
+            obj.pop("runtime_text", None)
+            rotated.append(obj)
+            continue
         if source["type"] in ("label", "button") and (source.get("text") or field in fields):
             if source["type"] == "button":
                 obj.pop("bind", None)

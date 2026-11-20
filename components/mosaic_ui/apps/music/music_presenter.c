@@ -8,6 +8,7 @@
 
 #include "music_binds.h"
 #include "music_objects.h"
+#include "mosaic_i18n.h"
 
 #define MUSIC_PROGRESS_CURSOR_X_MIN 8
 #define MUSIC_PROGRESS_CURSOR_X_MAX 464
@@ -77,9 +78,11 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
     char count[16];
     format_time(snapshot->position_ms, elapsed);
     format_time(snapshot->duration_ms, duration);
-    snprintf(count, sizeof(count), "%u of %u",
-        snapshot->track_count ? (unsigned)snapshot->track_index + 1U : 0U,
-        (unsigned)snapshot->track_count);
+    if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+        snprintf(count, sizeof(count), "%u / %u", snapshot->track_count ? (unsigned)snapshot->track_index + 1U : 0U, (unsigned)snapshot->track_count);
+    } else {
+        snprintf(count, sizeof(count), "%u of %u", snapshot->track_count ? (unsigned)snapshot->track_index + 1U : 0U, (unsigned)snapshot->track_count);
+    }
     int32_t progress = snapshot->duration_ms > 0
         ? (int32_t)((snapshot->position_ms * 1000) /
                     snapshot->duration_ms)
@@ -114,17 +117,16 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
         presenter->rendered_shuffle_enabled != snapshot->shuffle_enabled;
 
     if (metadata_changed && err == ESP_OK) {
-        err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_TITLE,
-            snapshot->title);
+        err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_TITLE, snapshot->title);
     }
     if ((metadata_changed || state_changed) && err == ESP_OK) {
+        const char *artist = snapshot->state == MUSIC_PLAYBACK_LOADING ? "Preparing audio..." :
+                             snapshot->state == MUSIC_PLAYBACK_ERROR ? "Playback unavailable" : snapshot->artist;
         err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_ARTIST,
-            snapshot->state == MUSIC_PLAYBACK_LOADING ? "Preparing audio..." :
-            snapshot->state == MUSIC_PLAYBACK_ERROR ? "Playback unavailable" : snapshot->artist);
+                               snapshot->state == MUSIC_PLAYBACK_LOADING || snapshot->state == MUSIC_PLAYBACK_ERROR ? mosaic_i18n_text(artist) : artist);
     }
     if (metadata_changed && err == ESP_OK) {
-        err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_ALBUM,
-            snapshot->album);
+        err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_ALBUM, snapshot->album);
     }
     if (time_changed && err == ESP_OK) {
         err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_ELAPSED, elapsed);
@@ -136,8 +138,7 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
         err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_TRACK_COUNT, count);
     }
     if (state_changed && err == ESP_OK) {
-        err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_TOGGLE_TEXT,
-            snapshot->state == MUSIC_PLAYBACK_PLAYING ? "PAUSE" : "PLAY");
+        err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_TOGGLE_TEXT, mosaic_i18n_text(snapshot->state == MUSIC_PLAYBACK_PLAYING ? "PAUSE" : "PLAY"));
     }
     if (state_changed) {
         const bool playing = snapshot->state == MUSIC_PLAYBACK_PLAYING;
@@ -175,21 +176,21 @@ esp_err_t music_presenter_render(music_presenter_handle_t presenter,
             const bool populated = index < snapshot->track_count;
             err = set_visible(ui, row_binds[index], populated, err);
             if (populated && err == ESP_OK) {
-                err = esp_gsp_set_text(ui, title_binds[index],
-                                       snapshot->library_titles[index]);
+                err = esp_gsp_set_text(ui, title_binds[index], snapshot->library_titles[index]);
             }
             if (populated && err == ESP_OK) {
-                err = esp_gsp_set_text(ui, artist_binds[index],
-                                       snapshot->library_artists[index]);
+                err = esp_gsp_set_text(ui, artist_binds[index], snapshot->library_artists[index]);
             }
             err = set_visible(ui, playing_binds[index],
                               populated && index == snapshot->track_index,
                               err);
         }
         char summary[48];
-        snprintf(summary, sizeof(summary), "%u song%s  |  local music",
-                 (unsigned)snapshot->track_count,
-                 snapshot->track_count == 1U ? "" : "s");
+        if (mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN) {
+            snprintf(summary, sizeof(summary), "%u 首歌曲  |  本地音乐", (unsigned)snapshot->track_count);
+        } else {
+            snprintf(summary, sizeof(summary), "%u song%s  |  local music", (unsigned)snapshot->track_count, snapshot->track_count == 1U ? "" : "s");
+        }
         if (err == ESP_OK) {
             err = esp_gsp_set_text(ui, GSP_BIND_MUSIC_LIBRARY_SUMMARY,
                                    summary);

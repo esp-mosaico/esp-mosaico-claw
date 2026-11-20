@@ -42,5 +42,5 @@ build_edge_agent:
     - .build_firmware_template
     - .rules:build:edge_agent
   variables:
-    IMAGE: espressif/idf:latest
+    IMAGE: espressif/idf:release-v6.2
     EXAMPLE_BOARD: esp_mosaico

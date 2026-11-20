@@ -3,6 +3,7 @@
 
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 #include "music_actions.h"
 #include "music_binds.h"
@@ -98,9 +99,18 @@ static void handle_volume_pointer(esp_gsp_handle_t ui,
     (void)mosaic_settings_set_volume(s_volume, false);
 }
 
+static void music_localize(esp_gsp_handle_t ui)
+{
+    (void)esp_gsp_set_text(ui, GSP_BIND_MUSIC_LIBRARY_HEADING, mosaic_i18n_text("Local Music"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_MUSIC_LOCAL_TAB_TEXT, mosaic_i18n_text("Local"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_MUSIC_BLUETOOTH_TAB_TEXT, mosaic_i18n_text("Bluetooth"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_MUSIC_TITLE, mosaic_i18n_text("Music name"));
+    (void)esp_gsp_set_text(ui, GSP_BIND_MUSIC_ARTIST, mosaic_i18n_text("Singer"));
+}
+
 static void music_started(esp_gsp_handle_t ui)
 {
-    (void)ui;
+    music_localize(ui);
     s_page = MUSIC_PLAYER_PAGE;
     s_volume_drag_active = false;
     mosaic_settings_snapshot_t settings;
@@ -201,6 +211,7 @@ static void music_event(
         }
         break;
     case MOSAIC_EVENT_SCENE_CHANGED:
+        music_localize(ui);
         music_presenter_invalidate(s_presenter);
         render(ui, true);
         break;

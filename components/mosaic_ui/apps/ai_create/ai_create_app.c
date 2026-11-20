@@ -6,6 +6,7 @@
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
 #include "ai_create_actions.h"
+#include "ai_create_binds.h"
 #include "ai_create_objects.h"
 
 #include <string.h>
@@ -15,6 +16,7 @@
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "mosaic_ai_create_runtime.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 
 #define AI_CREATE_VOICE_LEFT              76
@@ -38,6 +40,33 @@ typedef enum {
     AI_CREATE_SESSION_TRANSITION_ENTER_PENDING,
     AI_CREATE_SESSION_TRANSITION_ENTERING,
 } ai_create_session_transition_t;
+
+static void localize_static_text(esp_gsp_handle_t ui)
+{
+    static const struct {
+        uint16_t bind;
+        const char *text;
+    } entries[] = {
+        {GSP_BIND_AI_HERO_HELLO_TEXT, "Hello,"}, {GSP_BIND_AI_HERO_HELP_TEXT, "How can I help?"},
+        {GSP_BIND_AI_NEW_BUTTON_TEXT, "New Session"}, {GSP_BIND_AI_CONTINUE_BUTTON_TEXT, "Continue"},
+        {GSP_BIND_AI_FEATURE_DEFAULT_QUICK_TEXT, "Quick Ask"}, {GSP_BIND_AI_FEATURE_DEFAULT_CREATE_TEXT, "AI Create"},
+        {GSP_BIND_AI_FEATURE_DEFAULT_SKILL_TEXT, "Install Skill"}, {GSP_BIND_AI_FEATURE_DEFAULT_MEMORY_TEXT, "Remember"},
+        {GSP_BIND_AI_FEATURE_DEFAULT_PLAN_TEXT, "Plan"}, {GSP_BIND_AI_FEATURE_DEFAULT_SCHEDULE_TEXT, "Schedule"},
+        {GSP_BIND_AI_FEATURE_MODE_QUICK_TEXT, "Quick Ask"}, {GSP_BIND_AI_FEATURE_MODE_CREATE_TEXT, "AI Create"},
+        {GSP_BIND_AI_FEATURE_MODE_SKILL_TEXT, "Install Skill"}, {GSP_BIND_AI_FEATURE_MODE_MEMORY_TEXT, "Remember"},
+        {GSP_BIND_AI_FEATURE_MODE_PLAN_TEXT, "Plan"}, {GSP_BIND_AI_FEATURE_MODE_SCHEDULE_TEXT, "Schedule"},
+        {GSP_BIND_AI_SESSION_TITLE_TEXT, "Select Session"}, {GSP_BIND_AI_SESSION_0_CONTINUE_TEXT, "Continue session"},
+        {GSP_BIND_AI_SESSION_1_CONTINUE_TEXT, "Continue session"}, {GSP_BIND_AI_SESSION_2_CONTINUE_TEXT, "Continue session"},
+        {GSP_BIND_AI_SESSION_0_DELETE_TEXT, "Delete"}, {GSP_BIND_AI_SESSION_1_DELETE_TEXT, "Delete"},
+        {GSP_BIND_AI_SESSION_2_DELETE_TEXT, "Delete"}, {GSP_BIND_AI_SESSION_NEW_TEXT, "New Blank Session"},
+        {GSP_BIND_AI_DELETE_TITLE_TEXT, "Delete Session?"}, {GSP_BIND_AI_DELETE_WARNING_TEXT, "This cannot be undone."},
+        {GSP_BIND_AI_DELETE_CANCEL_TEXT, "Cancel"}, {GSP_BIND_AI_DELETE_CONFIRM_TEXT, "Delete"},
+        {GSP_BIND_AI_DELETE_PROGRESS_LABEL, "Deleting…"}, {GSP_BIND_AI_CHAT_TITLE_TEXT, "AI CREATE"},
+    };
+    for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i) {
+        (void)esp_gsp_set_text(ui, entries[i].bind, mosaic_i18n_text(entries[i].text));
+    }
+}
 
 static const char *TAG = "ai_create_app";
 
@@ -528,6 +557,7 @@ static void ai_create_event(esp_gsp_handle_t ui,
         refresh_sessions();
         force_render = true;
         refresh_session_cache = true;
+        localize_static_text(ui);
         break;
     case MOSAIC_EVENT_STOP:
         reset_session_page_transition(ui);
@@ -566,6 +596,7 @@ static void ai_create_event(esp_gsp_handle_t ui,
         reset_session_page_transition(ui);
         force_render = true;
         refresh_session_cache = true;
+        localize_static_text(ui);
         break;
     default:
         break;

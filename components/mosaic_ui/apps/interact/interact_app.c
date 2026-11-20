@@ -1,5 +1,6 @@
 #include "mosaic_app_catalog.h"
 #include "mosaic_hub_actions.h"
+#include "mosaic_i18n.h"
 #include "mosaic_runtime.h"
 #include "interact_objects.h"
 #include "interact_actions.h"
@@ -11,8 +12,31 @@
 
 static void *s_timer;
 static interact_snapshot_t s_previous;
-static int s_light_text[3], s_status_text, s_ir_text;
+static int s_light_text[3];
 static int s_rendered_input_mode;
+
+static const char *localized_status(const char *status)
+{
+    return strncmp(status, "Open failed", 11) == 0 ? mosaic_i18n_text("Open failed") : mosaic_i18n_text(status);
+}
+
+static void localize(esp_gsp_handle_t ui)
+{
+    static const struct { uint16_t bind; const char *text; } fields[] = {
+        {GSP_BIND_INTERACTION_TITLE_TEXT, "Interaction Module"},
+        {GSP_BIND_KEY_5_PRESSED_TEXT, "PRESSED"}, {GSP_BIND_KEY_4_PRESSED_TEXT, "PRESSED"},
+        {GSP_BIND_PIR_MOTION_TEXT, "MOTION"},
+        {GSP_BIND_MODULE_UNAVAILABLE_TITLE_TEXT, "MODULE NOT CONNECTED"},
+        {GSP_BIND_MODULE_UNAVAILABLE_HINT_TEXT, "CONTROLS UNAVAILABLE"},
+    };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
+        (void)esp_gsp_set_text(ui, fields[i].bind, mosaic_i18n_text(fields[i].text));
+    }
+    static const char *const options_en[] = {"BUTTON", "TOUCH"};
+    static const char *const options_zh[] = {"按键", "触摸"};
+    const char *const *options = mosaic_i18n_get_language() == MOSAIC_UI_LANGUAGE_ZH_CN ? options_zh : options_en;
+    (void)esp_gsp_dropdown_set_options_text(ui, GSP_OBJ_KEY_INPUT_MODE_DROPDOWN, options, 2);
+}
 
 static uint32_t ldr_indicator_color(bool ready, uint8_t light)
 {
@@ -46,17 +70,17 @@ static void render(esp_gsp_handle_t ui, void *ctx)
     if (state.ready) snprintf(light, sizeof(light), "%u%%", state.light);
     else snprintf(light, sizeof(light), "--%%");
     interact_light_set_text(ui, light, s_light_text);
-    interact_status_set_text(ui, state.status, &s_status_text);
+    (void)esp_gsp_set_text(ui, GSP_BIND_STATUS, localized_status(state.status));
     const char *ir_status = !state.ir_status[0] ? "OFF" : !strcmp(state.ir_status, "IR sending") ? "SEND" : !strcmp(state.ir_status, "IR sent") ? "SENT" : "FAIL";
-    interact_ir_status_set_text(ui, ir_status, &s_ir_text);
+    (void)esp_gsp_set_text(ui, GSP_BIND_IR_STATUS, mosaic_i18n_text(ir_status));
     s_previous = state;
 }
 
 static void started(esp_gsp_handle_t ui)
 {
+    localize(ui);
     memset(&s_previous, 0xFF, sizeof(s_previous));
     s_light_text[0] = s_light_text[1] = s_light_text[2] = -1;
-    s_status_text = s_ir_text = -1;
     s_rendered_input_mode = -1;
     interact_backend_start();
     render(ui, NULL);
@@ -72,7 +96,13 @@ static void stopping(esp_gsp_handle_t ui)
 
 static void event(esp_gsp_handle_t ui, const struct mosaic_event *event)
 {
-    (void)ui;
+    if (event == NULL) return;
+    if (event->type == MOSAIC_EVENT_SCENE_CHANGED) {
+        localize(ui);
+        memset(&s_previous, 0xFF, sizeof(s_previous));
+        render(ui, NULL);
+        return;
+    }
     if (event->type != MOSAIC_EVENT_UI_CALL) return;
     switch (event->data.call.action_id) {
     case GSP_ACT_ID_LED_0: interact_backend_command(INTERACT_COMMAND_LED_0); return;

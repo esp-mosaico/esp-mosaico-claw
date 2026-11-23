@@ -24,6 +24,9 @@ esp_err_t app_cap_system_platform_set_battery_provider(
 /** Pulse the board vibration motor for the requested duration. */
 esp_err_t app_cap_system_platform_vibrate(uint32_t duration_ms);
 
+/** Disable audio output and restart the device. */
+void app_cap_system_platform_restart(void);
+
 #ifdef __cplusplus
 }
 #endif

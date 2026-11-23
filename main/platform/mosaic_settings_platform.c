@@ -17,7 +17,6 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_system.h"
 #include "http_server.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,14 +37,14 @@ static void delayed_factory_restart(void *arg)
 {
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(3000));
-    esp_restart();
+    app_cap_system_platform_restart();
 }
 
 static void delayed_language_restart(void *arg)
 {
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
+    app_cap_system_platform_restart();
 }
 static portMUX_TYPE s_scan_lock = portMUX_INITIALIZER_UNLOCKED;
 static mosaic_settings_wifi_ap_t s_scan_cache[MOSAIC_SETTINGS_WIFI_SCAN_MAX];
@@ -334,7 +333,7 @@ static esp_err_t set_ui_language(void *user_ctx, mosaic_ui_language_t language)
     if (xTaskCreate(delayed_language_restart, "language_restart", 2048,
                     NULL, 5, NULL) != pdPASS) {
         ESP_LOGW(TAG, "language restart task unavailable; restarting now");
-        esp_restart();
+        app_cap_system_platform_restart();
     }
     return ESP_OK;
 }
@@ -367,7 +366,7 @@ static esp_err_t factory_reset(void *user_ctx)
              "rebooting into Setup in 3 seconds");
     if (xTaskCreate(delayed_factory_restart, "factory_restart", 2048,
                     NULL, 5, NULL) != pdPASS) {
-        esp_restart();
+        app_cap_system_platform_restart();
     }
     return ESP_OK;
 }

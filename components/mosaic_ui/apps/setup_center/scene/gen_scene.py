@@ -54,14 +54,13 @@ HTML_NO = "setup_html_no.png"
 QR_PLACEHOLDER = "setup_qr_placeholder.png"
 LLM_QR_PLACEHOLDER = "setup_llm_qr_placeholder.png"
 
-PAGE_OVERVIEW = 0
-PAGE_NETWORK = 1
-PAGE_WECHAT = 2
-PAGE_LLM = 3
-PAGE_DONE = 4
-PAGE_INTEGRATIONS = 5
-PAGE_REGION = 6
-PAGE_COUNT = 7
+PAGE_NETWORK = 0
+PAGE_WECHAT = 1
+PAGE_LLM = 2
+PAGE_DONE = 3
+PAGE_INTEGRATIONS = 4
+PAGE_REGION = 5
+PAGE_COUNT = 6
 
 FONT_POLICIES = {
     20: auto_charset(), 24: auto_charset(), 30: auto_charset(),
@@ -217,19 +216,6 @@ def status_card(objs, parent, y, title, subtitle, name, action):
                       name=f"{name}_summary", events=events))
     objs.append(label(parent, 436, y + 24, 24, 36, "›", size=30,
                       color=MUTED, events=events))
-
-
-def build_overview(objs, parent):
-    topbar(objs, parent, back="setup_center_close", title="AI SETUP")
-    objs.append(label(parent, 24, 68, 432, 58, "AI Setup", size=44))
-    objs.append(label(parent, 24, 126, 432, 30,
-                      "Network, WeChat and LLM", size=20, color=MUTED))
-    status_card(objs, parent, 172, "Network", "Not configured",
-                "setup_network", "setup_overview_network")
-    status_card(objs, parent, 272, "WeChat", "Not linked",
-                "setup_wechat", "setup_overview_wechat")
-    status_card(objs, parent, 372, "LLM", "Not configured",
-                "setup_llm", "setup_overview_llm")
 
 
 def build_integrations(objs, parent):
@@ -567,8 +553,6 @@ def build_done(objs, parent):
     success_screen(objs, parent, title="Setup Complete",
                    detail="Your Mosaico is ready",
                    action="setup_center_close", action_text="Continue")
-    objs.append(label(parent, 64, 448, 352, 28, "View setup status", size=20,
-                      color=MUTED, align="center", callback="setup_view_status"))
 
 
 def main():
@@ -589,11 +573,10 @@ def main():
         "type": "stackview", "parent": content,
         "x": 0, "y": 0, "w": CONTENT_W, "h": CONTENT_H,
         "name": "setup_stack", "page_count": PAGE_COUNT,
-        "initial_page": PAGE_OVERVIEW, "capacity": 8,
+        "initial_page": PAGE_NETWORK, "capacity": 8,
         "axis": "horizontal", "transition_ms": 300,
         "transition_easing": "ease_out",
     })
-    build_overview(objs, page(objs, stack, PAGE_OVERVIEW))
     build_network(objs, page(objs, stack, PAGE_NETWORK))
     build_wechat(objs, page(objs, stack, PAGE_WECHAT))
     build_llm(objs, page(objs, stack, PAGE_LLM))

@@ -46,7 +46,6 @@
 #include "esp_err.h"
 #include "esp_check.h"
 #include "esp_lcd_touch_mux.h"
-#include "esp_system.h"
 #include "esp_board_manager_includes.h"
 #include "captive_dns.h"
 #include "cmd_wifi.h"
@@ -547,7 +546,7 @@ static void main_restart_task(void *arg)
 {
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
+    app_cap_system_platform_restart();
 }
 
 static esp_err_t main_restart_device(void)

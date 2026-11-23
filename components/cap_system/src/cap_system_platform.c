@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -237,6 +238,31 @@ static esp_err_t app_cap_system_get_audio_codec(bool initialize,
     return ESP_OK;
 }
 #endif
+
+void app_cap_system_platform_restart(void)
+{
+#if CONFIG_ESP_BOARD_PERIPH_GPIO_SUPPORT
+    esp_err_t pa_err = gpio_set_level(GPIO_NUM_45, 0);
+    if (pa_err != ESP_OK) {
+        ESP_LOGW(TAG, "disable PA before restart failed: %s", esp_err_to_name(pa_err));
+    }
+#endif
+
+#if CONFIG_ESP_BOARD_DEV_AUDIO_CODEC_SUPPORT
+    dev_audio_codec_handles_t *handles = NULL;
+    esp_err_t codec_err = app_cap_system_get_audio_codec(false, &handles);
+    if (codec_err == ESP_OK) {
+        int mute_err = esp_codec_dev_set_out_mute(handles->codec_dev, true);
+        if (mute_err != ESP_CODEC_DEV_OK) {
+            ESP_LOGW(TAG, "mute codec before restart failed: %d", mute_err);
+        }
+    } else {
+        ESP_LOGW(TAG, "audio DAC unavailable before restart: %s", esp_err_to_name(codec_err));
+    }
+#endif
+
+    esp_restart();
+}
 
 static cJSON *app_cap_system_build_network_info(
     app_settings_service_handle_t settings)

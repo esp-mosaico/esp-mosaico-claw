@@ -5,6 +5,7 @@
  */
 #include "cap_system.h"
 #include "cap_system_cpu.h"
+#include "cap_system_platform.h"
 
 #include <stdbool.h>
 #include <inttypes.h>
@@ -27,7 +28,6 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
-#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -747,7 +747,7 @@ static void cap_system_restart_task(void *arg)
 
     free(task_args);
     vTaskDelay(pdMS_TO_TICKS(delay_ms));
-    esp_restart();
+    app_cap_system_platform_restart();
 }
 
 static esp_err_t cap_system_get_info_json(char *output, size_t output_size)
